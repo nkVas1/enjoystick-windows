@@ -1,45 +1,55 @@
 cmake_minimum_required(VERSION 3.25)
-project(EnjoyStickWindows VERSION 0.2.0 LANGUAGES CXX)
+project(enjoystick-windows VERSION 0.1.0 LANGUAGES CXX)
 
-# ---------------------------------------------------------------------------
-# Global settings
-# ---------------------------------------------------------------------------
-set(CMAKE_CXX_STANDARD          20)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS        OFF)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Force MSVC Unicode
-add_compile_definitions(UNICODE _UNICODE)
-
+# ─── Compiler flags ────────────────────────────────────────────────────────────
 if (MSVC)
-    add_compile_options(/W4 /WX /permissive- /Zc:__cplusplus /utf-8)
-    # Disable warnings for external headers
-    add_compile_options(/external:anglebrackets /external:W0)
+    add_compile_options(
+        /W4 /WX         # Treat warnings as errors
+        /permissive-    # Strict conformance mode
+        /Zc:__cplusplus # Correct __cplusplus macro
+        /utf-8          # Source and output encoding
+        /MP             # Parallel compilation
+        $<$<CONFIG:Release>:/O2>
+        $<$<CONFIG:Release>:/GL>   # Whole program optimisation
+        $<$<CONFIG:Debug>:/Od>
+        $<$<CONFIG:Debug>:/RTC1>
+    )
+    add_link_options(
+        $<$<CONFIG:Release>:/LTCG>
+    )
 endif()
 
-# ---------------------------------------------------------------------------
-# Output directories
-# ---------------------------------------------------------------------------
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-
-# ---------------------------------------------------------------------------
-# Submodules
-# ---------------------------------------------------------------------------
-add_subdirectory(src/core)
-add_subdirectory(src/cursor)
-add_subdirectory(src/overlay)
-add_subdirectory(src/config)
-add_subdirectory(src/app)
-
-# ---------------------------------------------------------------------------
-# Install rules (optional, for packaging)
-# ---------------------------------------------------------------------------
-install(TARGETS enjoystick
-    RUNTIME DESTINATION bin
+# ─── Subsystem modules ─────────────────────────────────────────────────────────
+set(ENJOYSTICK_MODULES
+    src/core
+    src/cursor
+    src/input
+    src/overlay
+    src/config
+    src/app
 )
-install(FILES
-    $<TARGET_RUNTIME_DLLS:enjoystick>
-    DESTINATION bin
+
+foreach(mod ${ENJOYSTICK_MODULES})
+    if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${mod}/CMakeLists.txt")
+        add_subdirectory(${mod})
+    endif()
+endforeach()
+
+# ─── Executable ────────────────────────────────────────────────────────────────
+add_executable(enjoystick WIN32 src/main.cpp)
+
+target_link_libraries(enjoystick
+    PRIVATE enjoystick_app
 )
+
+set_target_properties(enjoystick PROPERTIES
+    OUTPUT_NAME "EnjoyStick"
+    WIN32_EXECUTABLE TRUE
+)
+
+# ─── Install ───────────────────────────────────────────────────────────────────
+install(TARGETS enjoystick DESTINATION .)
