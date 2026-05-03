@@ -1,93 +1,102 @@
 #pragma once
 
 #include <enjoystick/shared/Types.hpp>
-#include <array>
 #include <functional>
 #include <string>
 #include <vector>
+#include <memory>
 #include <cstdint>
 
 namespace enjoystick::overlay {
 
-/// Maximum number of sectors in one radial ring.
-constexpr uint32_t kMaxSectors = 8;
-
 ///
-/// RadialMenu — controller-driven radial selection widget.
+/// RadialMenu — a controller-friendly circular menu for quick actions and text input.
 ///
-/// Layout model:
-///   - Up to 8 sectors arranged around a circle, mapped to stick angle.
-///   - Each sector holds a label (glyph or string) and an action callback.
-///   - Pressing confirm (South / A / Cross) fires the highlighted sector.
-///   - Pressing cancel (East / B / Circle) closes without action.
-///   - Pages: holding LB/RB switches the active character page (lower, upper, symbols).
+/// Layout: items arranged in a circle, selection driven by right-stick angle.
+/// Confirmed with South (A/Cross) or trigger. Cancelled with East (B/Circle).
 ///
-struct RadialSector {
-    std::wstring label;          ///< Display label (single glyph preferred)
-    std::wstring characters;     ///< Characters injected on confirm (may be multi-char)
-    bool         isAction = false; ///< True for non-character actions (Backspace, Enter, etc.)
+/// The same widget doubles as a quick-action ring (apps, system shortcuts)
+/// and as a radial keyboard grid for text entry.
+///
+struct RadialMenuItem {
+    std::wstring label;     ///< Display label (short, 1-4 chars recommended)
+    std::wstring icon;      ///< Optional Unicode symbol / emoji
+    std::function<void()> action; ///< Invoked on confirm
 };
 
-struct RadialPage {
-    std::wstring              name;    ///< Page name shown in centre hub
-    std::array<RadialSector, kMaxSectors> sectors = {};
-    uint32_t                  sectorCount = 0;
-};
-
-///
-/// RadialMenuController — pure logic layer (no rendering, no Win32).
-/// Rendering is handled separately in OverlayRenderer.
-///
-class RadialMenuController {
+class RadialMenu {
 public:
-    using CommitCallback = std::function<void(std::wstring_view characters)>;
-    using CloseCallback  = std::function<void()>;
+    enum class State : uint8_t {
+        Hidden,
+        Opening,   ///< Scale-in animation running
+        Visible,
+        Closing,   ///< Scale-out animation running
+    };
 
-    explicit RadialMenuController(std::vector<RadialPage> pages);
+    struct Config {
+        /// Centre position in screen coordinates (-1 = screen centre)
+        int32_t centreX = -1;
+        int32_t centreY = -1;
 
-    /// Feed a controller state each frame.
-    void Update(const ControllerState& state);
+        /// Outer radius in logical pixels
+        float radius = 200.0f;
 
-    void SetCommitCallback(CommitCallback cb) { m_onCommit = std::move(cb); }
-    void SetCloseCallback(CloseCallback  cb)  { m_onClose  = std::move(cb); }
+        /// Dead-zone magnitude of the selection stick (below = no item highlighted)
+        float selectionDeadzone = 0.25f;
 
-    void Open()  noexcept { m_open = true;  m_highlightedSector = kNoSelection; }
-    void Close() noexcept { m_open = false; }
-    [[nodiscard]] bool IsOpen() const noexcept { return m_open; }
+        /// Animation duration in milliseconds
+        float animMs = 140.0f;
 
-    /// Index of the currently highlighted sector (-1 = centre / none).
-    [[nodiscard]] int32_t HighlightedSector() const noexcept { return m_highlightedSector; }
-    [[nodiscard]] uint32_t CurrentPage()      const noexcept { return m_currentPage; }
-    [[nodiscard]] const RadialPage& GetPage(uint32_t idx) const { return m_pages.at(idx); }
-    [[nodiscard]] const RadialPage& CurrentPageData()     const { return m_pages.at(m_currentPage); }
-    [[nodiscard]] uint32_t PageCount()                    const noexcept { return static_cast<uint32_t>(m_pages.size()); }
+        /// Colour scheme (ABGR)
+        uint32_t colourBackground   = 0xCC1A1A2E;  ///< Deep navy, semi-transparent
+        uint32_t colourItemNormal   = 0xFF2E2E4A;
+        uint32_t colourItemHovered  = 0xFF5A4FF3;  ///< Enjoystick violet accent
+        uint32_t colourText         = 0xFFEEEEFF;
+        uint32_t colourAccent       = 0xFF8B7FF7;
+    };
 
-    /// Build the default QWERTY-inspired pages.
-    [[nodiscard]] static std::vector<RadialPage> BuildDefaultPages();
+    explicit RadialMenu(Config config = {});
+    ~RadialMenu();
+
+    /// Replace the current item ring.
+    void SetItems(std::vector<RadialMenuItem> items);
+
+    /// Open/close the menu with animation.
+    void Open();
+    void Close();
+    [[nodiscard]] bool IsVisible() const noexcept;
+    [[nodiscard]] State GetState() const noexcept;
+
+    /// Feed controller state every frame.
+    void Update(const ControllerState& state, float deltaSeconds);
+
+    /// Draw using Direct2D DC provided by OverlayWindow.
+    /// Caller must have called BeginDraw() already.
+    void Draw(void* d2dRenderTarget, float dpiScale) const;
+
+    /// Returns index of currently highlighted item, or -1 if none.
+    [[nodiscard]] int32_t GetHoveredIndex() const noexcept;
 
 private:
-    static constexpr int32_t kNoSelection = -1;
+    void UpdateAnimation(float deltaSeconds);
+    void UpdateSelection(Vec2 stick);
+    void ConfirmSelection();
 
-    void HandlePageSwitch(const ControllerState& state);
-    void HandleSectorSelection(const ControllerState& state);
-    [[nodiscard]] int32_t StickToSector(Vec2 stick, uint32_t sectorCount) const noexcept;
+    [[nodiscard]] float AngleForIndex(int32_t index) const noexcept;
+    [[nodiscard]] Vec2  PositionForIndex(int32_t index, float scale) const noexcept;
 
-    std::vector<RadialPage> m_pages;
-    uint32_t  m_currentPage       = 0;
-    int32_t   m_highlightedSector = kNoSelection;
-    bool      m_open              = false;
+    Config                     m_config;
+    std::vector<RadialMenuItem> m_items;
+    State                      m_state          = State::Hidden;
+    int32_t                    m_hoveredIndex   = -1;
+    int32_t                    m_confirmedIndex = -1;
 
-    // Edge detection for confirm/cancel buttons
-    Button m_prevButtons = Button::None;
-    // Edge detection for page switch buttons
-    bool   m_prevLB = false;
-    bool   m_prevRB = false;
+    float m_animProgress  = 0.0f;  ///< [0, 1] — 0 = hidden, 1 = fully open
+
+    // Button edge tracking
+    bool  m_prevSouth     = false;
+    bool  m_prevEast      = false;
+    bool  m_prevGuide     = false;
 };
-
-/// Inject characters / control sequences into the focused window via SendInput.
-void InjectText(std::wstring_view text);
-
-/// Convenience: build a RadialMenuController wired to InjectText.
-[[nodiscard]] RadialMenuController MakeDefaultOSK();
 
 } // namespace enjoystick::overlay
