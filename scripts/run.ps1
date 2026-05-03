@@ -15,10 +15,10 @@ param(
 $RepoRoot = Split-Path $PSScriptRoot -Parent
 
 $Candidates = @(
-    Join-Path $RepoRoot "build\$Config\$Config\EnjoyStick.exe",
-    Join-Path $RepoRoot "build\$Config\EnjoyStick.exe",
-    Join-Path $RepoRoot "build\windows-release\$Config\EnjoyStick.exe",
-    Join-Path $RepoRoot "build\ninja-release\EnjoyStick.exe"
+    (Join-Path $RepoRoot "build\$Config\$Config\EnjoyStick.exe"),
+    (Join-Path $RepoRoot "build\$Config\EnjoyStick.exe"),
+    (Join-Path $RepoRoot "build\windows-release\$Config\EnjoyStick.exe"),
+    (Join-Path $RepoRoot "build\ninja-release\EnjoyStick.exe")
 )
 
 $Exe = $Candidates | Where-Object { Test-Path $_ } | Select-Object -First 1

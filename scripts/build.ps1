@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    EnjoyStick Windows — one-click build and optional run script.
+    EnjoyStick Windows - one-click build and optional run script.
 
 .DESCRIPTION
     Locates Visual Studio (2019 or 2022) automatically, configures the CMake
@@ -44,13 +44,13 @@ $ErrorActionPreference = 'Stop'
 # Helpers
 # ---------------------------------------------------------------------------
 function Write-Step([string]$msg) {
-    Write-Host ""`n[BUILD] $msg"" -ForegroundColor Cyan
+    Write-Host ""`n[BUILD] $msg" -ForegroundColor Cyan
 }
 function Write-OK([string]$msg) {
-    Write-Host ""[OK]    $msg"" -ForegroundColor Green
+    Write-Host "[OK]    $msg" -ForegroundColor Green
 }
 function Write-Fail([string]$msg) {
-    Write-Host ""[FAIL]  $msg"" -ForegroundColor Red
+    Write-Host "[FAIL]  $msg" -ForegroundColor Red
 }
 
 # ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ Set-Location $RepoRoot
 Write-Step "Repository root: $RepoRoot"
 
 # ---------------------------------------------------------------------------
-# Find Visual Studio
+# Find Visual Studio via vswhere
 # ---------------------------------------------------------------------------
 Write-Step "Detecting Visual Studio installation..."
 
@@ -76,8 +76,8 @@ if (-not $Vswhere) {
     exit 1
 }
 
-# Prefer VS 2022, fall back to VS 2019
-$VsInstall = & $Vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+$VsInstall = & $Vswhere -latest -products * `
+    -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
     -property installationPath 2>$null | Select-Object -First 1
 
 if (-not $VsInstall) {
@@ -85,15 +85,16 @@ if (-not $VsInstall) {
     exit 1
 }
 
-# Determine generator string from VS version
-$VsVersion = & $Vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+$VsVersion = & $Vswhere -latest -products * `
+    -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
     -property installationVersion 2>$null | Select-Object -First 1
+
 $Major = [int]($VsVersion -split '\.')[0]
 $Generator = switch ($Major) {
     17 { 'Visual Studio 17 2022' }
     16 { 'Visual Studio 16 2019' }
     default {
-        Write-Fail "Unsupported VS version: $Major"
+        Write-Fail "Unsupported VS major version: $Major"
         exit 1
     }
 }
@@ -107,7 +108,7 @@ $BuildDir = Join-Path $RepoRoot "build\$Config"
 if ($Clean -and (Test-Path $BuildDir)) {
     Write-Step "Cleaning build directory..."
     Remove-Item $BuildDir -Recurse -Force
-    Write-OK "Cleaned."
+    Write-OK "Cleaned: $BuildDir"
 }
 
 # ---------------------------------------------------------------------------
@@ -117,25 +118,31 @@ $ToolchainArg = ''
 if ($VcpkgRoot -and (Test-Path $VcpkgRoot)) {
     $tcFile = Join-Path $VcpkgRoot 'scripts\buildsystems\vcpkg.cmake'
     if (Test-Path $tcFile) {
-        $ToolchainArg = "-DCMAKE_TOOLCHAIN_FILE=$($tcFile -replace '\\','/')"
+        $tcFileForward = $tcFile -replace '\\', '/'
+        $ToolchainArg = "-DCMAKE_TOOLCHAIN_FILE=$tcFileForward"
         Write-OK "vcpkg toolchain: $tcFile"
     }
 } else {
-    Write-Host "[INFO]  VCPKG_ROOT not set — building without vcpkg." -ForegroundColor Yellow
+    Write-Host "[INFO]  VCPKG_ROOT not set - building without vcpkg." -ForegroundColor Yellow
 }
 
 # ---------------------------------------------------------------------------
-# CMake Configure
+# Locate cmake.exe (prefer VS-bundled over system cmake)
 # ---------------------------------------------------------------------------
-Write-Step "Configuring (CMake)..."
 $cmakeExe = 'cmake'
-# Prefer CMake bundled with VS if system cmake is too old
 $BundledCMake = Join-Path $VsInstall `
     'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
 if (Test-Path $BundledCMake) {
     $cmakeExe = $BundledCMake
     Write-Host "[INFO]  Using bundled CMake: $cmakeExe" -ForegroundColor DarkGray
+} else {
+    Write-Host "[INFO]  Using system cmake (bundled not found at expected path)." -ForegroundColor DarkGray
 }
+
+# ---------------------------------------------------------------------------
+# CMake Configure
+# ---------------------------------------------------------------------------
+Write-Step "Configuring ($Config)..."
 
 $ConfigArgs = @(
     '-S', $RepoRoot,
@@ -177,7 +184,7 @@ $ExePath = $ExePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
 
 if (-not $ExePath) {
     Write-Host "[WARN]  EnjoyStick.exe not found in expected locations:" -ForegroundColor Yellow
-    $ExePaths | ForEach-Object { Write-Host "         $_" }
+    foreach ($p in $ExePaths) { Write-Host "         $p" }
 } else {
     Write-OK "Output: $ExePath"
     if ($Run) {
@@ -185,6 +192,8 @@ if (-not $ExePath) {
         Start-Process -FilePath $ExePath
         Write-OK "Launched."
     } else {
-        Write-Host ""`n  To run:  Start-Process '$ExePath'"`n" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "  To run:  Start-Process '$ExePath'" -ForegroundColor DarkGray
+        Write-Host ""
     }
 }
