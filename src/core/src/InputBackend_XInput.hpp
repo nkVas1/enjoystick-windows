@@ -1,5 +1,10 @@
 #pragma once
 
+// NOMINMAX prevents Windows.h from defining min/max macros that
+// conflict with std::min, std::max, std::clamp on MSVC.
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+
 #include <enjoystick/core/InputEngine.hpp>
 #include <enjoystick/core/DeadzoneFilter.hpp>
 #include <enjoystick/core/HapticsEngine.hpp>

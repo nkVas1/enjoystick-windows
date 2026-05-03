@@ -4,17 +4,24 @@ add_library(enjoystick_cursor STATIC
     src/VirtualMouse.cpp
 )
 
+target_compile_definitions(enjoystick_cursor PUBLIC
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+)
+
 target_include_directories(enjoystick_cursor
-    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+    PUBLIC  include
+    PRIVATE src
 )
 
-target_link_libraries(enjoystick_cursor
-    PUBLIC enjoystick_core
-)
-
+target_link_libraries(enjoystick_cursor PUBLIC enjoystick_core)
 target_compile_features(enjoystick_cursor PUBLIC cxx_std_20)
 
-set_target_properties(enjoystick_cursor PROPERTIES
-    CXX_EXTENSIONS OFF
-)
+if (MSVC)
+    target_compile_options(enjoystick_cursor PRIVATE
+        /W4
+        /permissive-
+        /Zc:__cplusplus
+        /utf-8
+    )
+endif()

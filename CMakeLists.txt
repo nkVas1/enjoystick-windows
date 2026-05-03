@@ -6,9 +6,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ---------------------------------------------------------------------------
-# vcpkg toolchain — optional, auto-detected from VCPKG_ROOT env var.
-# Never hard-coded here; let the user set VCPKG_ROOT or pass
-# -DCMAKE_TOOLCHAIN_FILE on the command line.
+# NOMINMAX + WIN32_LEAN_AND_MEAN globally for all targets in this project.
+# Prevents Windows.h min/max macros from conflicting with std:: equivalents.
+# ---------------------------------------------------------------------------
+add_compile_definitions(
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+)
+
+# ---------------------------------------------------------------------------
+# vcpkg toolchain - optional, auto-detected from VCPKG_ROOT env var.
 # ---------------------------------------------------------------------------
 if (NOT DEFINED CMAKE_TOOLCHAIN_FILE OR CMAKE_TOOLCHAIN_FILE STREQUAL "")
     if (DEFINED ENV{VCPKG_ROOT} AND NOT "$ENV{VCPKG_ROOT}" STREQUAL "")
@@ -17,7 +24,7 @@ if (NOT DEFINED CMAKE_TOOLCHAIN_FILE OR CMAKE_TOOLCHAIN_FILE STREQUAL "")
             CACHE STRING "vcpkg toolchain" FORCE)
         message(STATUS "[enjoystick] vcpkg toolchain: ${CMAKE_TOOLCHAIN_FILE}")
     else()
-        message(STATUS "[enjoystick] VCPKG_ROOT not set — building without vcpkg.")
+        message(STATUS "[enjoystick] VCPKG_ROOT not set - building without vcpkg.")
     endif()
 endif()
 

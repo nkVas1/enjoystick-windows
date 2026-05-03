@@ -2,26 +2,37 @@ cmake_minimum_required(VERSION 3.20)
 
 add_library(enjoystick_app STATIC
     src/Application.cpp
-    src/AutoStart.cpp
     src/SystemTray.cpp
+    src/AutoStart.cpp
+    src/KeyboardMapper.cpp
+    src/main.cpp
+)
+
+target_compile_definitions(enjoystick_app PUBLIC
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
 )
 
 target_include_directories(enjoystick_app
-    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+    PUBLIC  include
+    PRIVATE src
 )
 
-target_link_libraries(enjoystick_app
-    PUBLIC enjoystick_core
-    PUBLIC enjoystick_cursor
-    PUBLIC enjoystick_input
-    PUBLIC enjoystick_overlay
-    PUBLIC enjoystick_config
-    PRIVATE comctl32.lib
+target_link_libraries(enjoystick_app PUBLIC
+    enjoystick_core
+    enjoystick_cursor
+    enjoystick_input
+    enjoystick_overlay
+    enjoystick_config
 )
 
 target_compile_features(enjoystick_app PUBLIC cxx_std_20)
 
-set_target_properties(enjoystick_app PROPERTIES
-    CXX_EXTENSIONS OFF
-)
+if (MSVC)
+    target_compile_options(enjoystick_app PRIVATE
+        /W4
+        /permissive-
+        /Zc:__cplusplus
+        /utf-8
+    )
+endif()
