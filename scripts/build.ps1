@@ -1,199 +1,118 @@
-<#
-.SYNOPSIS
-    EnjoyStick Windows - one-click build and optional run script.
-
-.DESCRIPTION
-    Locates Visual Studio (2019 or 2022) automatically, configures the CMake
-    project with the Visual Studio generator (no Ninja required), builds, and
-    optionally launches the resulting EnjoyStick.exe.
-
-    Run from the repository root:
-        .\scripts\build.ps1
-        .\scripts\build.ps1 -Config Debug
-        .\scripts\build.ps1 -Config Release -Run
-        .\scripts\build.ps1 -Clean
-
-.PARAMETER Config
-    Build configuration: Release (default) or Debug.
-
-.PARAMETER Run
-    After a successful build, launch EnjoyStick.exe.
-
-.PARAMETER Clean
-    Delete the build directory before configuring.
-
-.PARAMETER VcpkgRoot
-    Optional path to a vcpkg installation. If omitted, the VCPKG_ROOT
-    environment variable is used. If neither is set, vcpkg is skipped.
-#>
 [CmdletBinding()]
 param(
     [ValidateSet('Release','Debug')]
-    [string]$Config    = 'Release',
-
+    [string]$Config = 'Release',
     [switch]$Run,
     [switch]$Clean,
-
     [string]$VcpkgRoot = $env:VCPKG_ROOT
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-function Write-Step([string]$msg) {
-    Write-Host ""`n[BUILD] $msg" -ForegroundColor Cyan
-}
-function Write-OK([string]$msg) {
-    Write-Host "[OK]    $msg" -ForegroundColor Green
-}
-function Write-Fail([string]$msg) {
-    Write-Host "[FAIL]  $msg" -ForegroundColor Red
-}
+function Step  { param([string]$m) Write-Host ('[BUILD] ' + $m) -ForegroundColor Cyan }
+function OK    { param([string]$m) Write-Host ('[OK]    ' + $m) -ForegroundColor Green }
+function Fail  { param([string]$m) Write-Host ('[FAIL]  ' + $m) -ForegroundColor Red }
+function Info  { param([string]$m) Write-Host ('[INFO]  ' + $m) -ForegroundColor DarkGray }
+function Warn  { param([string]$m) Write-Host ('[WARN]  ' + $m) -ForegroundColor Yellow }
 
-# ---------------------------------------------------------------------------
-# Locate repository root (script lives in /scripts)
-# ---------------------------------------------------------------------------
 $RepoRoot = Split-Path $PSScriptRoot -Parent
 Set-Location $RepoRoot
-Write-Step "Repository root: $RepoRoot"
+Step ('Repository root: ' + $RepoRoot)
 
-# ---------------------------------------------------------------------------
-# Find Visual Studio via vswhere
-# ---------------------------------------------------------------------------
-Write-Step "Detecting Visual Studio installation..."
-
+Step 'Detecting Visual Studio...'
 $VswherePaths = @(
-    "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe",
-    "${env:ProgramFiles}\Microsoft Visual Studio\Installer\vswhere.exe"
+    ($env:ProgramFiles + ' (x86)\Microsoft Visual Studio\Installer\vswhere.exe'),
+    ($env:ProgramFiles  + '\Microsoft Visual Studio\Installer\vswhere.exe')
 )
 $Vswhere = $VswherePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-
 if (-not $Vswhere) {
-    Write-Fail "vswhere.exe not found. Please install Visual Studio 2019 or 2022 Build Tools."
+    Fail 'vswhere.exe not found. Install Visual Studio 2019 or 2022 Build Tools.'
     exit 1
 }
 
-$VsInstall = & $Vswhere -latest -products * `
-    -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-    -property installationPath 2>$null | Select-Object -First 1
-
+$VsInstall = (& $Vswhere -latest -products '*' -requires 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' -property installationPath) | Select-Object -First 1
 if (-not $VsInstall) {
-    Write-Fail "No VS installation with C++ tools found."
+    Fail 'No VS with C++ tools found.'
     exit 1
 }
 
-$VsVersion = & $Vswhere -latest -products * `
-    -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-    -property installationVersion 2>$null | Select-Object -First 1
-
+$VsVersion = (& $Vswhere -latest -products '*' -requires 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' -property installationVersion) | Select-Object -First 1
 $Major = [int]($VsVersion -split '\.')[0]
-$Generator = switch ($Major) {
-    17 { 'Visual Studio 17 2022' }
-    16 { 'Visual Studio 16 2019' }
-    default {
-        Write-Fail "Unsupported VS major version: $Major"
-        exit 1
-    }
-}
-Write-OK "Found: $Generator  ($VsInstall)"
 
-# ---------------------------------------------------------------------------
-# Build directory
-# ---------------------------------------------------------------------------
-$BuildDir = Join-Path $RepoRoot "build\$Config"
+if ($Major -eq 17) { $Generator = 'Visual Studio 17 2022' }
+elseif ($Major -eq 16) { $Generator = 'Visual Studio 16 2019' }
+else { Fail ('Unsupported VS version: ' + $Major); exit 1 }
+
+OK ('Found: ' + $Generator + '  (' + $VsInstall + ')')
+
+$BuildDir = Join-Path $RepoRoot ('build\' + $Config)
 
 if ($Clean -and (Test-Path $BuildDir)) {
-    Write-Step "Cleaning build directory..."
+    Step 'Cleaning build directory...'
     Remove-Item $BuildDir -Recurse -Force
-    Write-OK "Cleaned: $BuildDir"
+    OK ('Cleaned: ' + $BuildDir)
 }
 
-# ---------------------------------------------------------------------------
-# vcpkg toolchain (optional)
-# ---------------------------------------------------------------------------
 $ToolchainArg = ''
 if ($VcpkgRoot -and (Test-Path $VcpkgRoot)) {
     $tcFile = Join-Path $VcpkgRoot 'scripts\buildsystems\vcpkg.cmake'
     if (Test-Path $tcFile) {
-        $tcFileForward = $tcFile -replace '\\', '/'
-        $ToolchainArg = "-DCMAKE_TOOLCHAIN_FILE=$tcFileForward"
-        Write-OK "vcpkg toolchain: $tcFile"
+        $ToolchainArg = '-DCMAKE_TOOLCHAIN_FILE=' + ($tcFile -replace '\\', '/')
+        OK ('vcpkg toolchain: ' + $tcFile)
     }
 } else {
-    Write-Host "[INFO]  VCPKG_ROOT not set - building without vcpkg." -ForegroundColor Yellow
+    Warn 'VCPKG_ROOT not set - building without vcpkg.'
 }
 
-# ---------------------------------------------------------------------------
-# Locate cmake.exe (prefer VS-bundled over system cmake)
-# ---------------------------------------------------------------------------
 $cmakeExe = 'cmake'
-$BundledCMake = Join-Path $VsInstall `
-    'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+$BundledCMake = Join-Path $VsInstall 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
 if (Test-Path $BundledCMake) {
     $cmakeExe = $BundledCMake
-    Write-Host "[INFO]  Using bundled CMake: $cmakeExe" -ForegroundColor DarkGray
+    Info ('Using bundled CMake: ' + $cmakeExe)
 } else {
-    Write-Host "[INFO]  Using system cmake (bundled not found at expected path)." -ForegroundColor DarkGray
+    Info 'Using system cmake.'
 }
 
-# ---------------------------------------------------------------------------
-# CMake Configure
-# ---------------------------------------------------------------------------
-Write-Step "Configuring ($Config)..."
-
+Step ('Configuring (' + $Config + ')...')
 $ConfigArgs = @(
     '-S', $RepoRoot,
     '-B', $BuildDir,
     '-G', $Generator,
     '-A', 'x64',
-    "-DCMAKE_BUILD_TYPE=$Config",
+    ('-DCMAKE_BUILD_TYPE=' + $Config),
     '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON',
     '-DENJOYSTICK_BUILD_TESTS=OFF'
 )
 if ($ToolchainArg) { $ConfigArgs += $ToolchainArg }
 
 & $cmakeExe @ConfigArgs
-if ($LASTEXITCODE -ne 0) {
-    Write-Fail "CMake configure failed (exit $LASTEXITCODE)."
-    exit $LASTEXITCODE
-}
-Write-OK "Configure complete."
+if ($LASTEXITCODE -ne 0) { Fail ('CMake configure failed (exit ' + $LASTEXITCODE + ').'); exit $LASTEXITCODE }
+OK 'Configure complete.'
 
-# ---------------------------------------------------------------------------
-# CMake Build
-# ---------------------------------------------------------------------------
-Write-Step "Building ($Config)..."
+Step ('Building (' + $Config + ')...')
 & $cmakeExe --build $BuildDir --config $Config --parallel
-if ($LASTEXITCODE -ne 0) {
-    Write-Fail "Build failed (exit $LASTEXITCODE)."
-    exit $LASTEXITCODE
-}
-Write-OK "Build complete."
+if ($LASTEXITCODE -ne 0) { Fail ('Build failed (exit ' + $LASTEXITCODE + ').'); exit $LASTEXITCODE }
+OK 'Build complete.'
 
-# ---------------------------------------------------------------------------
-# Locate output exe
-# ---------------------------------------------------------------------------
 $ExePaths = @(
-    (Join-Path $BuildDir "$Config\EnjoyStick.exe"),
+    (Join-Path $BuildDir ($Config + '\EnjoyStick.exe')),
     (Join-Path $BuildDir 'EnjoyStick.exe')
 )
 $ExePath = $ExePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
 
 if (-not $ExePath) {
-    Write-Host "[WARN]  EnjoyStick.exe not found in expected locations:" -ForegroundColor Yellow
-    foreach ($p in $ExePaths) { Write-Host "         $p" }
+    Warn 'EnjoyStick.exe not found in expected locations:'
+    foreach ($p in $ExePaths) { Write-Host ('         ' + $p) }
 } else {
-    Write-OK "Output: $ExePath"
+    OK ('Output: ' + $ExePath)
     if ($Run) {
-        Write-Step "Launching EnjoyStick..."
+        Step 'Launching EnjoyStick...'
         Start-Process -FilePath $ExePath
-        Write-OK "Launched."
+        OK 'Launched.'
     } else {
-        Write-Host ""
-        Write-Host "  To run:  Start-Process '$ExePath'" -ForegroundColor DarkGray
-        Write-Host ""
+        Write-Host ''
+        Write-Host ('  To run:  Start-Process ' + $ExePath) -ForegroundColor DarkGray
+        Write-Host ''
     }
 }
