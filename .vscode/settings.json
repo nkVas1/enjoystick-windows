@@ -1,0 +1,30 @@
+{
+  // Tell CMake Tools which preset to use by default in VS Code.
+  // This uses the Visual Studio 16 2019 generator — no Ninja required.
+  "cmake.configureOnOpen": false,
+  "cmake.defaultVariants": {},
+  "cmake.preferredGenerators": [
+    "Visual Studio 16 2019",
+    "Visual Studio 17 2022"
+  ],
+  // Do NOT pass a toolchain file automatically — CMakeLists.txt handles it.
+  "cmake.configureArgs": [
+    "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+  ],
+  "cmake.buildArgs": [
+    "--parallel"
+  ],
+  // C/C++ IntelliSense
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "C_Cpp.default.cppStandard": "c++20",
+  // Editor
+  "editor.formatOnSave": true,
+  "[cpp]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools"
+  },
+  // Hide generated/build artefacts from the Explorer tree
+  "files.exclude": {
+    "**/build": true,
+    "**/.cache": true
+  }
+}
