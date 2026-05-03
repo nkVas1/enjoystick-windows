@@ -1,345 +1,264 @@
-#include <enjoystick/overlay/OverlayWindow.hpp>
+#include "OverlayWindow_Impl.hpp"
 
-#include <stdexcept>
-#include <cmath>
-
-#pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "dcomp.lib")
 
+#include <stdexcept>
+#include <chrono>
+
 namespace enjoystick::overlay {
 
-static constexpr wchar_t kWindowClass[] = L"EnjoyStickOverlay";
-static constexpr wchar_t kWindowTitle[] = L"Enjoystick Overlay";
-
 // ---------------------------------------------------------------------------
-// Construction / Destruction
+// Factory
 // ---------------------------------------------------------------------------
 
-OverlayWindow::OverlayWindow(Config config)
-    : m_config(std::move(config)) {}
+std::unique_ptr<OverlayWindow> OverlayWindow::Create(Config config) {
+    return std::make_unique<OverlayWindowImpl>(std::move(config));
+}
 
-OverlayWindow::~OverlayWindow() {
-    if (m_hwnd) {
-        DestroyWindow(m_hwnd);
-        UnregisterClassW(kWindowClass, m_config.hInstance);
+// ---------------------------------------------------------------------------
+// Impl — construction / destruction
+// ---------------------------------------------------------------------------
+
+OverlayWindowImpl::OverlayWindowImpl(Config config)
+    : m_config(std::move(config)) {
+    // Pre-size state buffers
+    m_stateBuffers[0] = {};
+    m_stateBuffers[1] = {};
+}
+
+OverlayWindowImpl::~OverlayWindowImpl() {
+    Hide();
+}
+
+// ---------------------------------------------------------------------------
+// Show / Hide
+// ---------------------------------------------------------------------------
+
+void OverlayWindowImpl::Show() {
+    if (m_running.exchange(true)) return;  // already running
+
+    CreateWindowAndD2D();
+    m_shown = true;
+
+    m_renderThread = std::thread([this] { RenderLoop(); });
+}
+
+void OverlayWindowImpl::Hide() {
+    if (!m_running.exchange(false)) return;
+    if (m_renderThread.joinable()) m_renderThread.join();
+    DestroyWindowAndD2D();
+    m_shown = false;
+}
+
+bool OverlayWindowImpl::IsShown() const noexcept { return m_shown.load(); }
+HWND__* OverlayWindowImpl::GetHWND() const noexcept { return m_hwnd; }
+RadialMenu& OverlayWindowImpl::GetRadialMenu() { return m_radialMenu; }
+
+// ---------------------------------------------------------------------------
+// PostState — lock-free double-buffer swap
+// ---------------------------------------------------------------------------
+
+void OverlayWindowImpl::PostState(const ControllerState& state) {
+    const int next = 1 - m_activeBuffer;
+    m_stateBuffers[next] = state;
+    // Release-store: render thread reads with acquire
+    m_pendingState.store(&m_stateBuffers[next], std::memory_order_release);
+}
+
+// ---------------------------------------------------------------------------
+// ShowToast
+// ---------------------------------------------------------------------------
+
+void OverlayWindowImpl::ShowToast(std::wstring message, uint32_t durationMs) {
+    std::lock_guard lock(m_toastMutex);
+    m_pendingToasts.push({std::move(message), durationMs, 0.0f});
+}
+
+// ---------------------------------------------------------------------------
+// Window + D2D setup
+// ---------------------------------------------------------------------------
+
+void OverlayWindowImpl::CreateWindowAndD2D() {
+    // Enumerate monitors to find the target one
+    struct MonitorEnum {
+        uint32_t target;
+        uint32_t current = 0;
+        HMONITOR result  = nullptr;
+        RECT     rect    = {};
+    } ctx{m_config.monitorIndex};
+
+    EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR hmon, HDC, LPRECT rc, LPARAM lp) -> BOOL {
+        auto& e = *reinterpret_cast<MonitorEnum*>(lp);
+        if (e.current++ == e.target) { e.result = hmon; e.rect = *rc; return FALSE; }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&ctx));
+
+    if (!ctx.result) {
+        // Fallback to primary
+        ctx.rect = { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
     }
-}
 
-// ---------------------------------------------------------------------------
-// Initialize
-// ---------------------------------------------------------------------------
+    m_monitor = ctx.result;
+    m_monitorRect = { ctx.rect.left, ctx.rect.top, ctx.rect.right, ctx.rect.bottom };
 
-bool OverlayWindow::Initialize() {
-    return InitWindow() && InitD3D() && InitD2D() && InitDComp() && InitDWrite();
-}
+    // DPI
+    const UINT dpi = GetDpiForSystem();
+    m_dpiScale = static_cast<float>(dpi) / 96.0f;
 
-bool OverlayWindow::InitWindow() {
-    WNDCLASSEXW wc{};
+    // Register window class
+    WNDCLASSEXW wc = {};
     wc.cbSize        = sizeof(wc);
-    wc.lpfnWndProc   = WndProc;
-    wc.hInstance     = m_config.hInstance;
-    wc.lpszClassName = kWindowClass;
     wc.style         = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc   = WndProc;
+    wc.hInstance     = GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"EnjoyStickOverlay";
     RegisterClassExW(&wc);
 
-    const int sw = GetSystemMetrics(SM_CXSCREEN);
-    const int sh = GetSystemMetrics(SM_CYSCREEN);
-
     m_hwnd = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
-        kWindowClass, kWindowTitle,
+        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+        L"EnjoyStickOverlay", L"EnjoyStick",
         WS_POPUP,
-        0, 0, sw, sh,
-        nullptr, nullptr, m_config.hInstance, this);
+        ctx.rect.left, ctx.rect.top,
+        m_monitorRect.Width(), m_monitorRect.Height(),
+        nullptr, nullptr, wc.hInstance, this);
 
-    if (!m_hwnd) return false;
+    if (!m_hwnd) throw std::runtime_error("Failed to create overlay HWND");
 
-    // Transparent layered window
     SetLayeredWindowAttributes(m_hwnd, 0, 255, LWA_ALPHA);
     ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
-    return true;
-}
 
-bool OverlayWindow::InitD3D() {
-    DXGI_SWAP_CHAIN_DESC1 scd{};
-    scd.Format      = DXGI_FORMAT_B8G8R8A8_UNORM;
-    scd.SampleDesc  = {1, 0};
-    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    scd.BufferCount = 2;
-    scd.SwapEffect  = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
-    scd.AlphaMode   = DXGI_ALPHA_MODE_PREMULTIPLIED;
-    scd.Width       = static_cast<UINT>(GetSystemMetrics(SM_CXSCREEN));
-    scd.Height      = static_cast<UINT>(GetSystemMetrics(SM_CYSCREEN));
-
-    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+    // Create D2D factory
+    D2D1_FACTORY_OPTIONS opts{};
 #ifdef _DEBUG
-    flags |= D3D11_CREATE_DEVICE_DEBUG;
+    opts.debugLevel = D2D1_DEBUG_LEVEL_INFORMATION;
 #endif
+    D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED,
+                      __uuidof(ID2D1Factory1), &opts,
+                      reinterpret_cast<void**>(m_d2dFactory.GetAddressOf()));
 
-    ComPtr<ID3D11DeviceContext> ctx;
-    D3D_FEATURE_LEVEL fl;
-    HRESULT hr = D3D11CreateDevice(
-        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
-        nullptr, 0, D3D11_SDK_VERSION,
-        &m_d3dDevice, &fl, &ctx);
-    if (FAILED(hr)) return false;
-
-    ComPtr<IDXGIDevice1> dxgiDev;
-    m_d3dDevice.As(&dxgiDev);
-    ComPtr<IDXGIAdapter> adapter;
-    dxgiDev->GetAdapter(&adapter);
-    ComPtr<IDXGIFactory2> factory;
-    adapter->GetParent(IID_PPV_ARGS(&factory));
-
-    hr = factory->CreateSwapChainForComposition(m_d3dDevice.Get(), &scd, nullptr, &m_swapChain);
-    return SUCCEEDED(hr);
+    // DWrite
+    DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
+                        __uuidof(IDWriteFactory),
+                        reinterpret_cast<IUnknown**>(m_dwriteFactory.GetAddressOf()));
 }
 
-bool OverlayWindow::InitD2D() {
-    HRESULT hr = D2D1CreateFactory(
-        D2D1_FACTORY_TYPE_SINGLE_THREADED,
-        IID_PPV_ARGS(&m_d2dFactory));
-    if (FAILED(hr)) return false;
-
-    ComPtr<IDXGIDevice> dxgiDev;
-    m_d3dDevice.As(&dxgiDev);
-    hr = m_d2dFactory->CreateDevice(dxgiDev.Get(), &m_d2dDevice);
-    if (FAILED(hr)) return false;
-
-    hr = m_d2dDevice->CreateDeviceContext(
-        D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
-        reinterpret_cast<ID2D1DeviceContext**>(m_d2dContext.GetAddressOf()));
-    if (FAILED(hr)) return false;
-
-    // Get back-buffer surface and bind as D2D render target
-    ComPtr<IDXGISurface2> surface;
-    m_swapChain->GetBuffer(0, IID_PPV_ARGS(&surface));
-
-    D2D1_BITMAP_PROPERTIES1 bp{};
-    bp.pixelFormat   = {DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED};
-    bp.bitmapOptions = D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW;
-    ComPtr<ID2D1Bitmap1> bmp;
-    hr = m_d2dContext->CreateBitmapFromDxgiSurface(surface.Get(), &bp, &bmp);
-    if (FAILED(hr)) return false;
-    m_d2dContext->SetTarget(bmp.Get());
-
-    // Brushes
-    m_d2dContext->CreateSolidColorBrush({0.07f, 0.07f, 0.09f, 0.85f}, &m_brushHUDBg);
-    m_d2dContext->CreateSolidColorBrush({0.95f, 0.95f, 0.97f, 1.00f}, &m_brushHUDText);
-    m_d2dContext->CreateSolidColorBrush({0.05f, 0.05f, 0.07f, 0.92f}, &m_brushToastBg);
-    m_d2dContext->CreateSolidColorBrush({0.95f, 0.95f, 0.97f, 1.00f}, &m_brushToastText);
-    m_d2dContext->CreateSolidColorBrush({0.18f, 0.52f, 1.00f, 1.00f}, &m_brushAccent);  // Electric blue
-    return true;
-}
-
-bool OverlayWindow::InitDComp() {
-    ComPtr<IDXGIDevice> dxgiDev;
-    m_d3dDevice.As(&dxgiDev);
-    HRESULT hr = DCompositionCreateDevice(dxgiDev.Get(), IID_PPV_ARGS(&m_dcompDevice));
-    if (FAILED(hr)) return false;
-
-    hr = m_dcompDevice->CreateTargetForHwnd(m_hwnd, TRUE, &m_dcompTarget);
-    if (FAILED(hr)) return false;
-
-    hr = m_dcompDevice->CreateVisual(&m_dcompVisual);
-    if (FAILED(hr)) return false;
-
-    m_dcompVisual->SetContent(m_swapChain.Get());
-    m_dcompTarget->SetRoot(m_dcompVisual.Get());
-    m_dcompDevice->Commit();
-    return true;
-}
-
-bool OverlayWindow::InitDWrite() {
-    HRESULT hr = DWriteCreateFactory(
-        DWRITE_FACTORY_TYPE_SHARED,
-        __uuidof(IDWriteFactory7),
-        reinterpret_cast<IUnknown**>(m_dwFactory.GetAddressOf()));
-    if (FAILED(hr)) return false;
-
-    m_dwFactory->CreateTextFormat(
-        L"Segoe UI Variable", nullptr,
-        DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-        14.0f, L"en-US", &m_fontHUD);
-
-    m_dwFactory->CreateTextFormat(
-        L"Segoe UI Variable", nullptr,
-        DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-        13.0f, L"en-US", &m_fontToast);
-    return true;
-}
-
-// ---------------------------------------------------------------------------
-// Render
-// ---------------------------------------------------------------------------
-
-void OverlayWindow::Render() {
-    if (!m_d2dContext) return;
-
-    // Compute delta time
-    LARGE_INTEGER qpc, freq;
-    QueryPerformanceCounter(&qpc);
-    QueryPerformanceFrequency(&freq);
-    const uint64_t now = static_cast<uint64_t>(qpc.QuadPart);
-    const float dt = (m_lastRenderTick > 0)
-        ? static_cast<float>(now - m_lastRenderTick) / static_cast<float>(freq.QuadPart)
-        : 0.0f;
-    m_lastRenderTick = now;
-
-    // Tick toast timer
-    if (m_toastRemainingMs > 0) {
-        const uint32_t dtMs = static_cast<uint32_t>(dt * 1000.0f);
-        m_toastRemainingMs = (dtMs >= m_toastRemainingMs) ? 0 : m_toastRemainingMs - dtMs;
-    }
-
-    m_d2dContext->BeginDraw();
-    m_d2dContext->Clear({0.0f, 0.0f, 0.0f, 0.0f}); // fully transparent
-
-    if (m_hudVisible)        DrawHUD(m_d2dContext.Get());
-    if (m_toastRemainingMs)  DrawToast(m_d2dContext.Get());
-    if (m_radialMenuVisible) DrawRadialMenuBackground(m_d2dContext.Get());
-
-    m_d2dContext->EndDraw();
-    m_swapChain->Present(1, 0);
-    m_dcompDevice->Commit();
-}
-
-// ---------------------------------------------------------------------------
-// Draw helpers
-// ---------------------------------------------------------------------------
-
-void OverlayWindow::DrawHUD(ID2D1DeviceContext5* dc) {
-    const float sw = static_cast<float>(GetSystemMetrics(SM_CXSCREEN));
-    constexpr float kHudH  = 36.0f;
-    constexpr float kHudW  = 320.0f;
-    constexpr float kPad   = 12.0f;
-    constexpr float kRadius = 8.0f;
-
-    const D2D1_ROUNDED_RECT rrect = {
-        {sw - kHudW - kPad, kPad, sw - kPad, kPad + kHudH},
-        kRadius, kRadius
-    };
-
-    dc->FillRoundedRectangle(rrect, m_brushHUDBg.Get());
-
-    // Accent left stripe
-    const D2D1_ROUNDED_RECT accent = {
-        {rrect.rect.left, rrect.rect.top, rrect.rect.left + 4.0f, rrect.rect.bottom},
-        2.0f, 2.0f
-    };
-    dc->FillRoundedRectangle(accent, m_brushAccent.Get());
-
-    // Mode label
-    const std::wstring label = L"\U0001F3AE  " + m_modeLabel;
-    dc->DrawText(
-        label.c_str(), static_cast<UINT32>(label.size()),
-        m_fontHUD.Get(),
-        {rrect.rect.left + 14.0f, rrect.rect.top + 8.0f,
-         rrect.rect.right - 8.0f, rrect.rect.bottom},
-        m_brushHUDText.Get());
-}
-
-void OverlayWindow::DrawToast(ID2D1DeviceContext5* dc) {
-    const float sw = static_cast<float>(GetSystemMetrics(SM_CXSCREEN));
-    const float sh = static_cast<float>(GetSystemMetrics(SM_CYSCREEN));
-    constexpr float kW = 340.0f, kH = 52.0f, kPad = 16.0f, kR = 10.0f;
-
-    const float opacity = std::min(1.0f,
-        static_cast<float>(m_toastRemainingMs) / (m_config.fadeDurationMs * 0.001f * 1000.0f));
-
-    dc->SetTransform(D2D1::Matrix3x2F::Identity());
-
-    const D2D1_ROUNDED_RECT rr = {
-        {sw - kW - kPad, sh - kH - kPad, sw - kPad, sh - kPad},
-        kR, kR
-    };
-
-    // Fade via opacity layer
-    dc->BeginLayer(D2D1::LayerParameters(), nullptr);
-    m_brushToastBg->SetOpacity(opacity * 0.92f);
-    dc->FillRoundedRectangle(rr, m_brushToastBg.Get());
-    m_brushToastText->SetOpacity(opacity);
-    dc->DrawText(
-        m_toastMessage.c_str(), static_cast<UINT32>(m_toastMessage.size()),
-        m_fontToast.Get(),
-        {rr.rect.left + kPad, rr.rect.top + 15.0f, rr.rect.right - kPad, rr.rect.bottom},
-        m_brushToastText.Get());
-    dc->EndLayer();
-    m_brushToastBg->SetOpacity(1.0f);
-    m_brushToastText->SetOpacity(1.0f);
-}
-
-void OverlayWindow::DrawRadialMenuBackground(ID2D1DeviceContext5* dc) {
-    const float sw = static_cast<float>(GetSystemMetrics(SM_CXSCREEN));
-    const float sh = static_cast<float>(GetSystemMetrics(SM_CYSCREEN));
-
-    // Dim backdrop
-    ComPtr<ID2D1SolidColorBrush> dimBrush;
-    dc->CreateSolidColorBrush({0.0f, 0.0f, 0.0f, 0.55f}, &dimBrush);
-    dc->FillRectangle({0, 0, sw, sh}, dimBrush.Get());
-
-    // Centre circle placeholder (full radial rendering in OverlayRenderer)
-    ComPtr<ID2D1SolidColorBrush> circleBrush;
-    dc->CreateSolidColorBrush({0.07f, 0.07f, 0.10f, 0.95f}, &circleBrush);
-    dc->FillEllipse({{sw * 0.5f, sh * 0.5f}, 180.0f, 180.0f}, circleBrush.Get());
-}
-
-// ---------------------------------------------------------------------------
-// Public control
-// ---------------------------------------------------------------------------
-
-void OverlayWindow::ShowHUD(bool visible) { m_hudVisible = visible; }
-
-void OverlayWindow::ShowToast(const std::wstring& message) {
-    m_toastMessage    = message;
-    m_toastRemainingMs = m_config.toastDurationMs;
-}
-
-void OverlayWindow::ShowRadialMenu(bool visible) { m_radialMenuVisible = visible; }
-
-void OverlayWindow::SetModeLabel(const std::wstring& label) { m_modeLabel = label; }
-
-void OverlayWindow::SetControllerConnected(uint8_t index, bool connected) {
-    if (index < 4) m_controllerConnected[index] = connected;
-}
-
-bool OverlayWindow::PumpMessages() {
-    MSG msg{};
-    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-        if (msg.message == WM_QUIT) return false;
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
-    return true;
+void OverlayWindowImpl::DestroyWindowAndD2D() {
+    m_d2dContext.Reset();
+    m_d2dFactory.Reset();
+    m_dwriteFactory.Reset();
+    m_dcompVisual.Reset();
+    m_dcompTarget.Reset();
+    m_dcompDevice.Reset();
+    if (m_hwnd) { DestroyWindow(m_hwnd); m_hwnd = nullptr; }
 }
 
 // ---------------------------------------------------------------------------
 // WndProc
 // ---------------------------------------------------------------------------
 
-LRESULT CALLBACK OverlayWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    OverlayWindow* self = nullptr;
+LRESULT CALLBACK OverlayWindowImpl::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_NCCREATE) {
         auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
-        self = static_cast<OverlayWindow*>(cs->lpCreateParams);
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
-    } else {
-        self = reinterpret_cast<OverlayWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                          reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
     }
-    if (self) return self->HandleMessage(msg, wp, lp);
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-LRESULT OverlayWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
-    switch (msg) {
-        case WM_DESTROY:
-            PostQuitMessage(0);
-            return 0;
-        default:
-            return DefWindowProcW(m_hwnd, msg, wp, lp);
+// ---------------------------------------------------------------------------
+// Render loop
+// ---------------------------------------------------------------------------
+
+void OverlayWindowImpl::RenderLoop() {
+    const float targetMs = 1000.0f / static_cast<float>(m_config.renderHz);
+    using Clock = std::chrono::high_resolution_clock;
+    auto prev   = Clock::now();
+
+    while (m_running.load(std::memory_order_relaxed)) {
+        const auto now   = Clock::now();
+        const float dt   = std::chrono::duration<float, std::milli>(now - prev).count();
+        prev             = now;
+
+        // Consume pending state
+        if (auto* p = m_pendingState.exchange(nullptr, std::memory_order_acquire)) {
+            m_lastState    = *p;
+            m_activeBuffer = 1 - m_activeBuffer;
+        }
+
+        // Consume pending toasts
+        {
+            std::lock_guard lock(m_toastMutex);
+            while (!m_pendingToasts.empty()) {
+                m_activeToasts.push_back(std::move(m_pendingToasts.front()));
+                m_pendingToasts.pop();
+            }
+        }
+
+        RenderFrame(dt * 0.001f);
+
+        // Cap to target rate
+        const float elapsed = std::chrono::duration<float, std::milli>(
+            Clock::now() - prev).count();
+        if (elapsed < targetMs) {
+            const auto sleepMs = static_cast<DWORD>(targetMs - elapsed);
+            if (sleepMs > 0) Sleep(sleepMs);
+        }
     }
+}
+
+void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
+    if (!m_hwnd) return;
+
+    // Lightweight: use a GDI-compatible render target for the layered window
+    // (full DirectComposition swap chain is Phase 2 polish)
+    PAINTSTRUCT ps;
+    HDC hdc = GetDC(m_hwnd);
+    if (!hdc) return;
+
+    RECT wr;
+    GetClientRect(m_hwnd, &wr);
+    const int w = wr.right, h = wr.bottom;
+    if (w == 0 || h == 0) { ReleaseDC(m_hwnd, hdc); return; }
+
+    // Create a D2D render target backed by a DC
+    Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> rt;
+    D2D1_RENDER_TARGET_PROPERTIES rtp = D2D1::RenderTargetProperties(
+        D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+    m_d2dFactory->CreateDCRenderTarget(&rtp, rt.GetAddressOf());
+    if (!rt) { ReleaseDC(m_hwnd, hdc); return; }
+
+    rt->BindDC(hdc, &wr);
+    rt->BeginDraw();
+    rt->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));  // Fully transparent
+
+    m_radialMenu.Update(m_lastState, deltaSeconds);
+    m_radialMenu.Draw(rt.Get(), m_dpiScale);
+
+    DrawActiveIndicator(rt.Get());
+    DrawToasts(rt.Get(), deltaSeconds);
+
+    rt->EndDraw();
+    ReleaseDC(m_hwnd, hdc);
+}
+
+void OverlayWindowImpl::DrawActiveIndicator(ID2D1DeviceContext* /*dc*/) {
+    // Phase 2: draw a small glowing dot in the bottom-right corner
+    // indicating active controller + current mode (cursor / keyboard / gamepad)
+}
+
+void OverlayWindowImpl::DrawToasts(ID2D1DeviceContext* /*dc*/, float deltaSeconds) {
+    auto& toasts = m_activeToasts;
+    for (auto& t : toasts) t.elapsed += deltaSeconds * 1000.0f;
+    toasts.erase(
+        std::remove_if(toasts.begin(), toasts.end(),
+            [](const ToastNotification& t) {
+                return t.elapsed >= static_cast<float>(t.durationMs);
+            }),
+        toasts.end());
+    // Phase 2: render slide-in / fade-out toast cards with DWrite text
 }
 
 } // namespace enjoystick::overlay

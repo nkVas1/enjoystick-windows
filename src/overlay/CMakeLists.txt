@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.25)
 
 add_library(enjoystick_overlay STATIC
-    src/RadialMenu.cpp
     src/OverlayWindow.cpp
+    src/RadialMenu.cpp
 )
 
 target_include_directories(enjoystick_overlay
@@ -13,10 +13,12 @@ target_include_directories(enjoystick_overlay
 target_link_libraries(enjoystick_overlay
     PUBLIC enjoystick_core
     PUBLIC enjoystick_cursor
+    PRIVATE d2d1 dwrite dcomp
 )
 
 target_compile_features(enjoystick_overlay PUBLIC cxx_std_20)
 
 set_target_properties(enjoystick_overlay PROPERTIES
     CXX_EXTENSIONS OFF
+    POSITION_INDEPENDENT_CODE ON
 )

@@ -1,123 +1,78 @@
 #pragma once
 
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <Windows.h>
-#include <dcomp.h>
-#include <d3d11.h>
-#include <d2d1_3.h>
-#include <dwrite_3.h>
-#include <wrl/client.h>
-
 #include <enjoystick/shared/Types.hpp>
-#include <functional>
-#include <string>
+#include <enjoystick/overlay/RadialMenu.hpp>
 #include <memory>
-#include <atomic>
+#include <string>
+#include <functional>
+#include <cstdint>
+
+// Forward declarations to avoid pulling Windows headers into user code
+struct HWND__;
+struct ID2D1Factory;
+struct IDWriteFactory;
 
 namespace enjoystick::overlay {
 
-using Microsoft::WRL::ComPtr;
-
 ///
-/// OverlayWindow — a layered, click-through Win32 window rendered via
-/// Direct2D + DirectComposition for hardware-accelerated, tear-free compositing.
+/// OverlayWindow — a per-monitor layered window rendered with Direct2D.
 ///
-/// Features:
-///   - Always-on-top, WS_EX_LAYERED | WS_EX_TRANSPARENT — never captures mouse/keyboard focus
-///   - Animated opacity: fade-in on show, fade-out on hide (DirectComposition animation)
-///   - HUD bar: controller icon, battery, current mode label
-///   - Notification toast: bottom-right corner, auto-dismisses after N seconds
-///   - Radial menu canvas: centre-screen, delegates drawing to IRadialMenuRenderer
+/// Architecture:
+///   - HWND created with WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST
+///   - DirectComposition for per-pixel alpha without GDI overhead
+///   - Dedicated render thread; Update() is called from the input thread
+///     via a lock-free state snapshot.
+///   - Supports multi-monitor setups: one OverlayWindow per HMONITOR
+///
+/// Usage:
+///   auto overlay = OverlayWindow::Create();
+///   overlay->Show();
+///   // from input callback:
+///   overlay->PostState(state);
 ///
 class OverlayWindow {
 public:
     struct Config {
-        float   hudOpacity       = 0.88f;   ///< HUD bar opacity
-        float   fadeDurationMs   = 180.0f;  ///< Fade in/out duration
-        uint32_t toastDurationMs = 3000;    ///< Toast auto-dismiss
-        HINSTANCE hInstance      = nullptr;
+        /// Monitor index (0 = primary).
+        uint32_t monitorIndex = 0;
+
+        /// Target render rate in Hz (independent of input polling).
+        uint32_t renderHz = 60;
+
+        /// Show controller connection/disconnection toast notifications.
+        bool showConnectionToasts = true;
+
+        /// Duration a toast notification is visible (ms).
+        uint32_t toastDurationMs = 2500;
+
+        /// Show a small HUD indicator in the corner when a controller is active.
+        bool showActiveIndicator = true;
     };
 
-    explicit OverlayWindow(Config config);
-    ~OverlayWindow();
+    static std::unique_ptr<OverlayWindow> Create(Config config = {});
 
-    // Non-copyable, non-movable (owns HWND and COM resources)
-    OverlayWindow(const OverlayWindow&)            = delete;
-    OverlayWindow& operator=(const OverlayWindow&) = delete;
+    virtual ~OverlayWindow() = default;
 
-    /// Create and show the window. Call from main/UI thread.
-    bool Initialize();
+    /// Start the render thread and show the window.
+    virtual void Show() = 0;
 
-    /// Pump the message loop for this window. Returns false when WM_QUIT is posted.
-    bool PumpMessages();
+    /// Hide the overlay and stop rendering.
+    virtual void Hide() = 0;
 
-    /// Show/hide the HUD bar.
-    void ShowHUD(bool visible);
+    /// Post a new controller state (thread-safe, lock-free).
+    virtual void PostState(const ControllerState& state) = 0;
 
-    /// Show a notification toast.
-    void ShowToast(const std::wstring& message);
+    /// Access the radial menu for programmatic control.
+    virtual RadialMenu& GetRadialMenu() = 0;
 
-    /// Show/hide the radial menu canvas.
-    void ShowRadialMenu(bool visible);
+    /// Trigger a toast notification (thread-safe).
+    virtual void ShowToast(std::wstring message, uint32_t durationMs = 2500) = 0;
 
-    /// Update the mode label shown in the HUD (e.g., "Cursor" / "Gamepad" / "Media").
-    void SetModeLabel(const std::wstring& label);
+    /// True if the overlay window is currently shown.
+    [[nodiscard]] virtual bool IsShown() const noexcept = 0;
 
-    /// Update controller connection indicator.
-    void SetControllerConnected(uint8_t index, bool connected);
-
-    [[nodiscard]] HWND GetHWND() const noexcept { return m_hwnd; }
-
-    /// Trigger a single repaint frame (call from render loop).
-    void Render();
-
-private:
-    bool InitWindow();
-    bool InitD3D();
-    bool InitD2D();
-    bool InitDComp();
-    bool InitDWrite();
-
-    void DrawHUD(ID2D1DeviceContext5* dc);
-    void DrawToast(ID2D1DeviceContext5* dc);
-    void DrawRadialMenuBackground(ID2D1DeviceContext5* dc);
-
-    static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
-    LRESULT HandleMessage(UINT msg, WPARAM wp, LPARAM lp);
-
-    Config m_config;
-    HWND   m_hwnd = nullptr;
-
-    // D3D / D2D / DWrite / DComp
-    ComPtr<ID3D11Device>            m_d3dDevice;
-    ComPtr<IDXGISwapChain1>         m_swapChain;
-    ComPtr<ID2D1Factory7>           m_d2dFactory;
-    ComPtr<ID2D1Device6>            m_d2dDevice;
-    ComPtr<ID2D1DeviceContext5>     m_d2dContext;
-    ComPtr<IDWriteFactory7>         m_dwFactory;
-    ComPtr<IDWriteTextFormat>       m_fontHUD;
-    ComPtr<IDWriteTextFormat>       m_fontToast;
-    ComPtr<IDCompositionDevice>     m_dcompDevice;
-    ComPtr<IDCompositionTarget>     m_dcompTarget;
-    ComPtr<IDCompositionVisual>     m_dcompVisual;
-
-    // Brushes
-    ComPtr<ID2D1SolidColorBrush> m_brushHUDBg;
-    ComPtr<ID2D1SolidColorBrush> m_brushHUDText;
-    ComPtr<ID2D1SolidColorBrush> m_brushToastBg;
-    ComPtr<ID2D1SolidColorBrush> m_brushToastText;
-    ComPtr<ID2D1SolidColorBrush> m_brushAccent;
-
-    // State
-    bool         m_hudVisible          = false;
-    bool         m_radialMenuVisible   = false;
-    std::wstring m_modeLabel           = L"Cursor";
-    std::wstring m_toastMessage;
-    uint32_t     m_toastRemainingMs    = 0;
-    bool         m_controllerConnected[4] = {};
-
-    uint64_t     m_lastRenderTick      = 0;
+    /// Returns the native HWND (cast from HWND__*).
+    [[nodiscard]] virtual HWND__* GetHWND() const noexcept = 0;
 };
 
 } // namespace enjoystick::overlay
