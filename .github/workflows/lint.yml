@@ -2,21 +2,26 @@ name: Lint
 
 on:
   push:
-    branches: [main, 'feat/**']
+    branches: [ main ]
   pull_request:
-    branches: [main]
+    branches: [ main ]
 
 jobs:
   clang-format:
     name: clang-format check
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Install clang-format
-        run: choco install llvm --version 17.0.6 -y
+        run: sudo apt-get install -y clang-format-17
+
       - name: Check formatting
         run: |
-          $files = Get-ChildItem -Recurse -Include *.cpp,*.hpp src,tests
-          foreach ($f in $files) {
-            clang-format --dry-run --Werror $f.FullName
-          }
+          find src -name '*.cpp' -o -name '*.hpp' | \
+          xargs clang-format-17 --dry-run --Werror --style=file 2>&1 | \
+          tee /tmp/fmt.txt
+          if [ -s /tmp/fmt.txt ]; then
+            echo "::error::Formatting issues found. Run clang-format to fix."
+            exit 1
+          fi

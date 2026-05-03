@@ -1,0 +1,49 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-windows:
+    name: MSVC x64 (${{ matrix.config }})
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        config: [Debug, Release]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up MSVC
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+          C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+        shell: cmd
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64 \
+            -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake \
+            -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+        shell: bash
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.config }} --parallel
+        shell: bash
+
+      - name: Upload artifact
+        if: matrix.config == 'Release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: EnjoyStick-Release
+          path: build/Release/EnjoyStick.exe
+          if-no-files-found: warn
