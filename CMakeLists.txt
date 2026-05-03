@@ -1,50 +1,53 @@
-# Minimum set to 3.20 to support the CMake bundled with VS 2019 Build Tools.
-# All features we use (C++20, target_link_libraries, generator expressions) are
-# available since CMake 3.14; 3.20 adds the FILE_SET feature we may use later.
 cmake_minimum_required(VERSION 3.20)
 project(enjoystick-windows VERSION 0.1.0 LANGUAGES CXX)
 
-# ─── C++ standard ──────────────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# ─── Compiler flags ────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# vcpkg toolchain — optional, auto-detected from VCPKG_ROOT env var.
+# Never hard-coded here; let the user set VCPKG_ROOT or pass
+# -DCMAKE_TOOLCHAIN_FILE on the command line.
+# ---------------------------------------------------------------------------
+if (NOT DEFINED CMAKE_TOOLCHAIN_FILE OR CMAKE_TOOLCHAIN_FILE STREQUAL "")
+    if (DEFINED ENV{VCPKG_ROOT} AND NOT "$ENV{VCPKG_ROOT}" STREQUAL "")
+        set(CMAKE_TOOLCHAIN_FILE
+            "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+            CACHE STRING "vcpkg toolchain" FORCE)
+        message(STATUS "[enjoystick] vcpkg toolchain: ${CMAKE_TOOLCHAIN_FILE}")
+    else()
+        message(STATUS "[enjoystick] VCPKG_ROOT not set — building without vcpkg.")
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Compiler flags (MSVC)
+# ---------------------------------------------------------------------------
 if (MSVC)
-    # /WX (warnings-as-errors) intentionally omitted here: third-party headers
-    # often emit W4 warnings we cannot fix. Enable per-target if desired.
     add_compile_options(
         /W4
-        /permissive-        # Strict ISO conformance
-        /Zc:__cplusplus     # Report correct __cplusplus value
-        /utf-8              # Source and execution charset = UTF-8
-        /MP                 # Parallel file compilation
-        $<$<CONFIG:Release>:/O2 /GL>
-        $<$<CONFIG:Debug>:/Od /RTC1 /Zi>
+        /permissive-
+        /Zc:__cplusplus
+        /utf-8
+        /MP
+        $<$<CONFIG:Release>:/O2>
+        $<$<CONFIG:Release>:/GL>
+        $<$<CONFIG:Debug>:/Od>
+        $<$<CONFIG:Debug>:/RTC1>
+        $<$<CONFIG:Debug>:/Zi>
     )
     add_link_options(
-        $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF>
+        $<$<CONFIG:Release>:/LTCG>
+        $<$<CONFIG:Release>:/OPT:REF>
+        $<$<CONFIG:Release>:/OPT:ICF>
         $<$<CONFIG:Debug>:/DEBUG:FULL>
     )
 endif()
 
-# ─── Optional: vcpkg toolchain ─────────────────────────────────────────────────
-# If VCPKG_ROOT is set in the environment, wire it up automatically so the user
-# does not have to pass -DCMAKE_TOOLCHAIN_FILE on the command line.
-if (NOT DEFINED CMAKE_TOOLCHAIN_FILE)
-    if (DEFINED ENV{VCPKG_ROOT})
-        set(CMAKE_TOOLCHAIN_FILE
-            "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
-            CACHE STRING "vcpkg toolchain" FORCE)
-        message(STATUS "[enjoystick] Using vcpkg toolchain: ${CMAKE_TOOLCHAIN_FILE}")
-    else()
-        message(STATUS "[enjoystick] VCPKG_ROOT not set — vcpkg integration disabled.")
-        message(STATUS "             Set VCPKG_ROOT env var or pass "
-                       "-DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake")
-    endif()
-endif()
-
-# ─── Subsystem modules ─────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Subsystem modules
+# ---------------------------------------------------------------------------
 set(ENJOYSTICK_MODULES
     src/core
     src/cursor
@@ -60,21 +63,16 @@ foreach(mod ${ENJOYSTICK_MODULES})
     endif()
 endforeach()
 
-# ─── Executable ────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Executable
+# ---------------------------------------------------------------------------
 add_executable(enjoystick WIN32 src/main.cpp)
 
-target_link_libraries(enjoystick
-    PRIVATE enjoystick_app
-)
-
-set_target_properties(enjoystick PROPERTIES
-    OUTPUT_NAME "EnjoyStick"
-)
-
+target_link_libraries(enjoystick PRIVATE enjoystick_app)
 target_compile_features(enjoystick PRIVATE cxx_std_20)
 
-# ─── Install ───────────────────────────────────────────────────────────────────
+set_target_properties(enjoystick PROPERTIES OUTPUT_NAME "EnjoyStick")
+
 install(TARGETS enjoystick DESTINATION .)
 
-message(STATUS "[enjoystick] CMake ${CMAKE_VERSION} — Generator: ${CMAKE_GENERATOR}")
-message(STATUS "[enjoystick] Build type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "[enjoystick] CMake ${CMAKE_VERSION}  Generator: ${CMAKE_GENERATOR}  Config: ${CMAKE_BUILD_TYPE}")
