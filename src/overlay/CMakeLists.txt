@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.20)
 
 add_library(enjoystick_overlay STATIC
     src/OverlayWindow.cpp
@@ -11,14 +11,15 @@ target_include_directories(enjoystick_overlay
 )
 
 target_link_libraries(enjoystick_overlay
-    PUBLIC enjoystick_core
-    PUBLIC enjoystick_cursor
-    PRIVATE d2d1 dwrite dcomp
+    PUBLIC  enjoystick_core
+    PUBLIC  enjoystick_cursor
+    PRIVATE d2d1.lib
+    PRIVATE dwrite.lib
+    PRIVATE dcomp.lib
 )
 
 target_compile_features(enjoystick_overlay PUBLIC cxx_std_20)
 
 set_target_properties(enjoystick_overlay PROPERTIES
     CXX_EXTENSIONS OFF
-    POSITION_INDEPENDENT_CODE ON
 )

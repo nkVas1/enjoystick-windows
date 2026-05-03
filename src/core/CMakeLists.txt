@@ -1,9 +1,8 @@
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.20)
 
 add_library(enjoystick_core STATIC
-    src/InputEngine.cpp
-    src/InputBackend_XInput.cpp
     src/DeadzoneFilter.cpp
+    src/InputBackend_XInput.cpp
 )
 
 target_include_directories(enjoystick_core
@@ -12,6 +11,10 @@ target_include_directories(enjoystick_core
 )
 
 target_compile_features(enjoystick_core PUBLIC cxx_std_20)
+
+target_link_libraries(enjoystick_core
+    PRIVATE xinput.lib
+)
 
 set_target_properties(enjoystick_core PROPERTIES
     CXX_EXTENSIONS OFF

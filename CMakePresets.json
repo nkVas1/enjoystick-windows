@@ -1,23 +1,34 @@
 {
-  "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 28, "patch": 0 },
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
   "configurePresets": [
     {
       "name": "base",
       "hidden": true,
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
-      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "environment": {
         "VCPKG_FEATURE_FLAGS": "manifests,versions"
       },
       "cacheVariables": {
-        "VCPKG_TARGET_TRIPLET": "x64-windows"
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "windows-release",
+      "displayName": "Windows x64 Release",
+      "description": "Release build for Windows x64. Requires Ninja in PATH.",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ENJOYSTICK_BUILD_TESTS": "OFF"
       }
     },
     {
       "name": "windows-debug",
       "displayName": "Windows x64 Debug",
+      "description": "Debug build with full symbols and runtime checks.",
       "inherits": "base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
@@ -25,25 +36,50 @@
       }
     },
     {
-      "name": "windows-release",
-      "displayName": "Windows x64 Release",
+      "name": "vs2019-release",
+      "displayName": "VS 2019 x64 Release (no Ninja required)",
+      "description": "Use this preset if Ninja is not available (e.g. plain VS 2019 Build Tools).",
       "inherits": "base",
+      "generator": "Visual Studio 16 2019",
+      "architecture": { "value": "x64", "strategy": "set" },
+      "binaryDir": "${sourceDir}/build/vs2019-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "ENJOYSTICK_BUILD_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "vs2019-debug",
+      "displayName": "VS 2019 x64 Debug (no Ninja required)",
+      "description": "Use this preset with VS 2019 Build Tools when Ninja is unavailable.",
+      "inherits": "base",
+      "generator": "Visual Studio 16 2019",
+      "architecture": { "value": "x64", "strategy": "set" },
+      "binaryDir": "${sourceDir}/build/vs2019-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ENJOYSTICK_BUILD_TESTS": "ON"
       }
     }
   ],
   "buildPresets": [
     {
-      "name": "windows-debug",
-      "configurePreset": "windows-debug",
-      "configuration": "Debug"
+      "name": "windows-release",
+      "configurePreset": "windows-release"
     },
     {
-      "name": "windows-release",
-      "configurePreset": "windows-release",
+      "name": "windows-debug",
+      "configurePreset": "windows-debug"
+    },
+    {
+      "name": "vs2019-release",
+      "configurePreset": "vs2019-release",
       "configuration": "Release"
+    },
+    {
+      "name": "vs2019-debug",
+      "configurePreset": "vs2019-debug",
+      "configuration": "Debug"
     }
   ],
   "testPresets": [
