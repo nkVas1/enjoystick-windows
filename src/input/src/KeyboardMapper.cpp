@@ -1,15 +1,18 @@
+// NOTE: WIN32_LEAN_AND_MEAN and NOMINMAX are injected by CMake for this module.
 #include <enjoystick/input/KeyboardMapper.hpp>
 
-#define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+
+#include <algorithm>
+#include <vector>
 
 namespace enjoystick::input {
 
 // ---------------------------------------------------------------------------
-// Default bindings
+// Default bindings  (Steam-Deck-inspired UI navigation layer)
 // ---------------------------------------------------------------------------
 
-static const std::pair<Button, KeyBinding> kDefaultBindings[] = {
+static constexpr struct { Button btn; KeyBinding binding; } kDefaults[] = {
     { Button::DPadUp,    { VK_UP,      false, false, false, true  } },
     { Button::DPadDown,  { VK_DOWN,    false, false, false, true  } },
     { Button::DPadLeft,  { VK_LEFT,    false, false, false, true  } },
@@ -20,13 +23,14 @@ static const std::pair<Button, KeyBinding> kDefaultBindings[] = {
     { Button::West,      { VK_SPACE,   false, false, false, false } },
     { Button::LB,        { VK_TAB,     false, false, false, false } },
     { Button::RB,        { VK_TAB,     true,  false, false, false } },  // Shift+Tab
-    { Button::Select,    { VK_LWIN,    false, false, false, true  } },
+    { Button::Start,     { VK_ESCAPE,  false, false, false, false } },
+    { Button::Select,    { VK_LWIN,    false, false, false, false } },
     { Button::LS,        { VK_F2,      false, false, false, false } },
-    { Button::RS,        { VK_APPS,    false, false, false, false } },  // context menu
+    { Button::RS,        { VK_APPS,    false, false, false, false } },  // Context menu
 };
 
 // ---------------------------------------------------------------------------
-// Constructor
+// Construction
 // ---------------------------------------------------------------------------
 
 KeyboardMapper::KeyboardMapper() {
@@ -35,71 +39,85 @@ KeyboardMapper::KeyboardMapper() {
 
 void KeyboardMapper::ResetToDefaults() {
     m_bindings.clear();
-    for (const auto& [btn, binding] : kDefaultBindings) {
-        m_bindings[static_cast<uint32_t>(btn)] = binding;
+    for (const auto& d : kDefaults) {
+        m_bindings[static_cast<uint32_t>(d.btn)] = d.binding;
     }
+    m_prevButtons = Button::None;
 }
 
 void KeyboardMapper::Bind(Button button, KeyBinding binding) {
-    m_bindings[static_cast<uint32_t>(button)] = std::move(binding);
+    m_bindings[static_cast<uint32_t>(button)] = binding;
 }
 
 void KeyboardMapper::Unbind(Button button) {
     m_bindings.erase(static_cast<uint32_t>(button));
 }
 
-void KeyboardMapper::SetEnabled(bool enabled) noexcept { m_enabled = enabled; }
+void KeyboardMapper::SetEnabled(bool enabled) noexcept {
+    m_enabled = enabled;
+    if (!enabled) {
+        // Release any currently held keys to avoid stuck keys
+        const uint32_t held = static_cast<uint32_t>(m_prevButtons);
+        for (const auto& [mask, binding] : m_bindings) {
+            if (held & mask) InjectKey(binding, false);
+        }
+        m_prevButtons = Button::None;
+    }
+}
+
 bool KeyboardMapper::IsEnabled() const noexcept { return m_enabled; }
 
 // ---------------------------------------------------------------------------
-// Update — detect rising/falling edges, inject keys
+// Update  — called from the input thread at polling rate
 // ---------------------------------------------------------------------------
 
 void KeyboardMapper::Update(const ControllerState& state) {
-    if (!m_enabled) { m_prevButtons = state.buttons; return; }
-
-    // Rising edge = button just pressed
-    const uint32_t pressed  = static_cast<uint32_t>(state.buttonsDown);
-    const uint32_t released = static_cast<uint32_t>(state.buttonsUp);
+    if (!m_enabled) return;
 
     for (const auto& [mask, binding] : m_bindings) {
         if (binding.vkCode == 0) continue;
 
-        if (pressed  & mask) InjectKey(binding, /*down=*/true);
-        if (released & mask) InjectKey(binding, /*down=*/false);
+        const Button btn     = static_cast<Button>(mask);
+        const bool   wasDown = HasButton(m_prevButtons, btn);
+        const bool   isDown  = HasButton(state.buttons,  btn);
+
+        if (isDown && !wasDown)  InjectKey(binding, true);
+        if (!isDown && wasDown)  InjectKey(binding, false);
     }
 
     m_prevButtons = state.buttons;
 }
 
 // ---------------------------------------------------------------------------
-// SendInput helpers
+// Private key injection
 // ---------------------------------------------------------------------------
 
-void KeyboardMapper::SendModifiers(const KeyBinding& binding, bool down) {
-    auto sendMod = [&](uint16_t vk) {
-        INPUT in    = {};
-        in.type     = INPUT_KEYBOARD;
-        in.ki.wVk   = vk;
-        in.ki.dwFlags = down ? 0 : KEYEVENTF_KEYUP;
-        SendInput(1, &in, sizeof(INPUT));
-    };
-    if (binding.withShift) sendMod(VK_SHIFT);
-    if (binding.withCtrl)  sendMod(VK_CONTROL);
-    if (binding.withAlt)   sendMod(VK_MENU);
+void KeyboardMapper::InjectKey(const KeyBinding& binding, bool down) {
+    SendModifiers(binding, down);
+
+    INPUT inp{};
+    inp.type        = INPUT_KEYBOARD;
+    inp.ki.wVk      = binding.vkCode;
+    inp.ki.dwFlags  = (binding.extended ? KEYEVENTF_EXTENDEDKEY : 0) |
+                      (down             ? 0 : KEYEVENTF_KEYUP);
+    SendInput(1, &inp, sizeof(INPUT));
+
+    // Release modifiers in reverse order
+    if (!down) SendModifiers(binding, false);
 }
 
-void KeyboardMapper::InjectKey(const KeyBinding& binding, bool down) {
-    if (down) SendModifiers(binding, /*down=*/true);
-
-    INPUT in      = {};
-    in.type       = INPUT_KEYBOARD;
-    in.ki.wVk     = binding.vkCode;
-    in.ki.dwFlags = (down ? 0 : KEYEVENTF_KEYUP)
-                  | (binding.extended ? KEYEVENTF_EXTENDEDKEY : 0);
-    SendInput(1, &in, sizeof(INPUT));
-
-    if (!down) SendModifiers(binding, /*down=*/false);
+void KeyboardMapper::SendModifiers(const KeyBinding& binding, bool down) {
+    const DWORD flags = down ? 0 : KEYEVENTF_KEYUP;
+    auto send = [&](WORD vk) {
+        INPUT inp{};
+        inp.type       = INPUT_KEYBOARD;
+        inp.ki.wVk     = vk;
+        inp.ki.dwFlags = flags;
+        SendInput(1, &inp, sizeof(INPUT));
+    };
+    if (binding.withCtrl)  send(VK_CONTROL);
+    if (binding.withShift) send(VK_SHIFT);
+    if (binding.withAlt)   send(VK_MENU);
 }
 
 } // namespace enjoystick::input
