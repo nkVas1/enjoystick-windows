@@ -1,6 +1,9 @@
 #include <enjoystick/cursor/VirtualMouse.hpp>
 
+// NOMINMAX must come before Windows.h to prevent it defining min/max macros
+// that conflict with std::min / std::max on MSVC 2019.
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <Windows.h>
 #include <cmath>
 #include <algorithm>
@@ -11,22 +14,20 @@ VirtualMouse::VirtualMouse(Config config)
     : m_config(std::move(config)) {}
 
 VirtualMouse::~VirtualMouse() {
-    // Release any held buttons on destruction
-    if (m_leftButtonDown || m_rightButtonDown) {
-        INPUT inputs[2] = {};
-        int   count     = 0;
-        if (m_leftButtonDown) {
-            inputs[count].type       = INPUT_MOUSE;
-            inputs[count].mi.dwFlags = MOUSEEVENTF_LEFTUP;
-            ++count;
-        }
-        if (m_rightButtonDown) {
-            inputs[count].type       = INPUT_MOUSE;
-            inputs[count].mi.dwFlags = MOUSEEVENTF_RIGHTUP;
-            ++count;
-        }
-        SendInput(static_cast<UINT>(count), inputs, sizeof(INPUT));
+    INPUT inputs[2] = {};
+    int   count     = 0;
+    if (m_leftButtonDown) {
+        inputs[count].type       = INPUT_MOUSE;
+        inputs[count].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+        ++count;
     }
+    if (m_rightButtonDown) {
+        inputs[count].type       = INPUT_MOUSE;
+        inputs[count].mi.dwFlags = MOUSEEVENTF_RIGHTUP;
+        ++count;
+    }
+    if (count > 0)
+        SendInput(static_cast<UINT>(count), inputs, sizeof(INPUT));
 }
 
 void VirtualMouse::SetConfig(Config config) noexcept {
@@ -52,11 +53,12 @@ bool VirtualMouse::IsEnabled() const noexcept {
 void VirtualMouse::Update(const ControllerState& state, float deltaSeconds) {
     if (!m_enabled || deltaSeconds <= 0.0f) return;
 
-    const Vec2 raw = m_config.useRightStick ? state.rightStick : state.leftStick;
+    const Vec2 raw    = m_config.useRightStick ? state.rightStick : state.leftStick;
     const Vec2 curved = ApplyCurve(raw);
 
-    // Smooth velocity with a simple exponential approach
-    const float alpha = std::min(1.0f, deltaSeconds / (m_config.accelerationMs * 0.001f + 1e-6f));
+    // Exponential smoothing toward target velocity
+    const float safeDenom = m_config.accelerationMs * 0.001f + 1e-6f;
+    const float alpha = (std::min)(1.0f, deltaSeconds / safeDenom);
     m_currentVelocity.x += (curved.x - m_currentVelocity.x) * alpha;
     m_currentVelocity.y += (curved.y - m_currentVelocity.y) * alpha;
 
@@ -74,23 +76,21 @@ Vec2 VirtualMouse::ApplyCurve(Vec2 raw) const noexcept {
 }
 
 void VirtualMouse::MoveCursor(Vec2 velocity, float deltaSeconds) {
-    // Integrate velocity → pixels, keep sub-pixel remainder for precision
     m_subPixelRemainder.x += velocity.x * deltaSeconds;
     m_subPixelRemainder.y += velocity.y * deltaSeconds;
 
     const int32_t dx = static_cast<int32_t>(m_subPixelRemainder.x);
     const int32_t dy = static_cast<int32_t>(m_subPixelRemainder.y);
-
     if (dx == 0 && dy == 0) return;
 
     m_subPixelRemainder.x -= static_cast<float>(dx);
     m_subPixelRemainder.y -= static_cast<float>(dy);
 
-    INPUT input           = {};
-    input.type            = INPUT_MOUSE;
-    input.mi.dwFlags      = MOUSEEVENTF_MOVE;
-    input.mi.dx           = dx;
-    input.mi.dy           = dy;
+    INPUT input      = {};
+    input.type       = INPUT_MOUSE;
+    input.mi.dwFlags = MOUSEEVENTF_MOVE;
+    input.mi.dx      = dx;
+    input.mi.dy      = dy;
     SendInput(1, &input, sizeof(INPUT));
 }
 
@@ -98,7 +98,6 @@ void VirtualMouse::HandleClicks(const ControllerState& state) {
     if (!m_config.triggersAsClicks) return;
 
     constexpr float kClickThreshold = 0.5f;
-
     const bool wantLeft  = state.leftTrigger  >= kClickThreshold;
     const bool wantRight = state.rightTrigger >= kClickThreshold;
 
@@ -118,11 +117,11 @@ void VirtualMouse::HandleClicks(const ControllerState& state) {
         ++count;
     }
 
-    if (count > 0) SendInput(static_cast<UINT>(count), inputs, sizeof(INPUT));
+    if (count > 0)
+        SendInput(static_cast<UINT>(count), inputs, sizeof(INPUT));
 }
 
 void VirtualMouse::HandleScroll(const ControllerState& state, float deltaSeconds) {
-    // D-pad vertical or hold RS-click for scroll mode
     float scrollAxis = 0.0f;
     if (HasButton(state.buttons, Button::DPadUp))   scrollAxis =  1.0f;
     if (HasButton(state.buttons, Button::DPadDown))  scrollAxis = -1.0f;
@@ -140,9 +139,9 @@ void VirtualMouse::HandleScroll(const ControllerState& state, float deltaSeconds
 
     m_scrollAccumulator -= static_cast<float>(lines);
 
-    INPUT input      = {};
-    input.type       = INPUT_MOUSE;
-    input.mi.dwFlags = MOUSEEVENTF_WHEEL;
+    INPUT input        = {};
+    input.type         = INPUT_MOUSE;
+    input.mi.dwFlags   = MOUSEEVENTF_WHEEL;
     input.mi.mouseData = static_cast<DWORD>(lines * WHEEL_DELTA);
     SendInput(1, &input, sizeof(INPUT));
 }
