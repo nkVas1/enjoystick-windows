@@ -3,21 +3,19 @@ cmake_minimum_required(VERSION 3.20)
 # ---------------------------------------------------------------------------
 # enjoystick_app  (static library — no main())
 #
-# Application-layer wiring: composes all subsystems, owns the Win32
-# message loop and system-tray icon.
+# Application-layer composition root: owns Win32 message loop, system tray,
+# and wires all subsystems together.
 #
-# The executable entry point (wWinMain) lives in src/main.cpp at the
-# repository root and is compiled directly into the enjoystick.exe target
-# defined in the root CMakeLists.txt.  It must NOT appear here.
+# Entry point (wWinMain) lives in the root src/main.cpp and is compiled
+# directly into the enjoystick.exe target. It must NOT appear here.
+#
+# KeyboardMapper is part of enjoystick_input — do NOT list it here.
 # ---------------------------------------------------------------------------
 
 add_library(enjoystick_app STATIC
     src/Application.cpp
     src/SystemTray.cpp
     src/AutoStart.cpp
-    src/KeyboardMapper.cpp
-    # Note: main.cpp is intentionally excluded — entry point is in
-    #       the root src/main.cpp linked by the enjoystick executable.
 )
 
 target_compile_definitions(enjoystick_app PUBLIC
