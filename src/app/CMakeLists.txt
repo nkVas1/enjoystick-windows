@@ -1,32 +1,26 @@
 cmake_minimum_required(VERSION 3.25)
 
-add_executable(enjoystick WIN32
-    src/main.cpp
-    src/KeyboardMapper.cpp
+add_library(enjoystick_app STATIC
+    src/Application.cpp
     src/AutoStart.cpp
 )
 
-target_include_directories(enjoystick
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+target_include_directories(enjoystick_app
+    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(enjoystick
-    PRIVATE enjoystick_core
-    PRIVATE enjoystick_cursor
-    PRIVATE enjoystick_overlay
-    PRIVATE enjoystick_config
+target_link_libraries(enjoystick_app
+    PUBLIC enjoystick_core
+    PUBLIC enjoystick_cursor
+    PUBLIC enjoystick_input
+    PUBLIC enjoystick_overlay
+    PUBLIC enjoystick_config
 )
 
-target_compile_features(enjoystick PRIVATE cxx_std_20)
+target_compile_features(enjoystick_app PUBLIC cxx_std_20)
 
-set_target_properties(enjoystick PROPERTIES
-    WIN32_EXECUTABLE    ON
-    CXX_EXTENSIONS      OFF
-    OUTPUT_NAME         "EnjoyStick"
+set_target_properties(enjoystick_app PROPERTIES
+    CXX_EXTENSIONS OFF
+    POSITION_INDEPENDENT_CODE ON
 )
-
-# Embed manifest for DPI-awareness and UAC
-if (MSVC)
-    target_sources(enjoystick PRIVATE src/enjoystick.manifest)
-endif()

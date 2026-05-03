@@ -1,49 +1,50 @@
-#include <enjoystick/app/AutoStart.hpp>
+#include "AutoStart.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#include <array>
 
 namespace enjoystick::app {
 
-static constexpr wchar_t kRunKey[] =
-    L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+static std::wstring GetExePath() {
+    std::array<wchar_t, MAX_PATH> buf{};
+    GetModuleFileNameW(nullptr, buf.data(), MAX_PATH);
+    return buf.data();
+}
 
-bool AutoStart::Enable(const std::filesystem::path& exePath) {
+bool AutoStart::Enable() {
     HKEY hKey = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_SET_VALUE, &hKey) != ERROR_SUCCESS)
-        return false;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_SET_VALUE, &hKey)
+        != ERROR_SUCCESS) return false;
 
-    const std::wstring value = L"\"" + exePath.wstring() + L"\" --tray";
-    const DWORD size = static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t));
-    const LSTATUS r  = RegSetValueExW(
+    const std::wstring cmd = L'"' + GetExePath() + L"\" --autostart";
+    const DWORD size = static_cast<DWORD>((cmd.size() + 1) * sizeof(wchar_t));
+    const bool ok = RegSetValueExW(
         hKey, kValueName, 0, REG_SZ,
-        reinterpret_cast<const BYTE*>(value.c_str()), size);
+        reinterpret_cast<const BYTE*>(cmd.c_str()), size) == ERROR_SUCCESS;
     RegCloseKey(hKey);
-    return r == ERROR_SUCCESS;
+    return ok;
 }
 
 bool AutoStart::Disable() {
     HKEY hKey = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_SET_VALUE, &hKey) != ERROR_SUCCESS)
-        return false;
-    const LSTATUS r = RegDeleteValueW(hKey, kValueName);
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_SET_VALUE, &hKey)
+        != ERROR_SUCCESS) return false;
+
+    const bool ok = RegDeleteValueW(hKey, kValueName) == ERROR_SUCCESS;
     RegCloseKey(hKey);
-    return r == ERROR_SUCCESS;
+    return ok;
 }
 
-bool AutoStart::IsEnabled(const std::filesystem::path& exePath) {
+bool AutoStart::IsEnabled() {
     HKEY hKey = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS)
-        return false;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_QUERY_VALUE, &hKey)
+        != ERROR_SUCCESS) return false;
 
-    wchar_t buf[MAX_PATH * 2] = {};
-    DWORD size = sizeof(buf);
-    DWORD type = 0;
-    const LSTATUS r = RegQueryValueExW(hKey, kValueName, nullptr, &type,
-                                        reinterpret_cast<BYTE*>(buf), &size);
+    const LSTATUS status = RegQueryValueExW(hKey, kValueName, nullptr,
+                                             nullptr, nullptr, nullptr);
     RegCloseKey(hKey);
-    if (r != ERROR_SUCCESS) return false;
-    return std::wstring(buf).find(exePath.wstring()) != std::wstring::npos;
+    return status == ERROR_SUCCESS;
 }
 
 } // namespace enjoystick::app
