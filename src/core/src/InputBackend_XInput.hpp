@@ -1,88 +1,89 @@
 #pragma once
 
-// NOTE: WIN32_LEAN_AND_MEAN and NOMINMAX are injected by CMake
-// for this module. Do NOT redefine them here to avoid C4005.
+// WIN32_LEAN_AND_MEAN / NOMINMAX injected by CMake target_compile_definitions.
+// Do NOT redeclare them here to avoid C4005 in unity builds.
 #include <Windows.h>
 #include <Xinput.h>
 
 #include <enjoystick/core/InputEngine.hpp>
 #include <enjoystick/core/DeadzoneFilter.hpp>
-#include <enjoystick/shared/Types.hpp>
 
 #include <atomic>
-#include <functional>
 #include <mutex>
+#include <shared_mutex>
 #include <thread>
 #include <array>
 #include <vector>
 #include <cstdint>
+#include <string>
 
 namespace enjoystick::core {
 
 ///
-/// InputBackend_XInput
+/// XInputBackend (concrete implementation of InputEngine)
 ///
-/// Polls up to 4 XInput controllers at a configurable rate (default 250 Hz).
-/// Runs on its own high-priority thread and dispatches InputEventCallback +
-/// ConnectionCallback to registered listeners under a shared mutex.
+/// Polls up to XUSER_MAX_COUNT (4) XInput controllers at a configurable
+/// rate (default 250 Hz = 4 ms intervals) on a dedicated high-priority thread.
 ///
-/// Design decisions:
-///   - One thread, four controllers polled sequentially each tick.
-///     At 250 Hz the total XInput overhead is < 0.1 ms per tick.
-///   - ButtonsDown / ButtonsUp edge tracking per controller.
-///   - DeadzoneFilter applied after raw axis reads.
-///   - Rumble dispatched synchronously on the polling thread to minimise
-///     latency between the request and the vibration motor.
+/// Thread safety:
+///   - Start()/Stop() are idempotent and safe to call from any thread.
+///   - OnInput()/OnConnection() are safe to call from any thread.
+///   - Callbacks are dispatched under a shared_mutex read-lock so multiple
+///     callbacks execute concurrently; removing a callback (CallbackHandle
+///     destructor) takes the write-lock and nulls the slot.
+///   - GetState()/GetConnectedControllers() take the shared read-lock.
 ///
-class InputBackend_XInput final {
+class XInputBackend final : public InputEngine {
 public:
-    struct Config {
-        uint32_t pollingRateHz  = 250;
-        bool     hapticsEnabled = true;
-        bool     verboseLogging = false;
-        InputEngine::Config engineConfig;
-    };
+    explicit XInputBackend(Config cfg, DeadzoneFilter filter);
+    ~XInputBackend() override;
 
-    explicit InputBackend_XInput(Config cfg, DeadzoneFilter filter);
-    ~InputBackend_XInput();
+    // InputEngine interface
+    void Start() override;
+    void Stop()  override;
 
-    void Start();
-    void Stop();
+    [[nodiscard]] CallbackHandle OnInput     (InputEventCallback  cb) override;
+    [[nodiscard]] CallbackHandle OnConnection(ConnectionCallback  cb) override;
 
-    // Listener registration (thread-safe)
-    CallbackHandle AddInputListener(InputEventCallback cb);
-    CallbackHandle AddConnectionListener(ConnectionCallback cb);
+    void Rumble(ControllerId id, RumbleParams params) override;
 
-    void Rumble(ControllerId id, RumbleParams params);
-    [[nodiscard]] std::vector<ControllerInfo>    GetConnectedControllers() const;
-    [[nodiscard]] ControllerState                GetState(ControllerId id) const;
+    [[nodiscard]] std::vector<ControllerInfo> GetConnectedControllers() const override;
+    [[nodiscard]] ControllerState             GetState(ControllerId id) const override;
 
 private:
     void PollLoop();
-    void ProcessController(ControllerId id, const XINPUT_STATE& raw);
-    void NotifyDisconnected(ControllerId id);
+    void PollController(uint32_t index);
 
-    // Convert raw XInput axes to normalised [-1, 1] float
-    static float NormaliseAxis(SHORT value, SHORT deadzone);
-    static float NormaliseTrigger(BYTE value);
+    void FireInput     (const ControllerState& state);
+    void FireConnection(ControllerId id, ConnectionEvent ev);
 
-    Config m_cfg;
+    // ---- Config / filter ------------------------------------------------
+    Config         m_config;
     DeadzoneFilter m_deadzone;
 
-    struct ControllerSlot {
-        bool          connected = false;
-        DWORD         packetNumber = 0;
-        ControllerState lastState = {};
+    // ---- Per-controller slot --------------------------------------------
+    struct Slot {
+        bool            connected  = false;
+        DWORD           packetNum  = 0;
+        ControllerState state      = {};
     };
-    std::array<ControllerSlot, XUSER_MAX_COUNT> m_slots;
+    std::array<Slot, XUSER_MAX_COUNT> m_slots = {};
+    mutable std::shared_mutex         m_stateMutex;
 
-    mutable std::mutex m_listenerMutex;
-    uint64_t           m_nextListenerId = 0;
-    std::vector<std::pair<uint64_t, InputEventCallback>>      m_inputListeners;
-    std::vector<std::pair<uint64_t, ConnectionCallback>>      m_connListeners;
+    // ---- Callback registry ----------------------------------------------
+    // Slots are nulled on unregister rather than erased to preserve index
+    // stability during concurrent iteration.
+    struct InputCB   { uint64_t id; InputEventCallback  fn; };
+    struct ConnCB    { uint64_t id; ConnectionCallback  fn; };
 
-    std::thread       m_pollThread;
-    std::atomic<bool> m_running{false};
+    mutable std::shared_mutex        m_callbackMutex;
+    uint64_t                         m_nextCallbackId = 0;
+    std::vector<InputCB>             m_inputCallbacks;
+    std::vector<ConnCB>              m_connCallbacks;
+
+    // ---- Poll thread ----------------------------------------------------
+    std::thread        m_pollThread;
+    std::atomic<bool>  m_running{false};
 };
 
 } // namespace enjoystick::core
