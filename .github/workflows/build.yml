@@ -8,9 +8,10 @@ on:
 
 jobs:
   build-windows:
-    name: MSVC x64 (${{ matrix.config }})
-    runs-on: windows-latest
+    name: MSVC x64 ${{ matrix.config }}
+    runs-on: windows-latest   # windows-latest = VS 2022
     strategy:
+      fail-fast: false
       matrix:
         config: [Debug, Release]
 
@@ -20,30 +21,49 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Set up MSVC
+      - name: Add msbuild to PATH
         uses: microsoft/setup-msbuild@v2
 
-      - name: Install vcpkg
-        run: |
-          git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
-          C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
-        shell: cmd
+      - name: Install Ninja
+        run: choco install ninja --no-progress -y
+        shell: pwsh
 
-      - name: Configure CMake
+      - name: Setup vcpkg
         run: |
-          cmake -B build -G "Visual Studio 17 2022" -A x64 \
-            -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake \
-            -DCMAKE_BUILD_TYPE=${{ matrix.config }}
-        shell: bash
+          git clone https://github.com/microsoft/vcpkg.git C:/vcpkg
+          C:/vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          echo "VCPKG_ROOT=C:/vcpkg" >> $env:GITHUB_ENV
+        shell: pwsh
+
+      - name: Configure (Ninja + MSVC)
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake -B build/${{ matrix.config }} ^  
+            -G Ninja ^  
+            -DCMAKE_BUILD_TYPE=${{ matrix.config }} ^  
+            -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake ^  
+            -DVCPKG_TARGET_TRIPLET=x64-windows ^  
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       - name: Build
-        run: cmake --build build --config ${{ matrix.config }} --parallel
-        shell: bash
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake --build build/${{ matrix.config }} --parallel
 
-      - name: Upload artifact
+      - name: Upload Release artifact
         if: matrix.config == 'Release'
         uses: actions/upload-artifact@v4
         with:
-          name: EnjoyStick-Release
+          name: EnjoyStick-Release-x64
           path: build/Release/EnjoyStick.exe
+          if-no-files-found: warn
+
+      - name: Upload Debug artifact
+        if: matrix.config == 'Debug'
+        uses: actions/upload-artifact@v4
+        with:
+          name: EnjoyStick-Debug-x64
+          path: build/Debug/EnjoyStick.exe
           if-no-files-found: warn
