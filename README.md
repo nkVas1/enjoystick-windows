@@ -1,31 +1,22 @@
 # 🎮 Enjoystick Windows
 
 > **Seamless. Stylish. Controller-native.**  
-> A polished UX/UI extension that transforms Windows 11 into a fully gamepad-navigable environment — from gaming to deep productivity.
+> A polished UX/UI extension that transforms Windows 10/11 into a fully
+> gamepad-navigable environment — from gaming to deep productivity.
+
+[![Build](https://github.com/nkVas1/enjoystick-windows/actions/workflows/build.yml/badge.svg)](https://github.com/nkVas1/enjoystick-windows/actions/workflows/build.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
 ---
 
-## ✨ Vision
+## ✨ What It Does
 
-Enjostick Windows is a non-intrusive system overlay that augments Windows 11 with a **controller-first experience** — designed with the elegance of Steam Deck's Big Picture Mode, the fluency of PlayStation's system UI, and the power of Xbox's Game Bar, then taken further.
+EnjoyStick Windows is a **non-intrusive system overlay** that augments Windows
+with a controller-first experience — designed with the elegance of Steam Deck’s
+Big Picture Mode, the fluency of PlayStation’s system UI, and the power of
+Xbox’s Game Bar, then taken further.
 
 Install it once. It works *out of the box*. No config files. No friction.
-
----
-
-## 🏗️ Architecture Overview
-
-```
-Enjoystick Windows
-├── Core (C++ / WinRT)          – low-level input pipeline, process injection
-├── Shell (WinUI 3 / XAML)      – overlay UI layer, animations, design system
-├── InputRouter                 – gamepad → system events (mouse, keyboard, nav)
-├── AppAdapter                  – per-app gamepad profile engine
-├── MediaEngine                 – media-mode (video/audio focused layout)
-├── BrowserBridge               – controller-aware web navigation layer
-├── Daemon (background service) – always-on input listener, low-latency
-└── Installer / OOB setup       – silent, automated, zero-friction install
-```
 
 ---
 
@@ -33,16 +24,14 @@ Enjoystick Windows
 
 | Feature | Description |
 |---|---|
-| **Universal Navigation** | Navigate any Windows UI — Explorer, Settings, apps — with a gamepad |
-| **Radial Quick Menu** | Hold a button → instant radial overlay for system actions |
-| **Context-Aware Layouts** | Auto-detects mode: Gaming / Media / Browser / Desktop / Productivity |
-| **Per-App Profiles** | Custom bindings per application, synced to cloud |
-| **Virtual Cursor** | Smooth, physics-based analog cursor for non-gamepad-native apps |
-| **On-Screen Keyboard** | Fluid, fast input keyboard optimized for controller |
-| **Media Cinematic Mode** | Full-screen video/music mode with controller media controls |
-| **Browser Mode** | Spatial navigation + URL bar + tab management via stick |
-| **System Widgets** | Volume, brightness, notifications, power — all accessible via controller |
-| **Zero-Friction Install** | One-click installer; auto-starts with Windows; no driver conflicts |
+| **Virtual Cursor** | Right-stick → smooth power-curve mouse; triggers → clicks |
+| **Keyboard Nav** | D-pad / buttons → keyboard events for any Windows app |
+| **Radial Quick Menu** | Guide button → instant radial overlay (Direct2D, 60 fps) |
+| **System Tray** | Right-click tray icon for mode toggle, settings, auto-start |
+| **Hot-reload Config** | Edit `%APPDATA%\Enjoystick\config.json`, changes apply live |
+| **Auto-start** | Registers in `HKCU\...\Run` on first launch (no elevation) |
+| **Toast Notifications** | Controller connected/disconnected, mode changes |
+| **Multi-controller** | Up to 4 simultaneous XInput controllers |
 
 ---
 
@@ -50,79 +39,152 @@ Enjoystick Windows
 
 | Layer | Technology |
 |---|---|
-| Core Input Engine | C++20, WinRT, XInput / SDL3, RawInput |
-| UI Overlay | WinUI 3 (Windows App SDK), XAML Islands |
-| Animations | Lottie for WinUI, Composition API |
-| Background Daemon | C++ Windows Service (low-latency loop) |
-| App logic / glue | C# (.NET 8) |
-| Build System | CMake + MSBuild, GitHub Actions CI |
-| Installer | WiX Toolset v4 + custom bootstrapper |
-| Design Tokens | Fluent Design System extended |
+| Input engine | C++20, XInput 1.4 |
+| Cursor / keyboard | Win32 `SendInput` |
+| Overlay rendering | Direct2D, DirectWrite, DirectComposition |
+| System tray | `Shell_NotifyIcon` (Win32) |
+| Config | Hand-rolled JSON, `ReadDirectoryChangesW` hot-reload |
+| Build system | CMake 3.20+ · MSVC (VS 2019 / VS 2022) · Ninja or MSBuild |
+| CI | GitHub Actions · MSVC x64 Debug + Release matrix |
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Quick Start
 
 ### Prerequisites
-- Windows 11 22H2+ (also tested on Windows 10 21H2+)
-- Xbox or PlayStation controller (USB / Bluetooth / Wireless)
-- .NET 8 Runtime (bundled in installer)
-- Visual C++ Redistributable 2022 (bundled)
 
-### Install (release)
-```powershell
-# Download latest release and run:
-.\EnjostickSetup.exe
-# That's it. The system tray icon will appear.
-```
+| Tool | Minimum version | Notes |
+|---|---|---|
+| Windows | 10 21H2 or 11 | Target OS |
+| Visual Studio / Build Tools | **2019** (16.x) or 2022 | Include *Desktop C++* workload |
+| CMake | **3.20** | Bundled with VS; or install separately |
+| Git | any | |
+| vcpkg *(optional)* | latest | Only needed for future third-party deps |
 
-### Build from Source
+> ⚠️ **VS 2019 users:** Use the `vs2019-debug` / `vs2019-release` CMake presets
+> (see below). The default `windows-release` preset uses Ninja which may not
+> be in your PATH.
+
+### 1. Clone
+
 ```powershell
 git clone https://github.com/nkVas1/enjoystick-windows.git
 cd enjoystick-windows
-.\scripts\bootstrap.ps1        # installs dependencies
+```
+
+### 2. Configure
+
+**Option A — VS 2019 Build Tools (recommended for your setup)**
+```powershell
+# Open a "x64 Native Tools Command Prompt for VS 2019", then:
+cmake -B build/vs2019-release -G "Visual Studio 16 2019" -A x64 -DCMAKE_BUILD_TYPE=Release
+```
+
+**Option B — VS Code CMake Tools with preset**  
+Select the preset **"VS 2019 x64 Release (no Ninja required)"** from the
+CMake Tools preset picker in VS Code.
+
+**Option C — Ninja + VS 2019 (if Ninja is installed)**
+```powershell
+# Set VCPKG_ROOT if you use vcpkg, otherwise skip
+$env:VCPKG_ROOT = "C:\vcpkg"   # optional
+
 cmake --preset windows-release
-cmake --build build --config Release
+```
+
+### 3. Build
+
+```powershell
+# MSBuild (Option A / B)
+cmake --build build/vs2019-release --config Release --parallel
+
+# Ninja (Option C)
+cmake --build build/windows-release
+```
+
+The executable lands at `build/<preset>/Release/EnjoyStick.exe`.
+
+### 4. Run
+
+```powershell
+.\build\vs2019-release\Release\EnjoyStick.exe
+```
+
+A tray icon appears. Connect any Xbox or PlayStation controller and go.
+
+---
+
+## ⚙️ Configuration
+
+Settings are stored in `%APPDATA%\Enjoystick\config.json` (created automatically
+on first run). Edit with any text editor — changes apply **live** without
+restarting.
+
+```jsonc
+{
+  "cursor_maxSpeedPx":       2000.0,   // max cursor speed px/s
+  "cursor_curveExponent":    0.55,     // 0.3 = very smooth, 1.0 = linear
+  "cursor_accelerationMs":   80.0,     // ramp-up time in ms
+  "cursor_useRightStick":    true,     // false = left stick
+  "cursor_triggersAsClicks": true,     // LT/RT -> left/right click
+  "cursor_scrollSpeed":      8.0,      // scroll lines/s at full D-pad
+  "cursor_invertScroll":     false,
+  "dz_innerRadius":          0.08,     // inner deadzone [0, 0.5]
+  "dz_outerRadius":          0.98,     // outer edge clamp
+  "dz_mode":                 3         // 0=None 1=Axial 2=Radial 3=ScaledRadial
+}
 ```
 
 ---
 
-## 📐 Design Philosophy
+## 🎮 Default Controller Bindings
 
-- **Controller-first, not mouse-last** — every interaction is designed for analog + digital input, not retrofitted.
-- **Invisible when idle** — the system disappears when not needed, never interrupting workflow.
-- **Pixel-perfect motion** — 60fps+ animations, spring physics, no jarring transitions.
-- **ArtStation-level craft** — every icon, blur, gradient and easing curve is intentional.
-- **Indy soul, studio polish** — the warmth of a passion project, the quality of a AAA product.
-
----
-
-## 📁 Repository Structure
-
-```
-/src
-  /core          C++ input engine & daemon
-  /shell         WinUI 3 overlay application
-  /inputrouter   Gamepad-to-system input mapping
-  /appadapter    Per-app profile engine
-  /mediaengine   Cinematic media mode
-  /browserbridge Controller-native browser layer
-  /shared        Shared types, utilities, design tokens
-/installer       WiX installer project
-/scripts         Build, bootstrap, CI helpers
-/docs            Architecture diagrams, UX spec, design tokens
-/tests           Unit + integration + UI tests
-/.github         CI/CD workflows, issue templates
-```
+| Button | Action |
+|---|---|
+| Right stick | Mouse cursor |
+| Left trigger | Left click |
+| Right trigger | Right click |
+| D-pad Up / Down | Scroll |
+| D-pad arrows (Navigate mode) | Arrow keys |
+| **A / Cross** | Enter |
+| **B / Circle** | Escape |
+| **Y / Triangle** | F5 |
+| **X / Square** | Space |
+| LB | Tab |
+| RB | Shift + Tab |
+| Select / Share | Win key |
+| RS click | Context menu |
+| LS click | F2 (rename) |
+| **Guide / PS button** | Open radial menu |
 
 ---
 
-## 🤝 Contributing
+## 📁 Project Structure
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md). Code quality bar is senior-level. All PRs require:
-- Tests for new logic
-- Design review for UI changes
-- Performance profiling for input-path changes
+```
+enjystick-windows/
+├── src/
+│   ├── core/       InputEngine, XInputBackend, DeadzoneFilter, HapticsEngine
+│   ├── cursor/     VirtualMouse (SendInput, power curve, sub-pixel)
+│   ├── input/      KeyboardMapper (button → key bindings)
+│   ├── overlay/    OverlayWindow (D2D), RadialMenu, Toast notifications
+│   ├── config/     ConfigStore (JSON + hot-reload)
+│   ├── app/        Application, SystemTray, AutoStart
+│   └── main.cpp    WinMain entry point
+├── .github/workflows/  CI build + lint
+├── CMakeLists.txt
+├── CMakePresets.json
+├── vcpkg.json
+└── CHANGELOG.md
+```
+
+---
+
+## 🧑‍💻 Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md). Code quality bar is senior-level.
+All PRs require tests for new logic, design review for UI changes, and
+performance profiling for input-path changes.
 
 ---
 
