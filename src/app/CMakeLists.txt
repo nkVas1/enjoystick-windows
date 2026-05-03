@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 add_library(enjoystick_app STATIC
     src/Application.cpp
     src/AutoStart.cpp
+    src/SystemTray.cpp
 )
 
 target_include_directories(enjoystick_app
@@ -16,6 +17,7 @@ target_link_libraries(enjoystick_app
     PUBLIC enjoystick_input
     PUBLIC enjoystick_overlay
     PUBLIC enjoystick_config
+    PRIVATE comctl32.lib
 )
 
 target_compile_features(enjoystick_app PUBLIC cxx_std_20)

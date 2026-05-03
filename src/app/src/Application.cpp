@@ -1,11 +1,12 @@
 #include <enjoystick/app/Application.hpp>
+#include <enjoystick/app/SystemTray.hpp>
 #include "AutoStart.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 
 #include <stdexcept>
-#include <format>
+#include <string>
 
 namespace enjoystick::app {
 
@@ -18,6 +19,10 @@ enum class InputMode : uint8_t {
     Navigate,  ///< D-pad / buttons = keyboard nav
 };
 
+static const wchar_t* InputModeLabel(InputMode m) noexcept {
+    return m == InputMode::Cursor ? L"\U0001F5B1 Cursor mode" : L"\u2B06 Navigate mode";
+}
+
 // ---------------------------------------------------------------------------
 // Implementation
 // ---------------------------------------------------------------------------
@@ -25,7 +30,7 @@ enum class InputMode : uint8_t {
 class ApplicationImpl final : public Application {
 public:
     ApplicationImpl() = default;
-    ~ApplicationImpl() override { Exit(); }
+    ~ApplicationImpl() override = default;
 
     void Init() override {
         // ─── Config
@@ -35,21 +40,25 @@ public:
 
         // ─── Input engine
         core::InputEngine::Config engCfg;
-        engCfg.pollingRateHz    = 250;
-        engCfg.hapticsEnabled   = true;
+        engCfg.pollingRateHz  = 250;
+        engCfg.hapticsEnabled = true;
         m_inputEngine = core::InputEngine::Create(engCfg);
 
-        // ─── Subsystems wired to config
+        // ─── Subsystems
         const auto& cfg = m_config->Get();
-        m_virtualMouse  = std::make_unique<cursor::VirtualMouse>(cfg.cursor);
-        m_keyMapper     = std::make_unique<input::KeyboardMapper>();
+        m_virtualMouse = std::make_unique<cursor::VirtualMouse>(cfg.cursor);
+        m_keyMapper    = std::make_unique<input::KeyboardMapper>();
 
         // ─── Overlay
         m_overlay = overlay::OverlayWindow::Create();
         SetupRadialMenu();
         m_overlay->Show();
 
-        // ─── Wire input callbacks
+        // ─── System tray
+        m_tray = SystemTray::Create(L"EnjoyStick \u2014 gamepad navigation active");
+        m_tray->SetMenuItems(BuildTrayMenu());
+
+        // ─── Input callbacks
         m_inputHandle = m_inputEngine->OnInput([this](const ControllerState& s) {
             OnControllerState(s);
         });
@@ -57,14 +66,14 @@ public:
             OnConnectionEvent(id, ev);
         });
 
-        // ─── React to config changes
+        // ─── Live config propagation
         m_configHandle = m_config->OnChanged([this](const AppConfig& c) {
             m_virtualMouse->SetConfig(c.cursor);
         });
 
         m_inputEngine->Start();
 
-        // ─── AutoStart (silently enable on first run)
+        // ─── Auto-start (register silently on first launch)
         if (!AutoStart::IsEnabled()) AutoStart::Enable();
     }
 
@@ -74,13 +83,15 @@ public:
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        // Clean teardown before process exits
+        if (m_inputEngine) m_inputEngine->Stop();
+        if (m_overlay)     m_overlay->Hide();
+        if (m_tray)        m_tray->Remove();
+        if (m_config)      m_config->StopWatcher();
         return static_cast<int>(msg.wParam);
     }
 
     void Exit() override {
-        if (m_inputEngine) m_inputEngine->Stop();
-        if (m_overlay)     m_overlay->Hide();
-        if (m_config)      m_config->StopWatcher();
         PostQuitMessage(0);
     }
 
@@ -94,26 +105,30 @@ public:
             m_virtualMouse->SetEnabled(true);
             m_keyMapper->SetEnabled(false);
         }
+        if (m_overlay) m_overlay->ShowToast(InputModeLabel(m_mode));
+        if (m_tray) m_tray->SetMenuItems(BuildTrayMenu());
     }
 
 private:
-    void OnControllerState(const ControllerState& state) {
-        // Dispatch delta time from last call
-        const uint64_t now = []() -> uint64_t {
-            LARGE_INTEGER li; QueryPerformanceCounter(&li); return li.QuadPart;
-        }();
-        const float dt = (m_lastTick == 0) ? 0.004f
-            : static_cast<float>(now - m_lastTick) / static_cast<float>([]() -> uint64_t {
-                LARGE_INTEGER li; QueryPerformanceFrequency(&li); return li.QuadPart;
-            }());
-        m_lastTick = now;
+    // ─── Input dispatch ────────────────────────────────────────────────────────
 
-        // Guide button → toggle radial menu
+    void OnControllerState(const ControllerState& state) {
+        // Compute delta-time via QueryPerformanceCounter
+        LARGE_INTEGER freq, now;
+        QueryPerformanceFrequency(&freq);
+        QueryPerformanceCounter(&now);
+        const float dt = (m_lastTick == 0)
+            ? 0.004f
+            : static_cast<float>(now.QuadPart - m_lastTick) /
+              static_cast<float>(freq.QuadPart);
+        m_lastTick = now.QuadPart;
+        dt;  // suppress unused warning in some MSVC configs
+
+        // Guide button — toggle radial menu
         if (HasButton(state.buttonsDown, Button::Guide)) {
-            if (m_overlay->GetRadialMenu().IsVisible())
-                m_overlay->GetRadialMenu().Close();
-            else
-                m_overlay->GetRadialMenu().Open();
+            auto& rm = m_overlay->GetRadialMenu();
+            if (rm.IsVisible()) rm.Close();
+            else                rm.Open();
         }
 
         m_virtualMouse->Update(state, dt);
@@ -122,42 +137,81 @@ private:
     }
 
     void OnConnectionEvent(ControllerId id, ConnectionEvent ev) {
-        const bool connected = ev == ConnectionEvent::Connected;
-        m_overlay->ShowToast(
-            connected ? L"🎮 Controller connected"
-                      : L"⚠ Controller disconnected");
-        if (connected) {
-            // Gentle welcome rumble
+        const bool connected = (ev == ConnectionEvent::Connected);
+        const std::wstring msg = connected
+            ? L"\U0001F3AE Controller connected"
+            : L"\u26A0 Controller disconnected";
+        if (m_overlay) m_overlay->ShowToast(msg);
+        if (m_tray)    m_tray->ShowBalloon(L"EnjoyStick", msg);
+        if (connected && m_inputEngine) {
             m_inputEngine->Rumble(id, {0.3f, 0.6f, 150});
         }
     }
 
+    // ─── Radial menu setup ─────────────────────────────────────────────────────
+
     void SetupRadialMenu() {
+        using RM = overlay::RadialMenuItem;
         m_overlay->GetRadialMenu().SetItems({
-            { L"🖥️",  L"Desktop",    [this]{ ShellExecuteW(nullptr,L"open",L"shell:Desktop",nullptr,nullptr,SW_SHOW); } },
-            { L"🎵",   L"Media",      [this]{ ShellExecuteW(nullptr,L"open",L"shell:AppFolder",nullptr,nullptr,SW_SHOW); } },
-            { L"⚙️",   L"Settings",   [this]{ ShellExecuteW(nullptr,L"open",L"ms-settings:",nullptr,nullptr,SW_SHOW); } },
-            { L"🔍",   L"Search",     [this]{ keybd_event(VK_LWIN, 0, 0, 0); keybd_event('S', 0, 0, 0); keybd_event('S', 0, KEYEVENTF_KEYUP, 0); keybd_event(VK_LWIN, 0, KEYEVENTF_KEYUP, 0); } },
-            { L"📂",   L"Files",      [this]{ ShellExecuteW(nullptr,L"open",L"explorer.exe",nullptr,nullptr,SW_SHOW); } },
-            { L"🔁",   L"Mode",       [this]{ ToggleInputMode(); } },
-            { L"⏹️",   L"Exit",       [this]{ Exit(); } },
+            RM{ L"\U0001F5A5",  L"Desktop",
+                []{  ShellExecuteW(nullptr,L"open",L"shell:Desktop",nullptr,nullptr,SW_SHOW); }},
+            RM{ L"\U0001F4C2",  L"Files",
+                []{  ShellExecuteW(nullptr,L"open",L"explorer.exe",nullptr,nullptr,SW_SHOW); }},
+            RM{ L"\u2699",      L"Settings",
+                []{  ShellExecuteW(nullptr,L"open",L"ms-settings:",nullptr,nullptr,SW_SHOW); }},
+            RM{ L"\U0001F50D",  L"Search",
+                []{  keybd_event(VK_LWIN,0,0,0); keybd_event('S',0,0,0);
+                     keybd_event('S',0,KEYEVENTF_KEYUP,0); keybd_event(VK_LWIN,0,KEYEVENTF_KEYUP,0); }},
+            RM{ L"\U0001F3B5",  L"Media",
+                []{  keybd_event(VK_MEDIA_PLAY_PAUSE,0,0,0);
+                     keybd_event(VK_MEDIA_PLAY_PAUSE,0,KEYEVENTF_KEYUP,0); }},
+            RM{ L"\U0001F501",  L"Mode",   [this]{ ToggleInputMode(); }},
+            RM{ L"\u23F9",      L"Exit",   [this]{ Exit(); }},
         });
     }
 
-    // Subsystems
-    std::unique_ptr<config::ConfigStore>       m_config;
-    std::unique_ptr<core::InputEngine>          m_inputEngine;
-    std::unique_ptr<cursor::VirtualMouse>       m_virtualMouse;
-    std::unique_ptr<input::KeyboardMapper>      m_keyMapper;
-    std::unique_ptr<overlay::OverlayWindow>     m_overlay;
+    // ─── Tray menu ──────────────────────────────────────────────────────────────
 
-    // Callback lifetime handles
+    std::vector<TrayMenuItem> BuildTrayMenu() {
+        const wchar_t* modeLabel = (m_mode == InputMode::Cursor)
+            ? L"Switch to Navigate mode"
+            : L"Switch to Cursor mode";
+
+        const bool autoStartEnabled = AutoStart::IsEnabled();
+        const wchar_t* autoStartLabel = autoStartEnabled
+            ? L"\u2713 Launch on login"
+            : L"Launch on login";
+
+        return {
+            { L"EnjoyStick v0.1",  {}, false },
+            { L"",                 {}, true  },  // separator
+            { modeLabel,   [this]{ ToggleInputMode(); } },
+            { L"Open Settings",
+              []{ ShellExecuteW(nullptr,L"open",L"ms-settings:",nullptr,nullptr,SW_SHOW); } },
+            { autoStartLabel,
+              [autoStartEnabled]{
+                  if (autoStartEnabled) AutoStart::Disable();
+                  else                  AutoStart::Enable();
+              }},
+            { L"",  {}, true  },  // separator
+            { L"Exit", [this]{ Exit(); } },
+        };
+    }
+
+    // ─── Members ────────────────────────────────────────────────────────────────
+    std::unique_ptr<config::ConfigStore>    m_config;
+    std::unique_ptr<core::InputEngine>      m_inputEngine;
+    std::unique_ptr<cursor::VirtualMouse>   m_virtualMouse;
+    std::unique_ptr<input::KeyboardMapper>  m_keyMapper;
+    std::unique_ptr<overlay::OverlayWindow> m_overlay;
+    std::unique_ptr<SystemTray>             m_tray;
+
     CallbackHandle m_inputHandle;
     CallbackHandle m_connHandle;
     CallbackHandle m_configHandle;
 
     InputMode m_mode     = InputMode::Cursor;
-    uint64_t  m_lastTick = 0;
+    int64_t   m_lastTick = 0;
 };
 
 // ---------------------------------------------------------------------------
