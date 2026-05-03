@@ -1,0 +1,10 @@
+BasedOnStyle: Google
+IndentWidth: 4
+ColumnLimit: 100
+PointerAlignment: Left
+ReferenceAlignment: Left
+BreakBeforeBraces: Attach
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup

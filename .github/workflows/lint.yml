@@ -1,0 +1,22 @@
+name: Lint
+
+on:
+  push:
+    branches: [main, 'feat/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  clang-format:
+    name: clang-format check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-format
+        run: choco install llvm --version 17.0.6 -y
+      - name: Check formatting
+        run: |
+          $files = Get-ChildItem -Recurse -Include *.cpp,*.hpp src,tests
+          foreach ($f in $files) {
+            clang-format --dry-run --Werror $f.FullName
+          }
