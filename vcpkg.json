@@ -1,0 +1,15 @@
+{
+  "name": "enjoystick-windows",
+  "version": "0.1.0",
+  "description": "Seamless gamepad UX/UI extension for Windows 11",
+  "dependencies": [
+    "sdl3",
+    "nlohmann-json",
+    "spdlog",
+    "gtest",
+    "benchmark",
+    "wintoast",
+    "abseil"
+  ],
+  "builtin-baseline": "ce613c41b13df2d3f9fd5a4c1cd1f73e28a93f3f"
+}
