@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 
+# ---------------------------------------------------------------------------
+# enjoystick_input
+#
+# Translates controller button state into keyboard / mouse SendInput calls
+# for system-wide navigation without application-level controller support.
+# ---------------------------------------------------------------------------
+
 add_library(enjoystick_input STATIC
     src/KeyboardMapper.cpp
 )

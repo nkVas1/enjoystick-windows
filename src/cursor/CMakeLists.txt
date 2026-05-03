@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 
+# ---------------------------------------------------------------------------
+# enjoystick_cursor
+#
+# Maps controller stick / trigger input to SendInput mouse events with
+# configurable acceleration curve and sub-pixel accumulation.
+# ---------------------------------------------------------------------------
+
 add_library(enjoystick_cursor STATIC
     src/VirtualMouse.cpp
 )
