@@ -76,9 +76,11 @@ private:
     [[nodiscard]] float AngleForIndex   (int32_t index) const noexcept;
     [[nodiscard]] Vec2  PositionForIndex(int32_t index, float cx, float cy, float radius) const noexcept;
 
-    // Dwell timing constants (ms)
-    static constexpr float kDwellStartMs   = 1000.0f; // tremor starts after this
-    static constexpr float kDwellConfirmMs = 1400.0f; // auto-confirm after this
+    // Dwell timing constants (ms).
+    // kDwellStartMs:   how long the stick must stay on a sector before tremor begins.
+    // kDwellConfirmMs: total dwell time (from first entry) before auto-confirm fires.
+    static constexpr float kDwellStartMs   =  600.0f;  // tremor starts at 0.6 s
+    static constexpr float kDwellConfirmMs = 1000.0f;  // confirm fires at 1.0 s
 
     Config                      m_config;
     std::vector<RadialMenuItem> m_items;
@@ -94,8 +96,9 @@ private:
     float   m_latchTimer    = 0.0f;
 
     // Dwell auto-select
-    float   m_dwellTimer    = 0.0f;   // ms since stick settled on current sector
-    int32_t m_dwellSector   = -1;     // which sector the dwell is accumulating on
+    float   m_dwellTimer      = 0.0f;   // ms since stick settled on current sector
+    int32_t m_dwellSector     = -1;     // which sector the dwell is accumulating on
+    bool    m_stickInDeadzone = true;   // true when stick is below selectionDeadzone
 
     // Confirmation flash (brief white burst before close)
     float   m_flashTimer    = 0.0f;
