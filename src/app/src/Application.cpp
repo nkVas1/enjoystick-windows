@@ -2,8 +2,8 @@
 #include <enjoystick/app/SystemTray.hpp>
 #include "AutoStart.hpp"
 
-// WIN32_LEAN_AND_MEAN + NOMINMAX are defined by target_compile_definitions.
 #include <Windows.h>
+#include <shellapi.h>
 
 #include <stdexcept>
 #include <string>
@@ -153,7 +153,6 @@ private:
 
     void SetupRadialMenu() {
         using RM = overlay::RadialMenuItem;
-        // RadialMenuItem fields: { label, icon, action }
         m_overlay->GetRadialMenu().SetItems({
             RM{ L"Desktop",  L"\U0001F5A5",
                 []{ ShellExecuteW(nullptr, L"open", L"shell:Desktop",
@@ -193,7 +192,7 @@ private:
 
         return {
             { L"EnjoyStick v0.1", {},      false },
-            { L"",               {},      true  },  // separator
+            { L"",               {},      true  },
             { modeLabel,         [this]{ ToggleInputMode(); } },
             { L"Open Settings",
               []{ ShellExecuteW(nullptr, L"open", L"ms-settings:",
@@ -203,7 +202,7 @@ private:
                   if (autoOn) AutoStart::Disable();
                   else        AutoStart::Enable();
               } },
-            { L"",               {},      true  },  // separator
+            { L"",               {},      true  },
             { L"Exit",           [this]{ Exit(); } },
         };
     }

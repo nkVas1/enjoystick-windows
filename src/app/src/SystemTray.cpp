@@ -1,6 +1,5 @@
 #include <enjoystick/app/SystemTray.hpp>
 
-#define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <shellapi.h>
 #include <commctrl.h>
@@ -77,7 +76,9 @@ private:
         nid.uID              = kTrayIconId;
         nid.uCallbackMessage = WM_TRAY_CALLBACK;
         nid.uFlags           = NIF_MESSAGE | NIF_ICON | NIF_TIP;
-        nid.hIcon            = m_hIcon ? m_hIcon : LoadIconW(nullptr, IDI_APPLICATION);
+        nid.hIcon            = m_hIcon
+                                   ? m_hIcon
+                                   : LoadIconW(nullptr, reinterpret_cast<LPCWSTR>(IDI_APPLICATION));
         wcsncpy_s(nid.szTip, m_tooltip.c_str(), _TRUNCATE);
         return nid;
     }
@@ -100,7 +101,6 @@ private:
     }
 
     void AddTrayIcon() {
-        // Try to load icon from path; fall back to default application icon
         if (!m_iconPath.empty()) {
             m_hIcon = static_cast<HICON>(LoadImageW(
                 nullptr, m_iconPath.c_str(),
@@ -109,7 +109,6 @@ private:
         NOTIFYICONDATAW nid = BuildNID();
         Shell_NotifyIconW(NIM_ADD, &nid);
 
-        // Use version 4 for richer callbacks (NOTIFYICON_VERSION_4)
         nid.uVersion = NOTIFYICON_VERSION_4;
         Shell_NotifyIconW(NIM_SETVERSION, &nid);
         m_added = true;
@@ -122,7 +121,6 @@ private:
         HMENU hMenu = CreatePopupMenu();
         if (!hMenu) return;
 
-        // Build menu items; use ID = index + 1 (0 = invalid WM_COMMAND id)
         for (size_t i = 0; i < m_items.size(); ++i) {
             const auto& item = m_items[i];
             if (item.separator) {
@@ -134,7 +132,6 @@ private:
             }
         }
 
-        // Required: set foreground window so menu dismisses on click-outside
         SetForegroundWindow(m_hwnd);
 
         POINT pt;
