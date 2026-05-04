@@ -2,6 +2,7 @@
 
 #include <enjoystick/shared/Types.hpp>
 #include <enjoystick/overlay/RadialMenu.hpp>
+#include <enjoystick/overlay/SettingsMenu.hpp>
 #include <memory>
 #include <string>
 #include <functional>
@@ -20,7 +21,7 @@ namespace enjoystick::overlay {
 /// Architecture:
 ///   - HWND created with WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST
 ///   - DirectComposition for per-pixel alpha without GDI overhead
-///   - Dedicated render thread; Update() is called from the input thread
+///   - Dedicated render thread; PostState() is called from the input thread
 ///     via a lock-free state snapshot.
 ///   - Supports multi-monitor setups: one OverlayWindow per HMONITOR
 ///
@@ -29,6 +30,8 @@ namespace enjoystick::overlay {
 ///   overlay->Show();
 ///   // from input callback:
 ///   overlay->PostState(state);
+///   // wire settings changes:
+///   overlay->GetSettingsMenu().SetOnChanged([](const SettingsMenu::Values& v){ ... });
 ///
 class OverlayWindow {
 public:
@@ -62,8 +65,12 @@ public:
     /// Post a new controller state (thread-safe, lock-free).
     virtual void PostState(const ControllerState& state) = 0;
 
-    /// Access the radial menu for programmatic control.
+    /// Access the radial quick-action menu.
     virtual RadialMenu& GetRadialMenu() = 0;
+
+    /// Access the gamepad-driven settings panel.
+    /// Caller can set the OnChanged callback and call Open(values) / Close().
+    virtual SettingsMenu& GetSettingsMenu() = 0;
 
     /// Trigger a toast notification (thread-safe).
     virtual void ShowToast(std::wstring message, uint32_t durationMs = 2500) = 0;

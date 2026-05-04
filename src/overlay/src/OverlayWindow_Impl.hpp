@@ -44,7 +44,8 @@ public:
     void Show()  override;
     void Hide()  override;
     void PostState(const ControllerState& state) override;
-    RadialMenu& GetRadialMenu() override;
+    RadialMenu&    GetRadialMenu()    override;
+    SettingsMenu&  GetSettingsMenu()  override;
     void ShowToast(std::wstring message, uint32_t durationMs) override;
     [[nodiscard]] bool    IsShown()  const noexcept override;
     [[nodiscard]] HWND__* GetHWND()  const noexcept override;
@@ -77,9 +78,8 @@ private:
     int     m_dibH   = 0;
 
     // State double-buffer (input thread → render thread, lock-free).
-    // alignas(64) is intentional: it places m_pendingState on its own
-    // cache line, preventing false sharing. C4324 (padding warning) is
-    // expected and benign — suppressed locally.
+    // alignas(64) places m_pendingState on its own cache line to prevent
+    // false sharing. C4324 is expected and intentional — suppressed locally.
 #pragma warning(push)
 #pragma warning(disable: 4324)
     alignas(64) std::atomic<ControllerState*> m_pendingState{nullptr};
@@ -89,7 +89,8 @@ private:
     ControllerState m_lastState    = {};
 
     // Overlay components
-    RadialMenu      m_radialMenu;
+    RadialMenu    m_radialMenu;
+    SettingsMenu  m_settingsMenu;
 
     // Toast queue
     std::mutex                      m_toastMutex;

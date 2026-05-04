@@ -50,9 +50,10 @@ void OverlayWindowImpl::Hide() {
     m_shown = false;
 }
 
-bool    OverlayWindowImpl::IsShown()     const noexcept { return m_shown.load(); }
-HWND__* OverlayWindowImpl::GetHWND()     const noexcept { return m_hwnd; }
-RadialMenu& OverlayWindowImpl::GetRadialMenu()         { return m_radialMenu; }
+bool          OverlayWindowImpl::IsShown()       const noexcept { return m_shown.load(); }
+HWND__*       OverlayWindowImpl::GetHWND()       const noexcept { return m_hwnd; }
+RadialMenu&   OverlayWindowImpl::GetRadialMenu()               { return m_radialMenu; }
+SettingsMenu& OverlayWindowImpl::GetSettingsMenu()             { return m_settingsMenu; }
 
 // ---------------------------------------------------------------------------
 // PostState
@@ -113,7 +114,7 @@ void OverlayWindowImpl::CreateWindowAndD2D() {
     wc.lpszClassName = L"EnjoyStickOverlay";
     RegisterClassExW(&wc);
 
-    // WS_EX_LAYERED: required for UpdateLayeredWindow.
+    // WS_EX_LAYERED:    required for UpdateLayeredWindow.
     // WS_EX_TRANSPARENT: click-through (input passes to windows below).
     // WS_EX_NOACTIVATE:  never steals focus.
     m_hwnd = CreateWindowExW(
@@ -126,8 +127,6 @@ void OverlayWindowImpl::CreateWindowAndD2D() {
 
     if (!m_hwnd) throw std::runtime_error("OverlayWindow: CreateWindowEx failed");
 
-    // DO NOT call SetLayeredWindowAttributes here.
-    // UpdateLayeredWindow owns the window's visual appearance instead.
     ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
 
     // D2D factory (multi-threaded: render loop runs on its own thread)
@@ -149,7 +148,6 @@ void OverlayWindowImpl::CreateWindowAndD2D() {
         throw std::runtime_error("OverlayWindow: DWriteCreateFactory failed");
     }
 
-    // Pre-create the DIB for the full monitor size
     EnsureDib(m_monitorRect.Width(), m_monitorRect.Height());
 }
 
@@ -252,11 +250,18 @@ void OverlayWindowImpl::RenderLoop() {
 }
 
 // ---------------------------------------------------------------------------
-// RenderFrame — DIB + UpdateLayeredWindow path
+// RenderFrame
 //
-// Per-pixel alpha works correctly here because UpdateLayeredWindow(ULW_ALPHA)
-// reads each pixel's alpha channel directly from the DIB. The D2D clear to
-// (0,0,0,0) leaves those pixels fully transparent on-screen.
+// Render order (back to front):
+//   1. RadialMenu      — visible when Guide is pressed
+//   2. SettingsMenu    — slides in from the right; suppresses RadialMenu input
+//   3. Active indicator
+//   4. Toasts
+//
+// Input routing:
+//   When SettingsMenu is open, it consumes the controller state exclusively
+//   so that D-pad navigation does not accidentally trigger radial items.
+//   When SettingsMenu is closed, RadialMenu gets the full state.
 // ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
@@ -269,9 +274,7 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
     // Zero the DIB before each frame (clear to transparent black)
     RECT dibRect{ 0, 0, w, h };
     FillRect(m_memDC, &dibRect, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
-    // Black fill sets alpha=0 in the DIB; D2D will overwrite with premultiplied values.
 
-    // Create DC render target bound to the memory DC
     Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> rt;
     const D2D1_RENDER_TARGET_PROPERTIES rtp = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_DEFAULT,
@@ -281,44 +284,56 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
     if (FAILED(rt->BindDC(m_memDC, &dibRect))) return;
 
     rt->BeginDraw();
-    rt->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));  // fully transparent
+    rt->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
-    m_radialMenu.Update(m_lastState, deltaSeconds);
-    m_radialMenu.Draw(rt.Get(), m_dwriteFactory.Get(), m_dpiScale,
-                      static_cast<float>(w), static_cast<float>(h));
+    const float sw = static_cast<float>(w);
+    const float sh = static_cast<float>(h);
 
+    // -----------------------------------------------------------------------
+    // Input routing: SettingsMenu takes exclusive control when open
+    // -----------------------------------------------------------------------
+    const bool settingsOpen = m_settingsMenu.IsOpen();
+
+    if (settingsOpen) {
+        // Pass state to SettingsMenu; feed an empty (no-button) state to
+        // RadialMenu so it animates out but receives no new input.
+        m_settingsMenu.Update(m_lastState, deltaSeconds);
+        ControllerState empty{};
+        m_radialMenu.Update(empty, deltaSeconds);
+    } else {
+        m_radialMenu.Update(m_lastState, deltaSeconds);
+        // SettingsMenu still needs Update() called to animate its closing
+        // transition even after we stopped routing input to it.
+        ControllerState empty{};
+        m_settingsMenu.Update(empty, deltaSeconds);
+    }
+
+    // -----------------------------------------------------------------------
+    // Draw order (back to front)
+    // -----------------------------------------------------------------------
+    m_radialMenu.Draw(rt.Get(), m_dwriteFactory.Get(), m_dpiScale, sw, sh);
+    m_settingsMenu.Draw(rt.Get(), m_dwriteFactory.Get(), m_dpiScale, sw, sh);
     DrawActiveIndicator(rt.Get());
     DrawToasts(rt.Get(), deltaSeconds);
 
     rt->EndDraw();
 
-    // Push the DIB to the layered window with per-pixel alpha
     POINT ptSrc  = { 0, 0 };
     POINT ptDst  = { m_monitorRect.left, m_monitorRect.top };
     SIZE  szWnd  = { w, h };
     BLENDFUNCTION blend{};
     blend.BlendOp             = AC_SRC_OVER;
     blend.BlendFlags          = 0;
-    blend.SourceConstantAlpha = 255;   // use per-pixel alpha
+    blend.SourceConstantAlpha = 255;
     blend.AlphaFormat         = AC_SRC_ALPHA;
 
     UpdateLayeredWindow(
-        m_hwnd,
-        nullptr,     // use screen DC
-        &ptDst,
-        &szWnd,
-        m_memDC,
-        &ptSrc,
-        0,
-        &blend,
-        ULW_ALPHA);
+        m_hwnd, nullptr, &ptDst, &szWnd, m_memDC,
+        &ptSrc, 0, &blend, ULW_ALPHA);
 }
 
 // ---------------------------------------------------------------------------
 // DrawActiveIndicator
-//
-// Small glowing dot (bottom-right corner) that confirms EnjoyStick is running.
-// Outer glow ring + filled centre.
 // ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::DrawActiveIndicator(ID2D1RenderTarget* rt) {
@@ -330,19 +345,15 @@ void OverlayWindowImpl::DrawActiveIndicator(ID2D1RenderTarget* rt) {
     const float cx   = static_cast<float>(m_dibW) - marg;
     const float cy   = static_cast<float>(m_dibH) - marg;
 
-    // Glow ring
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> glowBrush;
     rt->CreateSolidColorBrush(
-        D2D1::ColorF(0.34f, 0.31f, 0.98f, 0.30f),
-        glowBrush.GetAddressOf());
+        D2D1::ColorF(0.34f, 0.31f, 0.98f, 0.30f), glowBrush.GetAddressOf());
     if (glowBrush)
         rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), glow, glow), glowBrush.Get());
 
-    // Solid centre
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dotBrush;
     rt->CreateSolidColorBrush(
-        D2D1::ColorF(0.34f, 0.31f, 0.98f, 0.90f),
-        dotBrush.GetAddressOf());
+        D2D1::ColorF(0.34f, 0.31f, 0.98f, 0.90f), dotBrush.GetAddressOf());
     if (dotBrush)
         rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), dotBrush.Get());
 }
@@ -375,11 +386,9 @@ void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
     const float px = (static_cast<float>(m_dibW) - pw) * 0.5f;
     const float py = static_cast<float>(m_dibH) - 96.0f * m_dpiScale;
 
-    // Background pill
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush;
     rt->CreateSolidColorBrush(
-        D2D1::ColorF(0.08f, 0.08f, 0.12f, 0.88f * opacity),
-        bgBrush.GetAddressOf());
+        D2D1::ColorF(0.08f, 0.08f, 0.12f, 0.88f * opacity), bgBrush.GetAddressOf());
     if (bgBrush) {
         D2D1_ROUNDED_RECT pill{};
         pill.rect    = D2D1::RectF(px, py, px + pw, py + ph);
@@ -392,19 +401,16 @@ void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
     m_dwriteFactory->CreateTextFormat(
         L"Segoe UI", nullptr,
-        DWRITE_FONT_WEIGHT_SEMI_BOLD,
-        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
         DWRITE_FONT_STRETCH_NORMAL,
-        15.0f * m_dpiScale, L"en-us",
-        fmt.GetAddressOf());
+        15.0f * m_dpiScale, L"en-us", fmt.GetAddressOf());
     if (!fmt) return;
     fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
     fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
     rt->CreateSolidColorBrush(
-        D2D1::ColorF(0.96f, 0.96f, 1.0f, opacity),
-        textBrush.GetAddressOf());
+        D2D1::ColorF(0.96f, 0.96f, 1.0f, opacity), textBrush.GetAddressOf());
     if (!textBrush) return;
 
     rt->DrawText(
