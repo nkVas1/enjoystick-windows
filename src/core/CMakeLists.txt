@@ -4,15 +4,17 @@ cmake_minimum_required(VERSION 3.14)
 # enjoystick_core
 #
 # Low-level input subsystem:
-#   InputEngine         — abstract polling interface + factory
-#   InputBackend_XInput — XInput 1.4 implementation (250 Hz poll thread)
-#   DeadzoneFilter      — radial / axial / hybrid deadzone math
+#   InputEngine            — abstract polling interface + factory
+#   InputBackend_XInput    — XInput 1.4 implementation (250 Hz poll thread)
+#   DeadzoneFilter         — radial / axial / hybrid deadzone math
+#   HapticsEngine_XInput   — XInput motor rumble + predefined haptic patterns
 # ---------------------------------------------------------------------------
 
 add_library(enjoystick_core STATIC
     src/DeadzoneFilter.cpp
     src/InputEngine.cpp
     src/InputBackend_XInput.cpp
+    src/HapticsEngine_XInput.cpp
 )
 
 target_compile_definitions(enjoystick_core PUBLIC
