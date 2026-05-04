@@ -30,8 +30,8 @@ namespace enjoystick::overlay {
 ///   overlay->Show();
 ///   // from input callback:
 ///   overlay->PostState(state);
-///   // wire settings changes:
-///   overlay->GetSettingsMenu().SetOnChanged([](const SettingsMenu::Values& v){ ... });
+///   // update the HUD mode chip:
+///   overlay->SetModeLabel(L"\U0001F5B1  Cursor mode");
 ///
 class OverlayWindow {
 public:
@@ -69,11 +69,14 @@ public:
     virtual RadialMenu& GetRadialMenu() = 0;
 
     /// Access the gamepad-driven settings panel.
-    /// Caller can set the OnChanged callback and call Open(values) / Close().
     virtual SettingsMenu& GetSettingsMenu() = 0;
 
     /// Trigger a toast notification (thread-safe).
     virtual void ShowToast(std::wstring message, uint32_t durationMs = 2500) = 0;
+
+    /// Update the HUD mode-chip label shown in the bottom-left corner.
+    /// Pass an empty string to hide the chip. Thread-safe.
+    virtual void SetModeLabel(std::wstring label) = 0;
 
     /// True if the overlay window is currently shown.
     [[nodiscard]] virtual bool IsShown() const noexcept = 0;
