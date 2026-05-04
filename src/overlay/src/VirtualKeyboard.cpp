@@ -21,6 +21,25 @@ static constexpr float kPi = static_cast<float>(M_PI);
 namespace enjoystick::overlay {
 
 // ---------------------------------------------------------------------------
+// Layout constants — TV / couch viewing distance (1-2 m)
+// Reference: Steam Deck OSK, Xbox Guide keyboard, PS5 on-screen keyboard.
+// Base unit = 1.0 → key = 72x68 px (≈ 44% larger than the old 50x48).
+// ---------------------------------------------------------------------------
+static constexpr float kKeyW_base   = 72.0f;
+static constexpr float kKeyH_base   = 68.0f;
+static constexpr float kGap_base    =  7.0f;
+static constexpr float kCorner_base = 10.0f;
+static constexpr float kPadX_base   = 28.0f;
+static constexpr float kPadY_base   = 22.0f;
+static constexpr float kTbH_base    = 60.0f;  // text-input bar height
+static constexpr float kHintH_base  = 30.0f;  // bottom hint bar height
+static constexpr float kFKey_base   = 20.0f;  // normal key font
+static constexpr float kFSpec_base  = 18.0f;  // special-key font
+static constexpr float kFText_base  = 18.0f;  // text-bar font
+static constexpr float kFHint_base  = 13.0f;  // hint legend font
+static constexpr float kFBadge_base = 12.0f;  // SYM/CAPS badge font
+
+// ---------------------------------------------------------------------------
 // Layout
 // ---------------------------------------------------------------------------
 void VirtualKeyboard::BuildLayout() {
@@ -38,7 +57,7 @@ void VirtualKeyboard::BuildLayout() {
     m_rows.push_back({
         {L"q",L"Q",L"-"}, {L"w",L"W",L"_"}, {L"e",L"E",L"="},
         {L"r",L"R",L"+"}, {L"t",L"T",L"["}, {L"y",L"Y",L"]"},
-        {L"u",L"U",L"{"}, {L"i",L"I",L"}"}, {L"o",L"O",L"\\"},
+        {L"u",L"U",L"{"}, {L"i",L"I",L"}"}, {L"o",L"O",L"\\\\"},
         {L"p",L"P",L"|"},
     });
     // Row 2 — ASDF
@@ -113,7 +132,6 @@ bool VirtualKeyboard::IsOpen() const noexcept {
 // Update
 // ---------------------------------------------------------------------------
 void VirtualKeyboard::Update(const ControllerState& state, float dt) {
-    // Animation
     const float step = dt * 1000.0f / kAnimMs;
     if (m_state == State::Opening) {
         m_animProgress = std::min(1.0f, m_animProgress + step);
@@ -194,9 +212,7 @@ void VirtualKeyboard::TypeKey(const Key& k) {
 // ---------------------------------------------------------------------------
 namespace {
 
-// Top-edge specular arc stroke on a circle/ellipse.
-// Draws a hollow arc geometry from ~200° to ~340° as a thin white stroke.
-// This is the ONLY specular highlight used — zero oval fills.
+// Top-edge specular arc stroke — hollow arc geometry, NO oval fill.
 static void DrawArcSpecular(
     ID2D1RenderTarget* rt,
     ID2D1Factory*      fac,
@@ -229,7 +245,7 @@ static void DrawArcSpecular(
     s->Close();
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
     rt->CreateSolidColorBrush(Tok::White(alpha), b.GetAddressOf());
-    if (b) rt->DrawGeometry(g.Get(), b.Get(), 0.85f);
+    if (b) rt->DrawGeometry(g.Get(), b.Get(), 0.9f);
 }
 
 static void DrawPanelChrome(
@@ -239,29 +255,29 @@ static void DrawPanelChrome(
 {
     // Outer glow border
     { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-      rt->CreateSolidColorBrush(Tok::GoldShadow(0.28f * ease), b.GetAddressOf());
+      rt->CreateSolidColorBrush(Tok::GoldShadow(0.30f * ease), b.GetAddressOf());
       if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(px,py,px+pw,py+ph),r,r};
-               rt->DrawRoundedRectangle(rr, b.Get(), 1.5f); } }
+               rt->DrawRoundedRectangle(rr, b.Get(), 1.8f); } }
     // Inner hairline
     { const float d = 0.5f;
       Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-      rt->CreateSolidColorBrush(Tok::InkLine(0.88f * ease), b.GetAddressOf());
+      rt->CreateSolidColorBrush(Tok::InkLine(0.90f * ease), b.GetAddressOf());
       if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(px+d,py+d,px+pw-d,py+ph-d),r-d,r-d};
-               rt->DrawRoundedRectangle(rr, b.Get(), 0.6f); } }
-    // Top luminance strip — line stroke, NOT oval fill
+               rt->DrawRoundedRectangle(rr, b.Get(), 0.65f); } }
+    // Top luminance strip
     { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-      rt->CreateSolidColorBrush(Tok::White(0.055f * ease), b.GetAddressOf());
+      rt->CreateSolidColorBrush(Tok::White(0.058f * ease), b.GetAddressOf());
       if (b) rt->DrawLine(
-          D2D1::Point2F(px + r,          py + 1.1f * s),
-          D2D1::Point2F(px + pw * 0.42f, py + 1.1f * s),
-          b.Get(), 0.85f); }
+          D2D1::Point2F(px + r,          py + 1.2f * s),
+          D2D1::Point2F(px + pw * 0.40f, py + 1.2f * s),
+          b.Get(), 0.9f); }
     (void)s;
 }
 
 } // anon
 
 // ---------------------------------------------------------------------------
-// Draw
+// Draw — Futurist Glamour v3, TV-scale
 // ---------------------------------------------------------------------------
 void VirtualKeyboard::Draw(
     void*  renderTargetPtr,
@@ -282,15 +298,15 @@ void VirtualKeyboard::Draw(
     const float s    = dpiScale;
     const float ease = 1.0f - std::pow(1.0f - m_animProgress, 3.0f);
 
-    // Layout constants
-    const float kKeyW   = 50.0f * s;
-    const float kKeyH   = 48.0f * s;
-    const float kGap    =  5.0f * s;
-    const float kCorner =  7.0f * s;
-    const float kPadX   = 24.0f * s;
-    const float kPadY   = 18.0f * s;
-    const float kTbH    = 42.0f * s;  // text bar height
-    const float kHintH  = 22.0f * s;  // hint bar height
+    // ---- Layout (TV-scale constants) ----------------------------------------
+    const float kKeyW   = kKeyW_base   * s;
+    const float kKeyH   = kKeyH_base   * s;
+    const float kGap    = kGap_base    * s;
+    const float kCorner = kCorner_base * s;
+    const float kPadX   = kPadX_base   * s;
+    const float kPadY   = kPadY_base   * s;
+    const float kTbH    = kTbH_base    * s;
+    const float kHintH  = kHintH_base  * s;
 
     // Panel width from widest row
     float maxRowW = 0.0f;
@@ -300,19 +316,20 @@ void VirtualKeyboard::Draw(
         if (rw > maxRowW) maxRowW = rw;
     }
     const float kPanelW = maxRowW + kPadX * 2.0f;
-    const float kPanelH = kPadY + kTbH + 6.0f*s
+    const float kPanelH = kPadY + kTbH + 8.0f*s
                         + static_cast<float>(m_rows.size()) * (kKeyH + kGap) - kGap
                         + kHintH + kPadY;
 
     // Slide up from bottom
-    const float targetY = screenH - kPanelH - 20.0f * s;
+    const float targetY = screenH - kPanelH - 24.0f * s;
     const float panelY  = screenH - ease * (screenH - targetY);
     const float panelX  = (screenW - kPanelW) * 0.5f;
+    const float panelR  = 16.0f * s;
 
     // ---- Scrim
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::Scrim(0.40f * ease), b.GetAddressOf());
+        rt->CreateSolidColorBrush(Tok::Scrim(0.44f * ease), b.GetAddressOf());
         if (b) rt->FillRectangle(D2D1::RectF(0.0f, 0.0f, screenW, screenH), b.Get());
     }
 
@@ -320,86 +337,85 @@ void VirtualKeyboard::Draw(
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::SurfaceGlass(0.97f * ease), b.GetAddressOf());
-        if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX,panelY,panelX+kPanelW,panelY+kPanelH),13.0f*s,13.0f*s};
+        if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX,panelY,panelX+kPanelW,panelY+kPanelH),panelR,panelR};
                  rt->FillRoundedRectangle(rr, b.Get()); }
     }
-    DrawPanelChrome(rt, panelX, panelY, kPanelW, kPanelH, 13.0f*s, s, ease);
+    DrawPanelChrome(rt, panelX, panelY, kPanelW, kPanelH, panelR, s, ease);
 
-    // ---- Text bar
+    // ---- Text bar -----------------------------------------------------------
     const float tbX0 = panelX + kPadX;
     const float tbX1 = panelX + kPanelW - kPadX;
     const float tbY  = panelY + kPadY;
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.94f * ease), b.GetAddressOf());
-        if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(tbX0,tbY,tbX1,tbY+kTbH),6.0f*s,6.0f*s};
+        rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.95f * ease), b.GetAddressOf());
+        if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(tbX0,tbY,tbX1,tbY+kTbH),8.0f*s,8.0f*s};
                  rt->FillRoundedRectangle(rr, b.Get()); }
     }
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::GoldDeep(0.60f * ease), b.GetAddressOf());
-        if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(tbX0,tbY,tbX1,tbY+kTbH),6.0f*s,6.0f*s};
-                 rt->DrawRoundedRectangle(rr, b.Get(), 1.0f); }
+        rt->CreateSolidColorBrush(Tok::GoldDeep(0.65f * ease), b.GetAddressOf());
+        if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(tbX0,tbY,tbX1,tbY+kTbH),8.0f*s,8.0f*s};
+                 rt->DrawRoundedRectangle(rr, b.Get(), 1.2f); }
     }
     // Text content
     if (dwrite) {
-        const std::wstring display = m_text.size() > 52
-            ? L"\u2026" + m_text.substr(m_text.size() - 51) : m_text;
+        const std::wstring display = m_text.size() > 48
+            ? L"\u2026" + m_text.substr(m_text.size() - 47) : m_text;
         Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
         dwrite->CreateTextFormat(L"Segoe UI", nullptr,
             DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL, 15.0f*s, L"en-us", fmt.GetAddressOf());
+            DWRITE_FONT_STRETCH_NORMAL, kFText_base * s, L"en-us", fmt.GetAddressOf());
         if (fmt) {
             fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-            rt->CreateSolidColorBrush(Tok::ChromeHi(0.92f * ease), b.GetAddressOf());
+            rt->CreateSolidColorBrush(Tok::ChromeHi(0.94f * ease), b.GetAddressOf());
             if (b) rt->DrawText(display.c_str(), static_cast<UINT32>(display.size()),
-                fmt.Get(), D2D1::RectF(tbX0+10.0f*s, tbY, tbX1-10.0f*s, tbY+kTbH), b.Get());
+                fmt.Get(), D2D1::RectF(tbX0 + 14.0f*s, tbY, tbX1 - 14.0f*s, tbY + kTbH), b.Get());
         }
     }
     // Cursor blink
     {
-        const float blink = 0.5f + 0.5f * std::sin(m_glowPhase * 2.0f);
-        // Estimate cursor x from text length (monospace approximation)
+        const float blink  = 0.5f + 0.5f * std::sin(m_glowPhase * 2.0f);
         const float textW  = std::min(
-            static_cast<float>(m_text.size()) * 8.8f * s,
-            tbX1 - tbX0 - 20.0f * s);
-        const float cursorX = tbX0 + 10.0f * s + textW;
+            static_cast<float>(m_text.size()) * 10.4f * s,
+            tbX1 - tbX0 - 28.0f * s);
+        const float cursorX = tbX0 + 14.0f * s + textW;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldHi(blink * ease), b.GetAddressOf());
         if (b) rt->DrawLine(
-            D2D1::Point2F(cursorX, tbY + 8.0f * s),
-            D2D1::Point2F(cursorX, tbY + kTbH - 8.0f * s),
-            b.Get(), 1.4f * s);
+            D2D1::Point2F(cursorX, tbY + 10.0f * s),
+            D2D1::Point2F(cursorX, tbY + kTbH - 10.0f * s),
+            b.Get(), 2.0f * s);
     }
 
-    // ---- Hint bar (layer badge + controls legend)
+    // ---- Hint bar -----------------------------------------------------------
     {
         const float hy = panelY + kPanelH - kHintH - kPadY * 0.5f;
         if (dwrite) {
             // Layer / Caps badge
             if (m_layer == Layer::Sym || m_caps) {
                 const wchar_t* badge = (m_layer == Layer::Sym) ? L"SYM" : L"CAPS";
-                const float bw = 44.0f*s, bh = 16.0f*s;
+                const float bw = 54.0f*s, bh = 20.0f*s;
                 const float bx = panelX + kPanelW - kPadX - bw;
                 const float by = hy + (kHintH - bh) * 0.5f;
                 {
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fb;
                     rt->CreateSolidColorBrush(
-                        (m_layer == Layer::Sym) ? Tok::GoldDeep(0.80f*ease) : Tok::AmberWarm(0.70f*ease),
+                        (m_layer == Layer::Sym) ? Tok::GoldDeep(0.85f*ease) : Tok::AmberWarm(0.75f*ease),
                         fb.GetAddressOf());
-                    if (fb) { D2D1_ROUNDED_RECT rr{D2D1::RectF(bx,by,bx+bw,by+bh),4.0f*s,4.0f*s};
+                    if (fb) { D2D1_ROUNDED_RECT rr{D2D1::RectF(bx,by,bx+bw,by+bh),5.0f*s,5.0f*s};
                               rt->FillRoundedRectangle(rr, fb.Get()); }
                 }
                 Microsoft::WRL::ComPtr<IDWriteTextFormat> bf;
                 dwrite->CreateTextFormat(L"Segoe UI", nullptr,
                     DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                    9.5f*s, L"en-us", bf.GetAddressOf());
+                    kFBadge_base * s, L"en-us", bf.GetAddressOf());
                 if (bf) {
                     bf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
                     bf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bb;
-                    rt->CreateSolidColorBrush(Tok::GoldAccent(0.96f*ease), bb.GetAddressOf());
+                    rt->CreateSolidColorBrush(Tok::GoldAccent(0.97f*ease), bb.GetAddressOf());
                     if (bb) rt->DrawText(badge, static_cast<UINT32>(std::wcslen(badge)),
                         bf.Get(), D2D1::RectF(bx,by,bx+bw,by+bh), bb.Get());
                 }
@@ -411,26 +427,26 @@ void VirtualKeyboard::Draw(
             Microsoft::WRL::ComPtr<IDWriteTextFormat> lf;
             dwrite->CreateTextFormat(L"Segoe UI", nullptr,
                 DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                10.0f*s, L"en-us", lf.GetAddressOf());
+                kFHint_base * s, L"en-us", lf.GetAddressOf());
             if (lf) {
                 lf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> lb;
-                rt->CreateSolidColorBrush(Tok::ChromeMute(0.60f*ease), lb.GetAddressOf());
+                rt->CreateSolidColorBrush(Tok::ChromeMute(0.65f*ease), lb.GetAddressOf());
                 if (lb) rt->DrawText(legend, static_cast<UINT32>(std::wcslen(legend)),
                     lf.Get(), D2D1::RectF(panelX+kPadX, hy, panelX+kPanelW-kPadX, hy+kHintH), lb.Get());
             }
         }
     }
 
-    // ---- Keys
-    const float keysTop     = panelY + kPadY + kTbH + 6.0f * s;
+    // ---- Keys ---------------------------------------------------------------
+    const float keysTop     = panelY + kPadY + kTbH + 8.0f * s;
     const float glowBreathe = 0.5f + 0.5f * std::sin(m_glowPhase);
 
     for (int32_t ri = 0; ri < static_cast<int32_t>(m_rows.size()); ++ri) {
         const auto& row = m_rows[static_cast<size_t>(ri)];
         const float ry  = keysTop + static_cast<float>(ri) * (kKeyH + kGap);
 
-        // Centre row
+        // Centre row horizontally
         float rowW = -kGap;
         for (const auto& k : row) rowW += k.widthMul * kKeyW + kGap;
         float rx = panelX + (kPanelW - rowW) * 0.5f;
@@ -442,96 +458,97 @@ void VirtualKeyboard::Draw(
             const float kCx = rx + kw * 0.5f;
             const float kCy = ry + kKeyH * 0.5f;
 
-            // Glow halo for selected key — DrawEllipse stroke (NO fill blob)
+            // Animated glow halo — DrawEllipse stroke only (NO fill blob)
             if (sel) {
-                const float gr = kKeyH * 0.52f + 4.0f*s + 2.0f*s*glowBreathe;
-                const float gw = kw   * 0.52f + 4.0f*s + 2.0f*s*glowBreathe;
+                const float gr = kKeyH * 0.54f + 5.0f*s + 2.5f*s*glowBreathe;
+                const float gw = kw   * 0.54f + 5.0f*s + 2.5f*s*glowBreathe;
                 {
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g;
                     rt->CreateSolidColorBrush(
-                        Tok::GoldGlow((0.28f + 0.12f*glowBreathe) * ease), g.GetAddressOf());
+                        Tok::GoldGlow((0.30f + 0.14f*glowBreathe) * ease), g.GetAddressOf());
                     if (g) rt->DrawEllipse(
                         D2D1::Ellipse(D2D1::Point2F(kCx,kCy), gw, gr),
-                        g.Get(), 5.0f*s);
+                        g.Get(), 6.0f*s);
                 }
                 {
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g;
-                    rt->CreateSolidColorBrush(Tok::GoldGlow(0.14f * ease), g.GetAddressOf());
+                    rt->CreateSolidColorBrush(Tok::GoldGlow(0.15f * ease), g.GetAddressOf());
                     if (g) rt->DrawEllipse(
-                        D2D1::Ellipse(D2D1::Point2F(kCx,kCy), gw*0.76f, gr*0.76f),
+                        D2D1::Ellipse(D2D1::Point2F(kCx,kCy), gw*0.75f, gr*0.75f),
                         g.Get(), 2.5f*s);
                 }
             }
 
-            // Keycap outer fill (depth base)
+            // Keycap outer fill
             {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                 rt->CreateSolidColorBrush(
-                    sel ? Tok::SurfaceBase(0.96f*ease) : Tok::SurfaceSunken(0.82f*ease),
+                    sel ? Tok::SurfaceBase(0.97f*ease) : Tok::SurfaceSunken(0.84f*ease),
                     b.GetAddressOf());
                 if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(rx,ry,rx+kw,ry+kKeyH),kCorner,kCorner};
                          rt->FillRoundedRectangle(rr, b.Get()); }
             }
-            // Keycap inner face (raised plane, inset 2px)
+            // Keycap inner face (raised plane, inset)
             {
-                const float ins = 2.2f * s;
+                const float ins = 2.8f * s;
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                 rt->CreateSolidColorBrush(
-                    sel ? Tok::SurfaceRaised(0.88f*ease) : Tok::SurfaceBase(0.72f*ease),
+                    sel ? Tok::SurfaceRaised(0.90f*ease) : Tok::SurfaceBase(0.74f*ease),
                     b.GetAddressOf());
                 if (b) { D2D1_ROUNDED_RECT rr{
                     D2D1::RectF(rx+ins, ry+ins, rx+kw-ins, ry+kKeyH-ins*1.5f),
                     kCorner-ins, kCorner-ins};
                     rt->FillRoundedRectangle(rr, b.Get()); }
             }
-            // Keycap border ring
+            // Keycap border
             {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                 rt->CreateSolidColorBrush(
-                    sel ? Tok::GoldHi(0.94f*ease) : Tok::InkLine(0.82f*ease),
+                    sel ? Tok::GoldHi(0.96f*ease) : Tok::InkLine(0.84f*ease),
                     b.GetAddressOf());
                 if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(rx,ry,rx+kw,ry+kKeyH),kCorner,kCorner};
-                         rt->DrawRoundedRectangle(rr, b.Get(), sel ? 1.6f : 0.75f); }
+                         rt->DrawRoundedRectangle(rr, b.Get(), sel ? 1.8f : 0.85f); }
             }
-            // Bevel shadow rim (inset 1px, GoldDeep 15%)
+            // Bevel shadow rim
             {
-                const float bi = 1.0f;
+                const float bi = 1.2f;
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                 rt->CreateSolidColorBrush(
-                    sel ? Tok::GoldShadow(0.22f*ease) : Tok::GoldDeep(0.12f*ease),
+                    sel ? Tok::GoldShadow(0.24f*ease) : Tok::GoldDeep(0.13f*ease),
                     b.GetAddressOf());
                 if (b) { D2D1_ROUNDED_RECT rr{
                     D2D1::RectF(rx+bi,ry+bi,rx+kw-bi,ry+kKeyH-bi),
                     kCorner-bi, kCorner-bi};
                     rt->DrawRoundedRectangle(rr, b.Get(), 0.55f); }
             }
-            // Top specular arc stroke — NOT an oval fill
+            // Top specular arc — stroke only
             if (fac) {
                 DrawArcSpecular(rt, fac.Get(),
-                    kCx, ry + kKeyH * 0.30f,
-                    kw  * 0.30f, kKeyH * 0.22f,
-                    (sel ? 0.11f : 0.055f) * ease);
+                    kCx, ry + kKeyH * 0.28f,
+                    kw  * 0.28f, kKeyH * 0.20f,
+                    (sel ? 0.12f : 0.06f) * ease);
             }
 
             // Key label
             if (dwrite) {
                 const std::wstring disp = KeyDisplay(k);
                 if (!disp.empty()) {
+                    const float fontSize = (k.isSpecial ? kFSpec_base : kFKey_base) * s;
                     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
                     dwrite->CreateTextFormat(
                         k.isSpecial ? L"Segoe UI Emoji" : L"Segoe UI",
                         nullptr,
                         k.isSpecial ? DWRITE_FONT_WEIGHT_NORMAL : DWRITE_FONT_WEIGHT_SEMI_BOLD,
                         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                        (k.isSpecial ? 13.0f : 15.0f) * s, L"en-us", fmt.GetAddressOf());
+                        fontSize, L"en-us", fmt.GetAddressOf());
                     if (fmt) {
                         fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
                         fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> lb;
                         rt->CreateSolidColorBrush(
-                            sel   ? Tok::GoldBright(0.98f*ease)
-                            : k.isSpecial ? Tok::ChromeMid(0.65f*ease)
-                            :               Tok::ChromeHi(0.80f*ease),
+                            sel       ? Tok::GoldBright(0.99f*ease)
+                            : k.isSpecial ? Tok::ChromeMid(0.68f*ease)
+                            :               Tok::ChromeHi(0.82f*ease),
                             lb.GetAddressOf());
                         if (lb) rt->DrawText(disp.c_str(),
                             static_cast<UINT32>(disp.size()), fmt.Get(),
