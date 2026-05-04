@@ -14,16 +14,73 @@
 #include <functional>
 #include <mutex>
 #include <stdexcept>
+#include <cstring>
+#include <cstdlib>
 
 // Resource ID for the application icon (fallback if memory load fails)
 #define IDI_APP 101
 
 namespace enjoystick::app {
 
-static constexpr UINT WM_TRAY_CALLBACK  = WM_USER + 100;
-static constexpr UINT WM_TRAY_MENUITEM  = WM_USER + 101;
-static constexpr UINT WM_SHOW_MENU      = WM_USER + 102;
-static constexpr UINT kTrayIconId       = 1;
+static constexpr UINT WM_TRAY_CALLBACK = WM_USER + 100;
+static constexpr UINT WM_TRAY_MENUITEM = WM_USER + 101;
+static constexpr UINT WM_SHOW_MENU     = WM_USER + 102;
+static constexpr UINT kTrayIconId      = 1;
+
+// ---------------------------------------------------------------------------
+// LoadIconFromIcoBlob
+// Parses a raw .ico file in memory and creates an HICON for the frame
+// closest to (targetW x targetH). Returns nullptr on failure.
+// ---------------------------------------------------------------------------
+static HICON LoadIconFromIcoBlob(
+    const uint8_t* data, uint32_t size,
+    int targetW = 0, int targetH = 0) noexcept
+{
+    if (!data || size < 6) return nullptr;
+
+    // ICO header
+    uint16_t reserved, type, count;
+    std::memcpy(&reserved, data + 0, 2);
+    std::memcpy(&type,     data + 2, 2);
+    std::memcpy(&count,    data + 4, 2);
+    if (reserved != 0 || type != 1 || count == 0) return nullptr;
+
+    if (targetW == 0) targetW = GetSystemMetrics(SM_CXICON);
+    if (targetH == 0) targetH = GetSystemMetrics(SM_CYICON);
+
+    // ICONDIRENTRY: 1 byte width, 1 height, 1 colorCount, 1 reserved,
+    //               2 planes, 2 bitCount, 4 sizeInBytes, 4 imageOffset
+    struct DirEntry { uint8_t w, h, clr, rsv; uint16_t planes, bpp; uint32_t sz, off; };
+    static_assert(sizeof(DirEntry) == 16, "DirEntry must be 16 bytes");
+
+    const uint32_t dirStart = 6;
+    if (size < dirStart + count * 16u) return nullptr;
+
+    // Find best-fit frame (prefer exact match, otherwise closest size)
+    int    bestIdx  = 0;
+    int    bestDiff = INT_MAX;
+    for (int i = 0; i < static_cast<int>(count); ++i) {
+        DirEntry e;
+        std::memcpy(&e, data + dirStart + i * 16, 16);
+        int w = e.w == 0 ? 256 : e.w;
+        int h = e.h == 0 ? 256 : e.h;
+        int diff = std::abs(w - targetW) + std::abs(h - targetH);
+        if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+    }
+
+    DirEntry best;
+    std::memcpy(&best, data + dirStart + bestIdx * 16, 16);
+    if (best.off + best.sz > size) return nullptr;
+
+    return CreateIconFromResourceEx(
+        // MSDN: lpbIconBits must point to the DIB bits (or PNG) of the icon.
+        // For ICO files this is exactly the per-frame data at best.off.
+        const_cast<PBYTE>(data + best.off), best.sz,
+        TRUE /*fIcon*/,
+        0x00030000 /*dwVersion = 3.0*/,
+        0, 0,
+        LR_DEFAULTCOLOR);
+}
 
 // ---------------------------------------------------------------------------
 class SystemTrayImpl final : public SystemTray {
@@ -90,36 +147,19 @@ private:
     // -------------------------------------------------------------------------
     // LoadIcon_
     // Priority:
-    //   1. Memory-embedded ICO blob (kEnjoyStickIconData) — always available
+    //   1. Embedded ICO blob compiled into the header (always available)
     //   2. RC resource IDI_APP=101 in the EXE
     //   3. File on disk (iconPath parameter)
     //   4. Windows stock IDI_APPLICATION
     // -------------------------------------------------------------------------
     void LoadIcon_() {
-        // 1) Try loading from embedded ICO bytes via CreateIconFromResourceEx.
-        //    We need to find the image data for the appropriate size inside the
-        //    ICO blob. For tray icons Windows requests 16x16 or 32x32.
-        //    We pass the whole ICO blob header pointer; Windows extracts the
-        //    correct frame internally when we use LookupIconIdFromDirectoryEx
-        //    + CreateIconFromResourceEx.
-        {
-            const BYTE* pDir = kEnjoyStickIconData.data();
-            // Skip ICO header (6 bytes) to get to first ICONDIRENTRY.
-            // LookupIconIdFromDirectoryEx finds the best-fit frame index.
-            const int offset = LookupIconIdFromDirectoryEx(
-                const_cast<PBYTE>(pDir), TRUE,
-                GetSystemMetrics(SM_CXSMICON),
-                GetSystemMetrics(SM_CYSMICON),
-                LR_DEFAULTCOLOR);
-            if (offset > 0) {
-                m_hIcon = CreateIconFromResourceEx(
-                    const_cast<PBYTE>(pDir + offset),
-                    static_cast<DWORD>(kEnjoyStickIconSize - static_cast<uint32_t>(offset)),
-                    TRUE, 0x00030000,
-                    0, 0, LR_DEFAULTCOLOR | LR_DEFAULTSIZE);
-                if (m_hIcon) { m_hIconOwned = true; return; }
-            }
-        }
+        // 1) Embedded ICO blob
+        m_hIcon = LoadIconFromIcoBlob(
+            kEnjoyStickIconData,
+            kEnjoyStickIconSize,
+            GetSystemMetrics(SM_CXSMICON),
+            GetSystemMetrics(SM_CYSMICON));
+        if (m_hIcon) { m_hIconOwned = true; return; }
 
         // 2) RC resource
         {
@@ -138,7 +178,7 @@ private:
             if (m_hIcon) { m_hIconOwned = true; return; }
         }
 
-        // 4) Stock fallback (system-owned, never DestroyIcon)
+        // 4) Stock fallback
         m_hIcon      = LoadIconW(nullptr, reinterpret_cast<LPCWSTR>(IDI_APPLICATION));
         m_hIconOwned = false;
     }
@@ -159,7 +199,7 @@ private:
 
     void RegisterTrayWindowClass() {
         UnregisterClassW(kClassName, GetModuleHandleW(nullptr));
-        WNDCLASSEXW wc  = {};
+        WNDCLASSEXW wc   = {};
         wc.cbSize        = sizeof(wc);
         wc.lpfnWndProc   = TrayWndProc;
         wc.hInstance     = GetModuleHandleW(nullptr);
@@ -185,11 +225,10 @@ private:
     }
 
     // -------------------------------------------------------------------------
-    // ShowContextMenu — must NOT be called with m_mutex held.
-    // TrackPopupMenu runs a nested message loop; we copy items first,
-    // release the lock, then call TrackPopupMenu outside the lock.
-    // The action is dispatched via PostMessage so it runs on the main
-    // message loop, not inside the TrackPopupMenu call stack.
+    // ShowContextMenu
+    // Items are copied under lock, then lock is released before
+    // TrackPopupMenu (which runs a nested message loop).
+    // The chosen action is dispatched via PostMessage to the main loop.
     // -------------------------------------------------------------------------
     void ShowContextMenu() {
         std::vector<TrayMenuItem> items;
@@ -243,7 +282,7 @@ private:
             GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         if (!self) return DefWindowProcW(hwnd, msg, wp, lp);
 
-        // Deferred menu action
+        // Deferred menu action (posted from ShowContextMenu after TrackPopupMenu)
         if (msg == WM_TRAY_MENUITEM) {
             const size_t idx = static_cast<size_t>(wp);
             std::function<void()> action;
@@ -256,27 +295,19 @@ private:
             return 0;
         }
 
-        // Deferred ShowContextMenu (posted from tray callback to escape WndProc stack)
+        // Deferred ShowContextMenu trigger (escapes WndProc stack)
         if (msg == WM_SHOW_MENU) {
             self->ShowContextMenu();
             return 0;
         }
 
-        // Shell tray icon events
+        // Shell tray notifications
         if (msg == WM_TRAY_CALLBACK) {
             const UINT event = LOWORD(lp);
-
-            // Right-click or context menu key
-            if (event == WM_RBUTTONUP || event == WM_CONTEXTMENU) {
+            if (event == WM_RBUTTONUP || event == WM_CONTEXTMENU || event == WM_LBUTTONUP) {
                 PostMessageW(hwnd, WM_SHOW_MENU, 0, 0);
                 return 0;
             }
-            // Left single click — also show menu (Windows tray UX convention)
-            if (event == WM_LBUTTONUP) {
-                PostMessageW(hwnd, WM_SHOW_MENU, 0, 0);
-                return 0;
-            }
-            // Left double-click — fire OnDoubleClick callback
             if (event == WM_LBUTTONDBLCLK) {
                 std::function<void()> cb;
                 {
