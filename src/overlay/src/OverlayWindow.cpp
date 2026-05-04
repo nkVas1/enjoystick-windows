@@ -394,7 +394,7 @@ void OverlayWindowImpl::DrawActiveIndicator(ID2D1RenderTarget* rt) {
 }
 
 // ---------------------------------------------------------------------------
-// DrawHudMode  — obsidian pill with spring-animated width + layer badge
+// DrawHudMode  — obsidian pill with spring-animated width + real layer badge
 // ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
@@ -437,9 +437,9 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
     DWRITE_TEXT_METRICS tm{};
     layout->GetMetrics(&tm);
 
-    // Layer badge (SYM / CAPS / ALPHA)
+    // Layer badge — shows SYM / CAPS / ALPHA when keyboard is open
     const bool   kbOpen  = m_keyboard.IsOpen();
-    const float  badgeW  = kbOpen ? 46.0f * s : 0.0f;
+    const float  badgeW  = kbOpen ? 54.0f * s : 0.0f;
     const float  badgeGap= kbOpen ?  6.0f * s : 0.0f;
 
     const float rawChipW = tm.width + padX * 2.0f + accentW + badgeW + badgeGap;
@@ -499,17 +499,26 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
                 D2D1::Point2F(chipX + accentW + padX, chipY + padY),
                 layout.Get(), b.Get());
     }
-    // Layer badge (right side of pill)
+    // Layer badge (right side of pill) — reads live layer from VirtualKeyboard
     if (kbOpen && badgeW > 0.0f) {
         const float bx = chipX + chipW - badgeW - padX * 0.5f;
         const float by = chipY + (chipH - chipH * 0.55f) * 0.5f;
         const float bh = chipH * 0.55f;
-        // We would need VirtualKeyboard to expose layer — for now show "KB" badge
-        // (Full layer pass-through is a follow-up once VirtualKeyboard exposes GetLayer())
-        const wchar_t* badgeText = L"KB";
+
+        // GetLayerName() returns L"SYM", L"CAPS", or L"ALPHA"
+        const wchar_t* badgeText = m_keyboard.GetLayerName();
+
+        // Badge fill: gold for SYM, amber for CAPS, muted for ALPHA
+        const VirtualKeyboard::Layer layer = m_keyboard.GetLayer();
+        const bool isCaps = m_keyboard.GetCaps();
+        const D2D1_COLOR_F fillCol =
+            (layer == VirtualKeyboard::Layer::Sym) ? Tok::GoldDeep(0.82f)
+            : isCaps                               ? Tok::AmberWarm(0.72f)
+            :                                        Tok::DeepVoid(0.60f);
+
         {
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-            rt->CreateSolidColorBrush(Tok::GoldDeep(0.82f), b.GetAddressOf());
+            rt->CreateSolidColorBrush(fillCol, b.GetAddressOf());
             if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(bx,by,bx+badgeW,by+bh),4.0f*s,4.0f*s};
                      rt->FillRoundedRectangle(rr, b.Get()); }
         }
