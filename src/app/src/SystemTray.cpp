@@ -59,6 +59,11 @@ public:
         Shell_NotifyIconW(NIM_MODIFY, &nid);
     }
 
+    void SetOnDoubleClick(std::function<void()> callback) override {
+        std::lock_guard lock(m_mutex);
+        m_onDoubleClick = std::move(callback);
+    }
+
     void Remove() override {
         if (!m_added) return;
         NOTIFYICONDATAW nid = BuildNID();
@@ -162,8 +167,21 @@ private:
 
         if (msg == WM_TRAY_CALLBACK) {
             const UINT event = LOWORD(lp);
+
+            // Right-click / context menu
             if (event == WM_RBUTTONUP || event == WM_CONTEXTMENU) {
                 self->ShowContextMenu();
+                return 0;
+            }
+
+            // Left double-click — open Settings
+            if (event == WM_LBUTTONDBLCLK) {
+                std::function<void()> cb;
+                {
+                    std::lock_guard lock(self->m_mutex);
+                    cb = self->m_onDoubleClick;
+                }
+                if (cb) cb();
                 return 0;
             }
         }
@@ -177,6 +195,7 @@ private:
     bool                      m_added = false;
     std::mutex                m_mutex;
     std::vector<TrayMenuItem> m_items;
+    std::function<void()>     m_onDoubleClick;  ///< fired on left double-click
 };
 
 // ---------------------------------------------------------------------------
