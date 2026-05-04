@@ -1,6 +1,8 @@
 <#
 .SYNOPSIS
     Configure and build EnjoyStick using CMake + Visual Studio 2019/2022.
+    Works with any CMake version >= 3.14 including the version bundled
+    with VS 2019 Build Tools (typically 3.16 or 3.17).
 
 .PARAMETER Config
     Build configuration: Debug | Release  (default: Release)
@@ -27,143 +29,147 @@ $ErrorActionPreference = 'Stop'
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-function OK   { param([string]$msg) Write-Host ('[OK]    ' + $msg) -ForegroundColor Green  }
-function FAIL { param([string]$msg) Write-Host ('[FAIL]  ' + $msg) -ForegroundColor Red    }
-function INFO { param([string]$msg) Write-Host ('[INFO]  ' + $msg) -ForegroundColor Cyan   }
-function STEP { param([string]$msg) Write-Host ('[STEP]  ' + $msg) -ForegroundColor Yellow }
+function Write-OK   { param([string]$msg) Write-Host ('[OK]    ' + $msg) -ForegroundColor Green  }
+function Write-Fail { param([string]$msg) Write-Host ('[FAIL]  ' + $msg) -ForegroundColor Red    }
+function Write-Info { param([string]$msg) Write-Host ('[INFO]  ' + $msg) -ForegroundColor Cyan   }
+function Write-Step { param([string]$msg) Write-Host ('[STEP]  ' + $msg) -ForegroundColor Yellow }
 
 # ---------------------------------------------------------------------------
 # Locate cmake.exe
-#   1. Whatever is already on PATH
-#   2. Bundled cmake inside VS2019 / VS2022
+#   Priority: PATH > VS2022 bundled > VS2019 bundled
 # ---------------------------------------------------------------------------
-STEP 'Locating cmake...'
+Write-Step 'Locating cmake...'
 
 $CMake = $null
+
 try {
     $CMake = (Get-Command cmake -ErrorAction Stop).Source
-    OK ('cmake (PATH): ' + $CMake)
+    Write-OK ('cmake (PATH): ' + $CMake)
 } catch {
-    # Try bundled cmake inside Visual Studio
-    $VsWherePaths = @(
+    # Try vswhere to find VS installation root, then look for bundled cmake
+    $VsWhereCandidates = @(
         "${Env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe",
         "${Env:ProgramFiles}\Microsoft Visual Studio\Installer\vswhere.exe"
     )
-    $VsWhere = $VsWherePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+    $VsWhere = $VsWhereCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
     if ($VsWhere) {
-        $VsRoot = & $VsWhere -latest -products '*' `
+        $VsRoots = & $VsWhere -all -products '*' `
             -requires 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' `
             -property installationPath 2>$null
-        if ($VsRoot) {
-            $BundledCmake = Join-Path $VsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
-            if (Test-Path $BundledCmake) {
-                $CMake = $BundledCmake
-                OK ('cmake (VS bundled): ' + $CMake)
+
+        if ($VsRoots) {
+            foreach ($root in $VsRoots) {
+                $candidate = Join-Path $root `
+                    'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+                if (Test-Path $candidate) {
+                    $CMake = $candidate
+                    Write-OK ('cmake (VS bundled): ' + $CMake)
+                    break
+                }
             }
         }
     }
 }
 
 if (-not $CMake) {
-    FAIL 'cmake.exe not found. Install cmake from https://cmake.org/download/ or add it to PATH.'
+    Write-Fail 'cmake.exe not found.'
+    Write-Fail 'Options:'
+    Write-Fail '  1. Install cmake from https://cmake.org/download/ and add to PATH.'
+    Write-Fail '  2. Install "C++ CMake tools for Windows" via VS Installer.'
     exit 1
 }
 
 # ---------------------------------------------------------------------------
-# Resolve source root (repo root = parent of scripts\ dir)
+# Resolve source root  (repo root = parent of scripts\ directory)
 # ---------------------------------------------------------------------------
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $RepoRoot  = Split-Path -Parent $ScriptDir
 
 if (-not (Test-Path (Join-Path $RepoRoot 'CMakeLists.txt'))) {
-    FAIL ('CMakeLists.txt not found at: ' + $RepoRoot)
-    FAIL 'Make sure scripts\ is one level inside the repository root.'
+    Write-Fail ('CMakeLists.txt not found at: ' + $RepoRoot)
+    Write-Fail 'Ensure scripts\ is one level inside the repository root.'
     exit 1
 }
-INFO ('Repository root: ' + $RepoRoot)
+Write-Info ('Repository root: ' + $RepoRoot)
 
 # ---------------------------------------------------------------------------
-# Select CMake preset based on -Config
+# Determine generator and output directory
+# Always use "Visual Studio 16 2019" x64 — no Ninja, no preset required.
 # ---------------------------------------------------------------------------
-$Preset = if ($Config -eq 'Debug') { 'windows-debug' } else { 'windows-release' }
-$BinDir = Join-Path $RepoRoot ('build\' + $Preset)
+$Generator = 'Visual Studio 16 2019'
+$Platform  = 'x64'
+$BinDir    = Join-Path $RepoRoot ('build\vs2019-' + $Config.ToLower())
 
-# Expected exe location for both VS generator multi-config layouts
-$ExeCandidates = @(
-    (Join-Path $BinDir ($Config + '\EnjoyStick.exe')),   # VS multi-config
-    (Join-Path $BinDir 'EnjoyStick.exe')                  # Ninja single-config
-)
+# VS generator is multi-config: the actual exe lives inside a sub-folder
+# named after the configuration.
+$ExePath = Join-Path $BinDir ($Config + '\EnjoyStick.exe')
 
 # ---------------------------------------------------------------------------
 # Clean
 # ---------------------------------------------------------------------------
 if ($Clean -and (Test-Path $BinDir)) {
-    STEP ('Cleaning: ' + $BinDir)
+    Write-Step ('Cleaning: ' + $BinDir)
     Remove-Item -Recurse -Force $BinDir
-    OK 'Clean done.'
+    Write-OK 'Clean done.'
 }
 
 # ---------------------------------------------------------------------------
 # CMake Configure
 # ---------------------------------------------------------------------------
-STEP ('Configuring preset: ' + $Preset)
+Write-Step ('Configuring (' + $Generator + ', ' + $Config + ')...')
 
-# Check whether this cmake supports --preset (requires CMake >= 3.20)
-$cmakeVersion = (& $CMake --version 2>&1 | Select-Object -First 1).ToString()
-$supportsPreset = $cmakeVersion -match '3\.([2-9][0-9]|[4-9][0-9])' -or `
-                  $cmakeVersion -match '([4-9]|[1-9][0-9])\.[0-9]'
+$configureArgs = @(
+    '-G', $Generator,
+    '-A', $Platform,
+    "-DCMAKE_BUILD_TYPE=$Config",
+    '-DENJOYSTICK_BUILD_TESTS=OFF',
+    '-S', $RepoRoot,
+    '-B', $BinDir
+)
 
-if ($supportsPreset) {
-    & $CMake --preset $Preset -S $RepoRoot
-} else {
-    # Fallback: manual configure (CMake < 3.20)
-    INFO 'cmake --preset not supported; falling back to manual configure.'
-    $Generator = 'Visual Studio 16 2019'
-    New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
-    & $CMake -G $Generator -A x64 `
-        -DCMAKE_BUILD_TYPE=$Config `
-        -S $RepoRoot -B $BinDir
-}
+& $CMake @configureArgs
 
 if ($LASTEXITCODE -ne 0) {
-    FAIL ('CMake configure failed with exit code ' + $LASTEXITCODE)
+    Write-Fail ('CMake configure failed (exit code ' + $LASTEXITCODE + ')')
     exit $LASTEXITCODE
 }
-OK 'Configure complete.'
+Write-OK 'Configure complete.'
 
 # ---------------------------------------------------------------------------
 # CMake Build
 # ---------------------------------------------------------------------------
-STEP ('Building configuration: ' + $Config)
+Write-Step ('Building configuration: ' + $Config)
 
-if ($supportsPreset) {
-    & $CMake --build --preset $Preset
-} else {
-    & $CMake --build $BinDir --config $Config --parallel
-}
+$buildArgs = @(
+    '--build', $BinDir,
+    '--config', $Config,
+    '--parallel'
+)
+
+& $CMake @buildArgs
 
 if ($LASTEXITCODE -ne 0) {
-    FAIL ('Build failed with exit code ' + $LASTEXITCODE)
+    Write-Fail ('Build failed (exit code ' + $LASTEXITCODE + ')')
     exit $LASTEXITCODE
 }
-OK 'Build succeeded.'
+Write-OK 'Build succeeded.'
 
 # ---------------------------------------------------------------------------
-# Report / Launch
+# Report and optionally launch
 # ---------------------------------------------------------------------------
-$ExePath = $ExeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-
 Write-Host ''
-if ($ExePath) {
-    INFO ('Output: ' + $ExePath)
+if (Test-Path $ExePath) {
+    Write-Info ('Output: ' + $ExePath)
     if ($Run) {
-        INFO 'Launching EnjoyStick...'
+        Write-Info 'Launching EnjoyStick...'
         Start-Process -FilePath $ExePath
     } else {
-        INFO 'To launch:'
-        Write-Host ('  Start-Process ' + "'" + $ExePath + "'") -ForegroundColor DarkGray
+        Write-Info 'To launch, run:'
+        Write-Host ("  Start-Process '" + $ExePath + "'") -ForegroundColor DarkGray
     }
 } else {
-    INFO ('Build dir: ' + $BinDir)
-    INFO 'EnjoyStick.exe not found in expected locations (build may use a different layout).'
+    Write-Info ('Build dir: ' + $BinDir)
+    Write-Info ('Expected exe not found at: ' + $ExePath)
+    Write-Info 'The build may have placed the exe elsewhere.  Check the output above.'
 }

@@ -20,26 +20,23 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-:: --- Search for a pre-built exe (all possible CMake preset output dirs) ---
+:: --- Search for a pre-built exe
 ::
-:: CMakePresets.json binaryDir layout:
-::   build/windows-release/Release/EnjoyStick.exe   (VS multi-config)
-::   build/windows-release/EnjoyStick.exe           (Ninja single-config)
-::   build/windows-debug/Debug/EnjoyStick.exe
-::   build/ninja-release/EnjoyStick.exe
+:: build.ps1 always writes to build\vs2019-release\Release\EnjoyStick.exe
+:: Keep legacy CMakePresets paths as fallback in case user built manually.
 ::
 set FOUND_EXE=
 
 for %%P in (
+    "%~dp0build\vs2019-release\Release\EnjoyStick.exe"
+    "%~dp0build\vs2019-debug\Debug\EnjoyStick.exe"
     "%~dp0build\windows-release\Release\EnjoyStick.exe"
     "%~dp0build\windows-release\EnjoyStick.exe"
     "%~dp0build\ninja-release\EnjoyStick.exe"
-    "%~dp0build\windows-debug\Debug\EnjoyStick.exe"
-    "%~dp0build\windows-debug\EnjoyStick.exe"
 ) do (
     if exist %%P (
         set FOUND_EXE=%%P
-        goto :found
+        goto :launch
     )
 )
 
@@ -64,26 +61,26 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 :: --- After build: search again ---
-set FOUND_EXE=
 for %%P in (
+    "%~dp0build\vs2019-release\Release\EnjoyStick.exe"
     "%~dp0build\windows-release\Release\EnjoyStick.exe"
     "%~dp0build\windows-release\EnjoyStick.exe"
     "%~dp0build\ninja-release\EnjoyStick.exe"
 ) do (
     if exist %%P (
         set FOUND_EXE=%%P
-        goto :found
+        goto :launch
     )
 )
 
 echo.
-echo  Build completed but EnjoyStick.exe was not found in expected locations.
+echo  Build succeeded but EnjoyStick.exe was not found in expected locations.
 echo  Check the build output above for the actual path.
 pause
 ENDLOCAL
 exit /b 0
 
-:found
+:launch
 echo  Found: %FOUND_EXE%
 echo  Launching EnjoyStick...
 start "" %FOUND_EXE%
