@@ -1,4 +1,5 @@
 #include <enjoystick/app/SystemTray.hpp>
+#include "../res/enjoystick_icon_data.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
@@ -14,19 +15,17 @@
 #include <mutex>
 #include <stdexcept>
 
-// Resource ID for the application icon compiled from enjoystick.rc
+// Resource ID for the application icon (fallback if memory load fails)
 #define IDI_APP 101
 
 namespace enjoystick::app {
 
 static constexpr UINT WM_TRAY_CALLBACK  = WM_USER + 100;
-static constexpr UINT WM_TRAY_MENUITEM  = WM_USER + 101;  ///< Posted to dispatch menu action safely
+static constexpr UINT WM_TRAY_MENUITEM  = WM_USER + 101;
+static constexpr UINT WM_SHOW_MENU      = WM_USER + 102;
 static constexpr UINT kTrayIconId       = 1;
 
 // ---------------------------------------------------------------------------
-// Implementation
-// ---------------------------------------------------------------------------
-
 class SystemTrayImpl final : public SystemTray {
 public:
     SystemTrayImpl(std::wstring tooltip, std::wstring iconPath)
@@ -64,7 +63,7 @@ public:
         Shell_NotifyIconW(NIM_MODIFY, &nid);
     }
 
-    void ShowBalloon(std::wstring title, std::wstring text, uint32_t /*durationMs*/) override {
+    void ShowBalloon(std::wstring title, std::wstring text, uint32_t /*ms*/) override {
         NOTIFYICONDATAW nid = BuildNID();
         nid.uFlags         |= NIF_INFO;
         nid.dwInfoFlags     = NIIF_INFO | NIIF_NOSOUND;
@@ -89,20 +88,49 @@ private:
     static constexpr const wchar_t* kClassName = L"EnjoyStickTrayHost";
 
     // -------------------------------------------------------------------------
-    // Icon loading — priority:
-    //   1. Resource IDI_APP=101 embedded in the EXE (compiled from .rc)
-    //   2. File path supplied by caller (LoadImageW from disk)
-    //   3. Windows stock IDI_APPLICATION
+    // LoadIcon_
+    // Priority:
+    //   1. Memory-embedded ICO blob (kEnjoyStickIconData) — always available
+    //   2. RC resource IDI_APP=101 in the EXE
+    //   3. File on disk (iconPath parameter)
+    //   4. Windows stock IDI_APPLICATION
     // -------------------------------------------------------------------------
     void LoadIcon_() {
-        // 1) Try resource icon (EXE module)
-        HINSTANCE hInst = GetModuleHandleW(nullptr);
-        m_hIcon = static_cast<HICON>(
-            LoadImageW(hInst, MAKEINTRESOURCEW(IDI_APP),
-                       IMAGE_ICON, 0, 0, LR_DEFAULTSIZE));
-        if (m_hIcon) { m_hIconOwned = true; return; }
+        // 1) Try loading from embedded ICO bytes via CreateIconFromResourceEx.
+        //    We need to find the image data for the appropriate size inside the
+        //    ICO blob. For tray icons Windows requests 16x16 or 32x32.
+        //    We pass the whole ICO blob header pointer; Windows extracts the
+        //    correct frame internally when we use LookupIconIdFromDirectoryEx
+        //    + CreateIconFromResourceEx.
+        {
+            const BYTE* pDir = kEnjoyStickIconData.data();
+            // Skip ICO header (6 bytes) to get to first ICONDIRENTRY.
+            // LookupIconIdFromDirectoryEx finds the best-fit frame index.
+            const int offset = LookupIconIdFromDirectoryEx(
+                const_cast<PBYTE>(pDir), TRUE,
+                GetSystemMetrics(SM_CXSMICON),
+                GetSystemMetrics(SM_CYSMICON),
+                LR_DEFAULTCOLOR);
+            if (offset > 0) {
+                m_hIcon = CreateIconFromResourceEx(
+                    const_cast<PBYTE>(pDir + offset),
+                    static_cast<DWORD>(kEnjoyStickIconSize - static_cast<uint32_t>(offset)),
+                    TRUE, 0x00030000,
+                    0, 0, LR_DEFAULTCOLOR | LR_DEFAULTSIZE);
+                if (m_hIcon) { m_hIconOwned = true; return; }
+            }
+        }
 
-        // 2) Try file path
+        // 2) RC resource
+        {
+            HINSTANCE hInst = GetModuleHandleW(nullptr);
+            m_hIcon = static_cast<HICON>(
+                LoadImageW(hInst, MAKEINTRESOURCEW(IDI_APP),
+                           IMAGE_ICON, 0, 0, LR_DEFAULTSIZE));
+            if (m_hIcon) { m_hIconOwned = true; return; }
+        }
+
+        // 3) File path
         if (!m_iconPath.empty()) {
             m_hIcon = static_cast<HICON>(
                 LoadImageW(nullptr, m_iconPath.c_str(),
@@ -110,8 +138,8 @@ private:
             if (m_hIcon) { m_hIconOwned = true; return; }
         }
 
-        // 3) Stock fallback (not owned, never DestroyIcon)
-        m_hIcon     = LoadIconW(nullptr, reinterpret_cast<LPCWSTR>(IDI_APPLICATION));
+        // 4) Stock fallback (system-owned, never DestroyIcon)
+        m_hIcon      = LoadIconW(nullptr, reinterpret_cast<LPCWSTR>(IDI_APPLICATION));
         m_hIconOwned = false;
     }
 
@@ -130,13 +158,11 @@ private:
     }
 
     void RegisterTrayWindowClass() {
-        // Unregister first in case a previous instance left it (e.g. debug re-run)
         UnregisterClassW(kClassName, GetModuleHandleW(nullptr));
-
         WNDCLASSEXW wc  = {};
-        wc.cbSize       = sizeof(wc);
-        wc.lpfnWndProc  = TrayWndProc;
-        wc.hInstance    = GetModuleHandleW(nullptr);
+        wc.cbSize        = sizeof(wc);
+        wc.lpfnWndProc   = TrayWndProc;
+        wc.hInstance     = GetModuleHandleW(nullptr);
         wc.lpszClassName = kClassName;
         if (!RegisterClassExW(&wc))
             throw std::runtime_error("SystemTray: failed to register window class");
@@ -159,23 +185,23 @@ private:
     }
 
     // -------------------------------------------------------------------------
-    // ShowContextMenu
-    // Must NOT be called with m_mutex held (TrackPopupMenu runs a nested
-    // message loop which can re-enter WndProc).
+    // ShowContextMenu — must NOT be called with m_mutex held.
+    // TrackPopupMenu runs a nested message loop; we copy items first,
+    // release the lock, then call TrackPopupMenu outside the lock.
+    // The action is dispatched via PostMessage so it runs on the main
+    // message loop, not inside the TrackPopupMenu call stack.
     // -------------------------------------------------------------------------
     void ShowContextMenu() {
-        // --- Snapshot items under lock, then release ---
         std::vector<TrayMenuItem> items;
         {
             std::lock_guard lock(m_mutex);
-            items = m_items;  // copy
+            items = m_items;
         }
         if (items.empty()) return;
 
         HMENU hMenu = CreatePopupMenu();
         if (!hMenu) return;
 
-        // Build HMENU.  Separators get ID=0; actionable items get ID = index+1.
         for (size_t i = 0; i < items.size(); ++i) {
             const auto& item = items[i];
             if (item.separator || item.label.empty()) {
@@ -189,22 +215,16 @@ private:
             }
         }
 
-        // Bring message window to foreground so menu dismisses on click-away
         SetForegroundWindow(m_hwnd);
-
         POINT pt;
         GetCursorPos(&pt);
 
-        // TrackPopupMenu internally pumps messages — that is safe here because
-        // we are NOT holding m_mutex and we use TPM_RETURNCMD (no WM_COMMAND).
         const UINT chosen = static_cast<UINT>(TrackPopupMenu(
             hMenu,
             TPM_RETURNCMD | TPM_NONOTIFY | TPM_BOTTOMALIGN | TPM_RIGHTALIGN,
             pt.x, pt.y, 0, m_hwnd, nullptr));
         DestroyMenu(hMenu);
 
-        // Post the action index back to ourselves so it executes on the main
-        // message loop, well outside the TrackPopupMenu call stack.
         if (chosen > 0 && chosen <= static_cast<UINT>(items.size())) {
             PostMessageW(m_hwnd, WM_TRAY_MENUITEM, static_cast<WPARAM>(chosen - 1), 0);
         }
@@ -223,7 +243,7 @@ private:
             GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         if (!self) return DefWindowProcW(hwnd, msg, wp, lp);
 
-        // ---- Deferred menu action dispatch ------------------------------------
+        // Deferred menu action
         if (msg == WM_TRAY_MENUITEM) {
             const size_t idx = static_cast<size_t>(wp);
             std::function<void()> action;
@@ -236,18 +256,27 @@ private:
             return 0;
         }
 
-        // ---- Shell tray callback ---------------------------------------------
+        // Deferred ShowContextMenu (posted from tray callback to escape WndProc stack)
+        if (msg == WM_SHOW_MENU) {
+            self->ShowContextMenu();
+            return 0;
+        }
+
+        // Shell tray icon events
         if (msg == WM_TRAY_CALLBACK) {
             const UINT event = LOWORD(lp);
 
+            // Right-click or context menu key
             if (event == WM_RBUTTONUP || event == WM_CONTEXTMENU) {
-                // ShowContextMenu must run outside WndProc stack to allow
-                // TrackPopupMenu's inner message loop to work safely.
-                // We post to ourselves so the call happens after WndProc returns.
-                PostMessageW(hwnd, WM_USER + 102, 0, 0);
+                PostMessageW(hwnd, WM_SHOW_MENU, 0, 0);
                 return 0;
             }
-
+            // Left single click — also show menu (Windows tray UX convention)
+            if (event == WM_LBUTTONUP) {
+                PostMessageW(hwnd, WM_SHOW_MENU, 0, 0);
+                return 0;
+            }
+            // Left double-click — fire OnDoubleClick callback
             if (event == WM_LBUTTONDBLCLK) {
                 std::function<void()> cb;
                 {
@@ -257,25 +286,11 @@ private:
                 if (cb) cb();
                 return 0;
             }
-
-            // Single left click — also show menu (common Windows UX pattern)
-            if (event == WM_LBUTTONUP) {
-                PostMessageW(hwnd, WM_USER + 102, 0, 0);
-                return 0;
-            }
-        }
-
-        // ---- Deferred ShowContextMenu trigger --------------------------------
-        if (msg == WM_USER + 102) {
-            self->ShowContextMenu();
-            return 0;
         }
 
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
 
-    // -------------------------------------------------------------------------
-    // Members
     // -------------------------------------------------------------------------
     std::wstring              m_tooltip;
     std::wstring              m_iconPath;
@@ -289,9 +304,6 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// Factory
-// ---------------------------------------------------------------------------
-
 std::unique_ptr<SystemTray> SystemTray::Create(
     std::wstring tooltip, std::wstring iconResourcePath)
 {
