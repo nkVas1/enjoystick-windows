@@ -8,6 +8,7 @@
 #include <wrl/client.h>
 
 #include <enjoystick/overlay/OverlayWindow.hpp>
+#include <enjoystick/overlay/VirtualKeyboard.hpp>
 
 #include <atomic>
 #include <mutex>
@@ -35,10 +36,11 @@ public:
     void Show()  override;
     void Hide()  override;
     void PostState(const ControllerState& state) override;
-    RadialMenu&    GetRadialMenu()    override;
-    SettingsMenu&  GetSettingsMenu()  override;
+    RadialMenu&      GetRadialMenu()      override;
+    SettingsMenu&    GetSettingsMenu()    override;
+    VirtualKeyboard& GetVirtualKeyboard() override;
     void ShowToast(std::wstring message, uint32_t durationMs) override;
-    void SetModeLabel(std::wstring label)       override;   // NEW
+    void SetModeLabel(std::wstring label)       override;
     [[nodiscard]] bool    IsShown()  const noexcept override;
     [[nodiscard]] HWND__* GetHWND()  const noexcept override;
 
@@ -84,8 +86,9 @@ private:
     mutable std::mutex m_modeLabelMutex;
     std::wstring       m_modeLabel;
 
-    RadialMenu    m_radialMenu;
-    SettingsMenu  m_settingsMenu;
+    RadialMenu      m_radialMenu;
+    SettingsMenu    m_settingsMenu;
+    VirtualKeyboard m_keyboard;
 
     std::mutex                      m_toastMutex;
     std::queue<ToastNotification>   m_pendingToasts;
