@@ -1,5 +1,5 @@
 #pragma once
-#include <enjoystick/core/Types.hpp>
+#include <enjoystick/shared/Types.hpp>
 
 namespace enjoystick::cursor {
 
@@ -11,8 +11,8 @@ public:
         float maxSpeedPx      = 1800.0f; ///< px/s at full deflection
         float curveExponent   = 1.8f;    ///< <1 = linear-ish; >1 = exponential
         float accelerationMs  = 120.0f;  ///< velocity ramp-up time (0 = instant)
-        bool  triggersAsClicks = true;   ///< RT=LMB, LT=RMB; false = scroll
-        float scrollSpeed     = 8.0f;    ///< scroll ticks/s at full deflection
+        bool  triggersAsClicks = true;   ///< RT=LMB, LT=RMB; false = trigger scroll
+        float scrollSpeed     = 8.0f;    ///< scroll ticks/s at full stick deflection
         bool  invertScroll    = false;
         bool  useRightStick   = true;    ///< false = use left stick for cursor
     };
@@ -30,8 +30,8 @@ public:
     bool IsEnabled() const noexcept;
 
     /// Must be called at the polling rate (e.g. 250 Hz).
-    /// @param state  Latest controller snapshot
-    /// @param deltaSeconds  Time since last call (seconds)
+    /// @param state        Latest controller snapshot
+    /// @param deltaSeconds Time since last call in seconds
     void Update(const ControllerState& state, float deltaSeconds);
 
 private:
