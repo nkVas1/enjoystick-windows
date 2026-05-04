@@ -6,6 +6,7 @@ cmake_minimum_required(VERSION 3.14)
 # Low-level input subsystem:
 #   InputEngine            — abstract polling interface + factory
 #   InputBackend_XInput    — XInput 1.4 implementation (250 Hz poll thread)
+#   InputBackend_HID       — DualSense HID implementation (Sony 054C/0CE6)
 #   DeadzoneFilter         — radial / axial / hybrid deadzone math
 #   HapticsEngine_XInput   — XInput motor rumble + predefined haptic patterns
 # ---------------------------------------------------------------------------
@@ -14,6 +15,7 @@ add_library(enjoystick_core STATIC
     src/DeadzoneFilter.cpp
     src/InputEngine.cpp
     src/InputBackend_XInput.cpp
+    src/InputBackend_HID.cpp
     src/HapticsEngine_XInput.cpp
 )
 
@@ -29,6 +31,8 @@ target_include_directories(enjoystick_core
 
 target_link_libraries(enjoystick_core
     PRIVATE xinput
+    PRIVATE hid
+    PRIVATE setupapi
 )
 
 target_compile_features(enjoystick_core PUBLIC cxx_std_20)
