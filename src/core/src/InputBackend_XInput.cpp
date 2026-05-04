@@ -5,8 +5,6 @@
 #include <stdexcept>
 #include <string>
 
-// XInputSetState is still resolved via the import lib; only GetState is
-// loaded dynamically so we can try the extended ordinal-100 variant.
 #pragma comment(lib, "xinput.lib")
 
 namespace enjoystick::core {
@@ -17,12 +15,52 @@ namespace enjoystick::core {
 
 static constexpr float kS16Norm = 1.0f / 32767.0f;
 static constexpr float kU8Norm  = 1.0f / 255.0f;
-
-// Guide button bit — reported by XInputGetStateEx but not XInputGetState.
-static constexpr WORD kXInputGuideButton = 0x0400;
+static constexpr WORD  kXInputGuideButton = 0x0400;
 
 // ---------------------------------------------------------------------------
-// BuildState — map XINPUT_GAMEPAD to ControllerState
+// RumbleStopTimer
+//
+// A Win32 ThreadpoolTimer that fires once after durationMs to stop
+// vibration on the given XInput controller slot.  Self-deletes on fire.
+// No class pointer captured — only primitive values.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct RumbleStopCtx {
+    DWORD slotIndex;
+};
+
+static void CALLBACK RumbleStopCallback(
+    PTP_CALLBACK_INSTANCE, void* ctx, PTP_TIMER timer) noexcept
+{
+    auto* r = static_cast<RumbleStopCtx*>(ctx);
+    XINPUT_VIBRATION stop{};
+    XInputSetState(r->slotIndex, &stop);
+    CloseThreadpoolTimer(timer);
+    delete r;
+}
+
+static void ScheduleRumbleStop(DWORD slotIndex, DWORD durationMs) noexcept {
+    auto* ctx = new (std::nothrow) RumbleStopCtx{slotIndex};
+    if (!ctx) return;
+
+    PTP_TIMER timer = CreateThreadpoolTimer(RumbleStopCallback, ctx, nullptr);
+    if (!timer) { delete ctx; return; }
+
+    ULARGE_INTEGER due;
+    due.QuadPart = static_cast<ULONGLONG>(
+        -static_cast<LONGLONG>(durationMs) * 10'000LL);
+    FILETIME ft;
+    ft.dwLowDateTime  = due.LowPart;
+    ft.dwHighDateTime = due.HighPart;
+    SetThreadpoolTimer(timer, &ft, 0, 0);
+}
+
+} // anonymous namespace
+
+// ---------------------------------------------------------------------------
+// BuildState
 // ---------------------------------------------------------------------------
 
 static ControllerState BuildState(
@@ -51,15 +89,12 @@ static ControllerState BuildState(
     map(XINPUT_GAMEPAD_DPAD_LEFT,      Button::DPadLeft);
     map(XINPUT_GAMEPAD_DPAD_RIGHT,     Button::DPadRight);
 
-    // Triggers as digital buttons (> 50% threshold)
     if (gp.bLeftTrigger  > 128) s.buttons = s.buttons | Button::LT_Click;
     if (gp.bRightTrigger > 128) s.buttons = s.buttons | Button::RT_Click;
 
-    // Guide button — only available via XInputGetStateEx
     if (hasGuide && (gp.wButtons & kXInputGuideButton))
         s.buttons = s.buttons | Button::Guide;
 
-    // Analog axes — raw to [-1, 1]. Deadzone applied later by DeadzoneFilter.
     s.leftStick.x  = std::clamp(static_cast<float>(gp.sThumbLX) * kS16Norm, -1.0f, 1.0f);
     s.leftStick.y  = std::clamp(static_cast<float>(gp.sThumbLY) * kS16Norm, -1.0f, 1.0f);
     s.rightStick.x = std::clamp(static_cast<float>(gp.sThumbRX) * kS16Norm, -1.0f, 1.0f);
@@ -93,35 +128,25 @@ XInputBackend::~XInputBackend() {
 
 // ---------------------------------------------------------------------------
 // XInput DLL dynamic loading
-//
-// Priority: xinput1_4 (Win8+) → xinput1_3 (redistributable / Win7)
-// Ordinal 100 = XInputGetStateEx — extends wButtons with Guide bit 0x0400.
-// xinput9_1_0 does NOT export ordinal 100, so we fall back gracefully.
 // ---------------------------------------------------------------------------
 
 void XInputBackend::LoadXInputDll() {
-    // Try newest first
     static const wchar_t* const kLibs[] = { L"xinput1_4.dll", L"xinput1_3.dll" };
     for (const wchar_t* name : kLibs) {
         m_xinputModule = LoadLibraryW(name);
         if (m_xinputModule) break;
     }
-
-    if (!m_xinputModule) {
-        // Last resort: the OS will always have this version
+    if (!m_xinputModule)
         m_xinputModule = LoadLibraryW(L"xinput9_1_0.dll");
-    }
 
     if (m_xinputModule) {
-        // Ordinal 100 = XInputGetStateEx
         m_getStateEx = reinterpret_cast<PFN_XInputGetStateEx>(
             GetProcAddress(m_xinputModule, reinterpret_cast<LPCSTR>(100)));
     }
-    // m_getStateEx == nullptr is handled gracefully in DoGetState()
 }
 
 void XInputBackend::UnloadXInputDll() {
-    m_getStateEx  = nullptr;
+    m_getStateEx = nullptr;
     if (m_xinputModule) {
         FreeLibrary(m_xinputModule);
         m_xinputModule = nullptr;
@@ -139,8 +164,7 @@ DWORD XInputBackend::DoGetState(uint32_t index, XINPUT_STATE* pState) const {
 // ---------------------------------------------------------------------------
 
 void XInputBackend::Start() {
-    if (m_running.exchange(true)) return;  // idempotent
-
+    if (m_running.exchange(true)) return;
     m_pollThread = std::thread([this] {
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
         PollLoop();
@@ -160,13 +184,11 @@ void XInputBackend::PollLoop() {
     using Clock = std::chrono::high_resolution_clock;
     const auto interval = std::chrono::microseconds(
         static_cast<long long>(1'000'000.0 / m_config.pollingRateHz));
-
     auto nextTick = Clock::now();
 
     while (m_running.load(std::memory_order_relaxed)) {
-        for (uint32_t i = 0; i < XUSER_MAX_COUNT; ++i) {
+        for (uint32_t i = 0; i < XUSER_MAX_COUNT; ++i)
             PollController(i);
-        }
         nextTick += interval;
         std::this_thread::sleep_until(nextTick);
     }
@@ -182,14 +204,13 @@ void XInputBackend::PollController(uint32_t index) {
     if (result == ERROR_SUCCESS) {
         if (!slot.connected) {
             slot.connected = true;
-            slot.packetNum = xi.dwPacketNumber;  // initialise so next poll checks delta
+            slot.packetNum = xi.dwPacketNumber;
             slot.state     = {};
             lock.unlock();
             FireConnection(static_cast<ControllerId>(index), ConnectionEvent::Connected);
             return;
         }
 
-        // Packet unchanged — no new data; skip FireInput to avoid CPU waste
         if (xi.dwPacketNumber == slot.packetNum) return;
         slot.packetNum = xi.dwPacketNumber;
 
@@ -197,19 +218,16 @@ void XInputBackend::PollController(uint32_t index) {
         ControllerState newState = BuildState(
             static_cast<ControllerId>(index), xi.Gamepad, guideAvailable);
 
-        // Rising / falling edge bits
         const uint32_t prev = static_cast<uint32_t>(slot.state.buttons);
         const uint32_t curr = static_cast<uint32_t>(newState.buttons);
         newState.buttonsDown = static_cast<Button>(curr & ~prev);
         newState.buttonsUp   = static_cast<Button>(prev & ~curr);
 
-        // Apply configurable deadzone
         newState.leftStick  = m_deadzone.Apply(newState.leftStick);
         newState.rightStick = m_deadzone.Apply(newState.rightStick);
 
         slot.state = newState;
         lock.unlock();
-
         FireInput(newState);
 
     } else {
@@ -232,9 +250,8 @@ CallbackHandle XInputBackend::OnInput(InputEventCallback cb) {
     m_inputCallbacks.push_back({id, std::move(cb)});
     return CallbackHandle([this, id] {
         std::unique_lock lk(m_callbackMutex);
-        for (auto& e : m_inputCallbacks) {
+        for (auto& e : m_inputCallbacks)
             if (e.id == id) { e.fn = nullptr; return; }
-        }
     });
 }
 
@@ -244,28 +261,25 @@ CallbackHandle XInputBackend::OnConnection(ConnectionCallback cb) {
     m_connCallbacks.push_back({id, std::move(cb)});
     return CallbackHandle([this, id] {
         std::unique_lock lk(m_callbackMutex);
-        for (auto& e : m_connCallbacks) {
+        for (auto& e : m_connCallbacks)
             if (e.id == id) { e.fn = nullptr; return; }
-        }
     });
 }
 
 void XInputBackend::FireInput(const ControllerState& state) {
     std::shared_lock lock(m_callbackMutex);
-    for (const auto& e : m_inputCallbacks) {
+    for (const auto& e : m_inputCallbacks)
         if (e.fn) e.fn(state);
-    }
 }
 
 void XInputBackend::FireConnection(ControllerId id, ConnectionEvent ev) {
     std::shared_lock lock(m_callbackMutex);
-    for (const auto& e : m_connCallbacks) {
+    for (const auto& e : m_connCallbacks)
         if (e.fn) e.fn(id, ev);
-    }
 }
 
 // ---------------------------------------------------------------------------
-// Haptics
+// Haptics — Rumble
 // ---------------------------------------------------------------------------
 
 void XInputBackend::Rumble(ControllerId id, RumbleParams params) {
@@ -279,15 +293,8 @@ void XInputBackend::Rumble(ControllerId id, RumbleParams params) {
         std::clamp(params.highFreqMotor, 0.0f, 1.0f) * 65535.0f);
     XInputSetState(id, &vib);
 
-    if (params.durationMs > 0) {
-        const ControllerId stopId = id;
-        const DWORD        stopMs = params.durationMs;
-        std::thread([stopId, stopMs] {
-            Sleep(stopMs);
-            XINPUT_VIBRATION stop{};
-            XInputSetState(stopId, &stop);
-        }).detach();
-    }
+    if (params.durationMs > 0)
+        ScheduleRumbleStop(static_cast<DWORD>(id), params.durationMs);
 }
 
 // ---------------------------------------------------------------------------
