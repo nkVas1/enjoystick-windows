@@ -83,8 +83,8 @@ static void SendScrollLines(int lines) noexcept {
 // Helper: fire XButton (browser back/forward)
 static void SendXButton(DWORD which, bool down) noexcept {
     INPUT inp{};
-    inp.type       = INPUT_MOUSE;
-    inp.mi.dwFlags = down ? MOUSEEVENTF_XDOWN : MOUSEEVENTF_XUP;
+    inp.type         = INPUT_MOUSE;
+    inp.mi.dwFlags   = down ? MOUSEEVENTF_XDOWN : MOUSEEVENTF_XUP;
     inp.mi.mouseData = which; // XBUTTON1 or XBUTTON2
     SendInput(1, &inp, sizeof(INPUT));
 }
@@ -255,11 +255,9 @@ private:
 
         // Freeze / resume cursor around the radial menu lifecycle
         m_overlay->GetRadialMenu().SetOnOpen([this] {
-            // Disable cursor movement while the ring is on screen
             m_virtualMouse->SetEnabled(false);
         });
         m_overlay->GetRadialMenu().SetOnClose([this] {
-            // Re-enable cursor only if we are in Cursor mode
             if (m_mode == InputMode::Cursor)
                 m_virtualMouse->SetEnabled(true);
         });
@@ -294,8 +292,7 @@ private:
         if (m_mode == newMode) return;
         m_mode = newMode;
 
-        const bool cursor = (m_mode == InputMode::Cursor);
-        // Only enable mouse if the radial menu is not currently open
+        const bool cursor   = (m_mode == InputMode::Cursor);
         const bool menuOpen = m_overlay->GetRadialMenu().IsVisible();
         m_virtualMouse->SetEnabled(cursor && !menuOpen);
         m_keyMapper->SetEnabled(!cursor);
@@ -376,8 +373,8 @@ private:
 
             // LB/RB scroll (only when NOT held together as chord)
             if (!held(Button::LB) || !held(Button::RB)) {
-                if (pressed(Button::LB)) { SendScrollLines(+3); } // up
-                if (pressed(Button::RB)) { SendScrollLines(-3); } // down
+                if (pressed(Button::LB)) { SendScrollLines(+3); } // scroll up
+                if (pressed(Button::RB)) { SendScrollLines(-3); } // scroll down
             }
 
             // North (Y/△) → middle click
@@ -390,23 +387,23 @@ private:
             }
 
             // DPad Left → Alt+Left (browser back)
-            if (pressed(Button::DpadLeft)) {
+            if (pressed(Button::DPadLeft)) {
                 SendKey(VK_MENU,  true,  true);
                 SendKey(VK_LEFT,  true,  true);
                 SendKey(VK_LEFT,  false, true);
                 SendKey(VK_MENU,  false, true);
             }
             // DPad Right → Alt+Right (browser forward)
-            if (pressed(Button::DpadRight)) {
+            if (pressed(Button::DPadRight)) {
                 SendKey(VK_MENU,  true,  true);
                 SendKey(VK_RIGHT, true,  true);
                 SendKey(VK_RIGHT, false, true);
                 SendKey(VK_MENU,  false, true);
             }
-            // DPad Up → scroll up (fine)
-            if (pressed(Button::DpadUp))   SendScrollLines(+1);
-            // DPad Down → scroll down (fine)
-            if (pressed(Button::DpadDown)) SendScrollLines(-1);
+            // DPad Up → scroll up (fine, 1 line)
+            if (pressed(Button::DPadUp))   SendScrollLines(+1);
+            // DPad Down → scroll down (fine, 1 line)
+            if (pressed(Button::DPadDown)) SendScrollLines(-1);
 
             // Select → Task View (Win+Tab)
             if (pressed(Button::Select)) {
@@ -422,31 +419,27 @@ private:
                 m_virtualMouse->LeftClick();
             }
 
-            // East (B/○) long-press accumulator → right-click hold
-            // Short press is ignored here (East closes radial menu only).
-            // Accumulate time while East is held in normal (non-menu) state.
+            // East (B/○) long-press → drag hold; short tap → right-click
             if (!m_overlay->GetRadialMenu().IsVisible()) {
                 if (held(Button::East)) {
                     m_eastHoldMs += dt;
                     if (m_eastHoldMs >= kEastLongPressMs && !m_eastLongActive) {
                         m_eastLongActive = true;
-                        m_virtualMouse->LeftDown(); // hold for drag
+                        m_virtualMouse->LeftDown();
                     }
                 }
                 if (released(Button::East)) {
                     if (m_eastLongActive) {
                         m_virtualMouse->LeftUp();
                     } else if (m_eastHoldMs < kEastLongPressMs && m_eastHoldMs > 0.0f) {
-                        // Short tap outside menu → right-click
                         m_virtualMouse->RightClick();
                     }
-                    m_eastHoldMs    = 0.0f;
+                    m_eastHoldMs     = 0.0f;
                     m_eastLongActive = false;
                 }
             } else {
-                // Menu open: reset accumulator so closing menu doesn’t
-                // accidentally trigger a click.
-                m_eastHoldMs    = 0.0f;
+                // Menu open: reset accumulator
+                m_eastHoldMs     = 0.0f;
                 m_eastLongActive = false;
             }
         }
@@ -512,7 +505,7 @@ private:
 
     // East/B long-press state
     static constexpr float kEastLongPressMs = 600.0f;
-    float  m_eastHoldMs    = 0.0f;
+    float  m_eastHoldMs     = 0.0f;
     bool   m_eastLongActive = false;
 };
 
