@@ -1,0 +1,13 @@
+// EnjoyStick application resources
+// IDI_APP (101) — application icon
+//
+// Place a real enjoystick.ico in this directory and rebuild to replace
+// the placeholder. The icon must be a standard Windows ICO file
+// (recommended sizes: 16x16, 32x32, 48x48, 256x256).
+//
+// Until then the code falls back to the Windows stock IDI_APPLICATION icon.
+
+#define IDI_APP 101
+
+// Uncomment the line below once enjoystick.ico is added to this directory:
+// IDI_APP ICON "enjoystick.ico"
