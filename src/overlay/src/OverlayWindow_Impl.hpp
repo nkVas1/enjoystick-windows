@@ -25,16 +25,21 @@ struct ToastNotification {
 };
 
 ///
-/// OverlayWindowImpl — layered window with per-pixel alpha.
+/// OverlayWindowImpl — layered click-through window with per-pixel alpha.
 ///
 /// Render pipeline:
 ///   CreateCompatibleDC + 32-bpp DIB
-///   → ID2D1DCRenderTarget::BindDC(memDC)
+///   → ID2D1DCRenderTarget (cached; BindDC only on size change)
 ///   → BeginDraw / ... / EndDraw
 ///   → UpdateLayeredWindow(ULW_ALPHA)   ← true per-pixel transparency
 ///
-/// Background Clear(0,0,0,0) → genuinely invisible.
-/// Only drawn primitives are visible on screen.
+/// Threading model:
+///   Show()       — signals m_startEvent; returns immediately.
+///   Render thread — creates HWND + D2D, runs frame loop, pumps its own
+///                   WndProc messages, destroys everything on exit.
+///   Hide()       — posts WM_QUIT to render thread; waits for join.
+///   PostState()  — lock-free ping-pong buffer (any thread).
+///   ShowToast()  — mutex-protected queue (any thread).
 ///
 class OverlayWindowImpl final : public OverlayWindow {
 public:
@@ -52,14 +57,19 @@ public:
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+
+    // Render-thread entry point and helpers
+    void RenderThread();
     void CreateWindowAndD2D();
     void DestroyWindowAndD2D();
     void EnsureDib(int w, int h);
     void DestroyDib();
-    void RenderLoop();
+    bool EnsureRenderTarget();  ///< (re)creates / binds RT when DIB changed
+    void PumpMessages();        ///< non-blocking WndProc dispatch
     void RenderFrame(float deltaSeconds);
 
     void DrawActiveIndicator(ID2D1RenderTarget* rt);
+    void DrawHudMode(ID2D1RenderTarget* rt);         ///< NEW: mode chip bottom-left
     void DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds);
 
     Config   m_config;
@@ -68,18 +78,19 @@ private:
     Rect     m_monitorRect = {};
 
     // D2D / DirectWrite
-    Microsoft::WRL::ComPtr<ID2D1Factory1>  m_d2dFactory;
-    Microsoft::WRL::ComPtr<IDWriteFactory> m_dwriteFactory;
+    Microsoft::WRL::ComPtr<ID2D1Factory1>       m_d2dFactory;
+    Microsoft::WRL::ComPtr<IDWriteFactory>      m_dwriteFactory;
+    Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> m_renderTarget;  ///< CACHED
 
     // DIB render surface (per-pixel alpha path)
     HDC     m_memDC  = nullptr;
     HBITMAP m_hDib   = nullptr;
     int     m_dibW   = 0;
     int     m_dibH   = 0;
+    bool    m_dibDirty = true;  ///< true ⇒ re-bind RT to new DIB before next frame
 
     // State double-buffer (input thread → render thread, lock-free).
-    // alignas(64) places m_pendingState on its own cache line to prevent
-    // false sharing. C4324 is expected and intentional — suppressed locally.
+    // alignas(64) prevents false sharing with adjacent members.
 #pragma warning(push)
 #pragma warning(disable: 4324)
     alignas(64) std::atomic<ControllerState*> m_pendingState{nullptr};
@@ -87,6 +98,10 @@ private:
     ControllerState m_stateBuffers[2];
     int             m_activeBuffer = 0;
     ControllerState m_lastState    = {};
+
+    // Current mode label (set from application thread via SetModeLabel)
+    mutable std::mutex m_modeLabelMutex;
+    std::wstring       m_modeLabel;
 
     // Overlay components
     RadialMenu    m_radialMenu;
@@ -97,10 +112,11 @@ private:
     std::queue<ToastNotification>   m_pendingToasts;
     std::vector<ToastNotification>  m_activeToasts;
 
-    // Render thread
+    // Render thread lifecycle
     std::thread        m_renderThread;
     std::atomic<bool>  m_running{false};
     std::atomic<bool>  m_shown{false};
+    HANDLE             m_startEvent = nullptr;  ///< signalled by Show()
 
     float m_dpiScale = 1.0f;
 };
