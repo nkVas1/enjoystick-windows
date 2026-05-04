@@ -1,4 +1,4 @@
-// NOTE: WIN32_LEAN_AND_MEAN and NOMINMAX are injected by CMake for this module.
+// WIN32_LEAN_AND_MEAN and NOMINMAX are injected by CMake for this module.
 #include <enjoystick/input/KeyboardMapper.hpp>
 
 #include <Windows.h>
@@ -9,24 +9,27 @@
 namespace enjoystick::input {
 
 // ---------------------------------------------------------------------------
-// Default bindings  (Steam-Deck-inspired UI navigation layer)
+// Default bindings
+//
+// Intentionally omitted:
+//   Button::Select  — reserved for Application-level mode toggle
+//   Button::Guide   — reserved for Application-level radial menu
+//   Button::LB      — part of LB+RB chord for mode toggle
+//   Button::RB      — part of LB+RB chord for mode toggle
 // ---------------------------------------------------------------------------
 
 static constexpr struct { Button btn; KeyBinding binding; } kDefaults[] = {
-    { Button::DPadUp,    { VK_UP,      false, false, false, true  } },
-    { Button::DPadDown,  { VK_DOWN,    false, false, false, true  } },
-    { Button::DPadLeft,  { VK_LEFT,    false, false, false, true  } },
-    { Button::DPadRight, { VK_RIGHT,   false, false, false, true  } },
-    { Button::South,     { VK_RETURN,  false, false, false, false } },
-    { Button::East,      { VK_ESCAPE,  false, false, false, false } },
-    { Button::North,     { VK_F5,      false, false, false, false } },
-    { Button::West,      { VK_SPACE,   false, false, false, false } },
-    { Button::LB,        { VK_TAB,     false, false, false, false } },
-    { Button::RB,        { VK_TAB,     true,  false, false, false } },  // Shift+Tab
-    { Button::Start,     { VK_ESCAPE,  false, false, false, false } },
-    { Button::Select,    { VK_LWIN,    false, false, false, false } },
-    { Button::LS,        { VK_F2,      false, false, false, false } },
-    { Button::RS,        { VK_APPS,    false, false, false, false } },  // Context menu
+    { Button::DPadUp,    { VK_UP,     false, false, false, true  } },
+    { Button::DPadDown,  { VK_DOWN,   false, false, false, true  } },
+    { Button::DPadLeft,  { VK_LEFT,   false, false, false, true  } },
+    { Button::DPadRight, { VK_RIGHT,  false, false, false, true  } },
+    { Button::South,     { VK_RETURN, false, false, false, false } },
+    { Button::East,      { VK_ESCAPE, false, false, false, false } },
+    { Button::North,     { VK_F5,     false, false, false, false } },
+    { Button::West,      { VK_SPACE,  false, false, false, false } },
+    { Button::Start,     { VK_ESCAPE, false, false, false, false } },
+    { Button::LS,        { VK_F2,     false, false, false, false } },
+    { Button::RS,        { VK_APPS,   false, false, false, false } },
 };
 
 // ---------------------------------------------------------------------------
@@ -68,7 +71,7 @@ void KeyboardMapper::SetEnabled(bool enabled) noexcept {
 bool KeyboardMapper::IsEnabled() const noexcept { return m_enabled; }
 
 // ---------------------------------------------------------------------------
-// Update  — called from the input thread at polling rate
+// Update
 // ---------------------------------------------------------------------------
 
 void KeyboardMapper::Update(const ControllerState& state) {
@@ -81,7 +84,7 @@ void KeyboardMapper::Update(const ControllerState& state) {
         const bool   wasDown = HasButton(m_prevButtons, btn);
         const bool   isDown  = HasButton(state.buttons,  btn);
 
-        if (isDown && !wasDown)  InjectKey(binding, true);
+        if (isDown  && !wasDown) InjectKey(binding, true);
         if (!isDown && wasDown)  InjectKey(binding, false);
     }
 
@@ -96,13 +99,13 @@ void KeyboardMapper::InjectKey(const KeyBinding& binding, bool down) {
     SendModifiers(binding, down);
 
     INPUT inp{};
-    inp.type        = INPUT_KEYBOARD;
-    inp.ki.wVk      = binding.vkCode;
-    inp.ki.dwFlags  = (binding.extended ? KEYEVENTF_EXTENDEDKEY : 0) |
-                      (down             ? 0 : KEYEVENTF_KEYUP);
+    inp.type       = INPUT_KEYBOARD;
+    inp.ki.wVk     = binding.vkCode;
+    inp.ki.dwFlags = (binding.extended ? KEYEVENTF_EXTENDEDKEY : 0) |
+                     (down             ? 0                      : KEYEVENTF_KEYUP);
     SendInput(1, &inp, sizeof(INPUT));
 
-    // Release modifiers in reverse order
+    // Release modifiers after key-up
     if (!down) SendModifiers(binding, false);
 }
 
