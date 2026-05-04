@@ -42,10 +42,11 @@ void OverlayWindowImpl::Hide() {
     m_shown = false;
 }
 
-bool          OverlayWindowImpl::IsShown()       const noexcept { return m_shown.load(); }
-HWND__*       OverlayWindowImpl::GetHWND()       const noexcept { return m_hwnd; }
-RadialMenu&   OverlayWindowImpl::GetRadialMenu()               { return m_radialMenu; }
-SettingsMenu& OverlayWindowImpl::GetSettingsMenu()             { return m_settingsMenu; }
+bool              OverlayWindowImpl::IsShown()           const noexcept { return m_shown.load(); }
+HWND__*           OverlayWindowImpl::GetHWND()           const noexcept { return m_hwnd; }
+RadialMenu&       OverlayWindowImpl::GetRadialMenu()                    { return m_radialMenu; }
+SettingsMenu&     OverlayWindowImpl::GetSettingsMenu()                  { return m_settingsMenu; }
+VirtualKeyboard&  OverlayWindowImpl::GetVirtualKeyboard()               { return m_keyboard; }
 
 void OverlayWindowImpl::SetModeLabel(std::wstring label) {
     std::lock_guard lk(m_modeLabelMutex);
@@ -275,33 +276,40 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
     rt->BeginDraw();
     rt->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
-    // --- Strict input isolation -------------------------------------------
-    // Only the "active" UI element receives controller state.
-    // The other element always receives an empty state so it never processes
-    // input that belongs to the user’s current context.
+    // ---- Input isolation -------------------------------------------------
+    // Priority: radial > keyboard > settings.
+    // Whichever is active receives real input; others receive empty state.
     const bool radialActive   = m_radialMenu.IsVisible();
+    const bool keyboardActive = m_keyboard.IsOpen();
     const bool settingsActive = m_settingsMenu.IsOpen();
 
-    static const ControllerState kEmptyState{};
+    static const ControllerState kEmpty{};
 
     if (radialActive) {
         m_radialMenu.Update(m_lastState, deltaSeconds);
-        m_settingsMenu.Update(kEmptyState, deltaSeconds);
+        m_keyboard.Update(kEmpty, deltaSeconds);
+        m_settingsMenu.Update(kEmpty, deltaSeconds);
+    } else if (keyboardActive) {
+        m_radialMenu.Update(kEmpty, deltaSeconds);
+        m_keyboard.Update(m_lastState, deltaSeconds);
+        m_settingsMenu.Update(kEmpty, deltaSeconds);
     } else if (settingsActive) {
+        m_radialMenu.Update(kEmpty, deltaSeconds);
+        m_keyboard.Update(kEmpty, deltaSeconds);
         m_settingsMenu.Update(m_lastState, deltaSeconds);
-        m_radialMenu.Update(kEmptyState, deltaSeconds);
     } else {
-        // Neither menu is active: radialMenu handles open trigger via
-        // Application.cpp; both get empty state here so they don’t
-        // accidentally process stale input.
-        m_radialMenu.Update(kEmptyState, deltaSeconds);
-        m_settingsMenu.Update(kEmptyState, deltaSeconds);
+        m_radialMenu.Update(kEmpty, deltaSeconds);
+        m_keyboard.Update(kEmpty, deltaSeconds);
+        m_settingsMenu.Update(kEmpty, deltaSeconds);
     }
 
+    // ---- Draw order: radial, settings, keyboard, hud, toasts ---------------
     m_radialMenu.Draw(rt, m_dwriteFactory.Get(), m_dpiScale,
                       static_cast<float>(w), static_cast<float>(h));
     m_settingsMenu.Draw(rt, m_dwriteFactory.Get(), m_dpiScale,
                         static_cast<float>(w), static_cast<float>(h));
+    m_keyboard.Draw(rt, m_dwriteFactory.Get(), m_dpiScale,
+                    static_cast<float>(w), static_cast<float>(h));
     DrawHudMode(rt);
     DrawActiveIndicator(rt);
     DrawToasts(rt, deltaSeconds);
@@ -324,7 +332,7 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
 }
 
 // ---------------------------------------------------------------------------
-// DrawActiveIndicator  — Dark Regalia: triple concentric gold halos
+// DrawActiveIndicator  — triple concentric gold halos
 // ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::DrawActiveIndicator(ID2D1RenderTarget* rt) {
@@ -364,7 +372,7 @@ void OverlayWindowImpl::DrawActiveIndicator(ID2D1RenderTarget* rt) {
 }
 
 // ---------------------------------------------------------------------------
-// DrawHudMode  — Dark Regalia: obsidian pill with gold left-border accent
+// DrawHudMode  — obsidian pill with gold left-border accent
 // ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt) {
