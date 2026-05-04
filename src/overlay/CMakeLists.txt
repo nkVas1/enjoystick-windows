@@ -3,20 +3,14 @@ cmake_minimum_required(VERSION 3.20)
 # ---------------------------------------------------------------------------
 # enjoystick_overlay
 #
-# Provides:
-#   OverlayWindow  — WS_EX_LAYERED Win32 window rendered with Direct2D.
-#                    Owns a dedicated render thread. Toast notifications and
-#                    the radial-menu widget are drawn here.
-#   RadialMenu     — Controller-driven circular action menu with animation.
-#
-# Toast and HUD rendering are fully embedded inside OverlayWindow.cpp
-# (the DrawToasts / DrawActiveIndicator methods). No separate .cpp is
-# needed until Phase 2 when each becomes a standalone DWrite sub-renderer.
+# Direct2D / DirectWrite layered-window overlay.
+# Renders: active indicator, toast notifications, radial menu, settings menu.
 # ---------------------------------------------------------------------------
 
 add_library(enjoystick_overlay STATIC
     src/OverlayWindow.cpp
     src/RadialMenu.cpp
+    src/SettingsMenu.cpp
 )
 
 target_compile_definitions(enjoystick_overlay PUBLIC
@@ -30,9 +24,8 @@ target_include_directories(enjoystick_overlay
 )
 
 target_link_libraries(enjoystick_overlay
-    PUBLIC  enjoystick_core
-    # Direct2D, DirectWrite, DirectComposition
-    PRIVATE d2d1 dwrite dcomp
+    PUBLIC enjoystick_core enjoystick_config
+    PRIVATE d2d1 dwrite
 )
 
 target_compile_features(enjoystick_overlay PUBLIC cxx_std_20)
