@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 #include <cstdint>
+#include <vector>
 
 namespace enjoystick::app {
 
@@ -38,6 +39,10 @@ public:
         std::wstring title,
         std::wstring text,
         uint32_t     durationMs = 3000) = 0;
+
+    /// Register a callback invoked on left-button double-click of the tray icon.
+    /// Passing nullptr clears a previously registered callback.
+    virtual void SetOnDoubleClick(std::function<void()> callback) = 0;
 
     /// Remove the icon from the tray.
     virtual void Remove() = 0;
