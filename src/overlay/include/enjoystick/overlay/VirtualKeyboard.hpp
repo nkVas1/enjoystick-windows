@@ -23,14 +23,25 @@ namespace enjoystick::overlay {
 //   LB / RB     - switch to symbol layer / back
 //   L3 (click)  - toggle Caps Lock
 //
-// The keyboard calls OnChar for every character typed and OnSubmit when
-// the user confirms. The caller owns the accumulated string and may pass
-// a seed string via Open().
+// Trigger to open: Start (Options) button  OR  RS (right stick click)
+// Both bindings are handled in Application.cpp.
 //
-// Animation model (v4):
+// On submit the keyboard sends the accumulated text directly into the active
+// window as Unicode key events via SendInput so it lands in whichever field
+// has focus (text field, search bar, address bar, etc.).
+//
+// Navigation feel:
+//   kStickRepeatFirst  — initial hold delay before auto-repeat begins (0.55 s)
+//   kStickRepeatNext   — interval between successive repeat steps (0.18 s)
+//   A spring cursor tracks the selected key, giving a magnet / snap feel.
+//   Stick deadzone 0.35 avoids accidental movement.
+//
+// Animation model (v5):
 //   Panel slide-in: FloatSpring (stiffness=320, damping=24), 0->1
 //   Cursor glow:    FloatSpring x/y (stiffness=480, damping=26)
 //   Key scale pop:  FloatSpring (stiffness=600, damping=28), 1.18->1
+//
+// Glow style: single thin ring (1.25x key height, 2px stroke) — no heavy bloom.
 // ---------------------------------------------------------------------------
 
 class VirtualKeyboard {
@@ -96,8 +107,18 @@ private:
 
     // navigation
     float  m_stickCooldown = 0.0f;
-    static constexpr float kStickRepeatFirst = 0.35f;
-    static constexpr float kStickRepeatNext  = 0.10f;
+
+    // -----------------------------------------------------------------------
+    // Navigation snap timings
+    // kStickRepeatFirst: time (seconds) the stick must be held before the
+    //   cursor starts auto-repeating.  Longer = more deliberate feel, fewer
+    //   accidental multiple key presses.
+    // kStickRepeatNext: interval between each subsequent repeat step.
+    // These values produce a comfortable "magnet" / "snap" feel: the cursor
+    // moves once immediately, then pauses, then begins smooth auto-repeat.
+    // -----------------------------------------------------------------------
+    static constexpr float kStickRepeatFirst = 0.55f;  // was 0.35
+    static constexpr float kStickRepeatNext  = 0.18f;  // was 0.10
     bool   m_stickActive = false;
 
     // state
