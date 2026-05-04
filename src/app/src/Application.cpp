@@ -3,14 +3,16 @@
 #include <enjoystick/config/ConfigStore.hpp>
 #include "AutoStart.hpp"
 
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+#endif
 #include <Windows.h>
-#include <shlobj.h>     // SHGetKnownFolderPath (used via ConfigStore::Create)
+#include <shlobj.h>
 #include <shellapi.h>
 
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <thread>
 
 namespace enjoystick::app {
 
@@ -30,6 +32,58 @@ static const wchar_t* InputModeLabel(InputMode m) noexcept {
 }
 
 // ---------------------------------------------------------------------------
+// FireAndForgetRumble
+//
+// Schedules a single rumble event deferredMs in the future using a
+// Win32 ThreadpoolTimer.  No raw `this` pointer is captured — all data
+// is copied into a heap-allocated context and freed inside the callback.
+// Safe to call even during application shutdown.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct RumbleCtx {
+    core::InputEngine* engine;  // non-owning, caller guarantees lifetime
+    ControllerId       id;
+    RumbleParams       params;
+};
+
+static void CALLBACK RumbleTimerCallback(
+    PTP_CALLBACK_INSTANCE, void* ctx, PTP_TIMER timer) noexcept
+{
+    auto* r = static_cast<RumbleCtx*>(ctx);
+    if (r->engine) r->engine->Rumble(r->id, r->params);
+    CloseThreadpoolTimer(timer);
+    delete r;
+}
+
+/// Schedule a one-shot rumble deferredMs milliseconds from now.
+/// Ownership of the RumbleCtx transfers to the threadpool callback.
+static void ScheduleRumble(
+    core::InputEngine* engine,
+    ControllerId id,
+    RumbleParams params,
+    DWORD deferredMs) noexcept
+{
+    auto* ctx  = new (std::nothrow) RumbleCtx{engine, id, params};
+    if (!ctx) return;
+
+    PTP_TIMER timer = CreateThreadpoolTimer(RumbleTimerCallback, ctx, nullptr);
+    if (!timer) { delete ctx; return; }
+
+    // Negative value = relative time in 100-ns units
+    ULARGE_INTEGER due;
+    due.QuadPart = static_cast<ULONGLONG>(
+        -static_cast<LONGLONG>(deferredMs) * 10'000LL);
+    FILETIME ft;
+    ft.dwLowDateTime  = due.LowPart;
+    ft.dwHighDateTime = due.HighPart;
+    SetThreadpoolTimer(timer, &ft, 0, 0);
+}
+
+} // anonymous namespace
+
+// ---------------------------------------------------------------------------
 // Helper: SettingsMenu::Values -> VirtualMouse::Config
 // ---------------------------------------------------------------------------
 
@@ -47,7 +101,7 @@ static cursor::MouseConfig VMConfigFromSettings(
 }
 
 // ---------------------------------------------------------------------------
-// Helper: VirtualMouse::Config + DeadzoneConfig -> SettingsMenu::Values
+// Helper: stored config -> SettingsMenu::Values
 // ---------------------------------------------------------------------------
 
 static overlay::SettingsMenu::Values SettingsValuesFromConfig(
@@ -57,10 +111,10 @@ static overlay::SettingsMenu::Values SettingsValuesFromConfig(
     overlay::SettingsMenu::Values v;
     v.cursorSpeed      = mc.maxSpeed;
     v.curveExponent    = mc.exponent;
-    v.accelerationMs   = 0.0f;          // not in MouseCfg — set default
+    v.accelerationMs   = 0.0f;
     v.scrollSpeed      = mc.scrollSpeed;
-    v.triggersAsClicks = false;         // not in MouseCfg — set default
-    v.useRightStick    = true;          // not in MouseCfg — set default
+    v.triggersAsClicks = false;
+    v.useRightStick    = true;
     v.dzInner          = ic.deadzoneInner;
     v.dzOuter          = ic.deadzoneOuter;
     return v;
@@ -72,7 +126,10 @@ static overlay::SettingsMenu::Values SettingsValuesFromConfig(
 
 class ApplicationImpl final : public Application {
 public:
-    ApplicationImpl() = default;
+    ApplicationImpl() {
+        // Cache QPC frequency once — it never changes after boot.
+        QueryPerformanceFrequency(&m_qpcFreq);
+    }
     ~ApplicationImpl() override = default;
 
     // -----------------------------------------------------------------------
@@ -80,17 +137,14 @@ public:
     // -----------------------------------------------------------------------
 
     void Init() override {
-        // Config — Create() opens %APPDATA%\Enjoystick\config.json
         m_config = config::ConfigStore::Create();
         m_config->StartWatcher();
 
-        // Input engine
         core::InputEngine::Config engCfg;
         engCfg.pollingRateHz  = 250;
         engCfg.hapticsEnabled = true;
         m_inputEngine = core::InputEngine::Create(engCfg);
 
-        // VirtualMouse — translate stored MouseCfg -> MouseConfig
         const auto& cfg = m_config->Get();
         cursor::MouseConfig vmCfg;
         vmCfg.maxSpeedPx    = cfg.mouse.maxSpeed;
@@ -101,21 +155,17 @@ public:
         m_virtualMouse = std::make_unique<cursor::VirtualMouse>(vmCfg);
         m_keyMapper    = std::make_unique<input::KeyboardMapper>();
 
-        // Start in Cursor mode
         m_virtualMouse->SetEnabled(true);
         m_keyMapper->SetEnabled(false);
 
-        // Overlay
         m_overlay = overlay::OverlayWindow::Create({});
         SetupRadialMenu();
         SetupSettingsMenu();
         m_overlay->Show();
 
-        // System tray
         m_tray = SystemTray::Create(L"EnjoyStick \u2014 gamepad navigation active");
         m_tray->SetMenuItems(BuildTrayMenu());
 
-        // Input callbacks
         m_inputHandle = m_inputEngine->OnInput([this](const ControllerState& s) {
             OnControllerState(s);
         });
@@ -123,7 +173,6 @@ public:
             OnConnectionEvent(id, ev);
         });
 
-        // Live config propagation (hot-reload)
         m_configHandle = m_config->OnChanged([this](const config::Config& c) {
             cursor::MouseConfig mc;
             mc.maxSpeedPx    = c.mouse.maxSpeed;
@@ -199,20 +248,15 @@ private:
     void SetupSettingsMenu() {
         m_overlay->GetSettingsMenu().SetOnChanged(
             [this](const overlay::SettingsMenu::Values& v) {
-                // Update VirtualMouse config
                 const auto vmCfg = VMConfigFromSettings(v);
                 m_virtualMouse->SetConfig(vmCfg);
-
-                // Persist cursor section
                 m_config->SetCursorConfig(vmCfg);
 
-                // Persist deadzone section
                 core::DeadzoneConfig dz;
                 dz.innerRadius = v.dzInner;
                 dz.outerRadius = v.dzOuter;
                 m_config->SetDeadzoneConfig(dz);
 
-                // Short haptic confirmation
                 if (m_inputEngine)
                     m_inputEngine->Rumble(ControllerId{0}, {0.0f, 0.20f, 30});
             }
@@ -245,14 +289,13 @@ private:
         if (m_overlay) m_overlay->ShowToast(InputModeLabel(m_mode));
         if (m_tray)    m_tray->SetMenuItems(BuildTrayMenu());
 
-        // Haptic double-pulse
+        // Haptic double-pulse: first pulse immediately, second after 120 ms.
+        // ScheduleRumble uses a Win32 ThreadpoolTimer — no raw `this` capture,
+        // safe during application shutdown.
         if (m_inputEngine) {
             m_inputEngine->Rumble(ControllerId{0}, {0.0f, 0.55f, 80});
-            std::thread([this] {
-                Sleep(120);
-                if (m_inputEngine)
-                    m_inputEngine->Rumble(ControllerId{0}, {0.0f, 0.40f, 60});
-            }).detach();
+            ScheduleRumble(m_inputEngine.get(), ControllerId{0},
+                           {0.0f, 0.40f, 60}, 120);
         }
     }
 
@@ -261,13 +304,12 @@ private:
     // -----------------------------------------------------------------------
 
     void OnControllerState(const ControllerState& state) {
-        LARGE_INTEGER freq, now;
-        QueryPerformanceFrequency(&freq);
+        LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
         const float dt = (m_lastTick == 0)
-            ? 4.0f   // assume 4 ms for the very first frame
+            ? 4.0f
             : static_cast<float>(now.QuadPart - m_lastTick) * 1000.0f /
-              static_cast<float>(freq.QuadPart);
+              static_cast<float>(m_qpcFreq.QuadPart);
         m_lastTick = now.QuadPart;
 
         const uint32_t prevMask = static_cast<uint32_t>(m_prevButtons);
@@ -311,7 +353,6 @@ private:
             }
         }
 
-        // Delegate to subsystems
         m_virtualMouse->Update(state, dt);
         m_keyMapper->Update(state);
         m_overlay->PostState(state);
@@ -371,14 +412,15 @@ private:
     std::unique_ptr<overlay::OverlayWindow> m_overlay;
     std::unique_ptr<SystemTray>             m_tray;
 
-    CallbackHandle              m_inputHandle;
-    CallbackHandle              m_connHandle;
+    CallbackHandle               m_inputHandle;
+    CallbackHandle               m_connHandle;
     config::ConfigCallbackHandle m_configHandle;
 
-    InputMode m_mode            = InputMode::Cursor;
-    int64_t   m_lastTick        = 0;
-    Button    m_prevButtons     = Button::None;
-    bool      m_lbRbChordActive = false;
+    InputMode      m_mode            = InputMode::Cursor;
+    int64_t        m_lastTick        = 0;
+    LARGE_INTEGER  m_qpcFreq         = {};
+    Button         m_prevButtons     = Button::None;
+    bool           m_lbRbChordActive = false;
 };
 
 // ---------------------------------------------------------------------------
