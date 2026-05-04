@@ -21,31 +21,27 @@ SettingsMenu::SettingsMenu(OnChangedCallback onChange)
 { BuildRows(); }
 
 // ---------------------------------------------------------------------------
-// BuildRows  - interleave SectionHeader sentinels between logical groups
+// BuildRows
 // ---------------------------------------------------------------------------
 void SettingsMenu::BuildRows() {
     m_rows.clear();
     m_rows.reserve(16);
 
-    // ---- Section: Cursor
     m_rows.push_back({ L"Cursor",                  RowType::SectionHeader });
     m_rows.push_back({ L"Cursor speed",             RowType::FloatSlider, 1.0f,   20.0f,  0.5f,  &m_values.cursorSpeed,       nullptr,                    L" px/ms" });
     m_rows.push_back({ L"Curve exponent",           RowType::FloatSlider, 0.8f,   3.0f,   0.05f, &m_values.curveExponent,     nullptr,                    L""       });
     m_rows.push_back({ L"Acceleration ramp",        RowType::FloatSlider, 20.0f,  500.0f, 10.0f, &m_values.accelerationMs,    nullptr,                    L" ms"    });
     m_rows.push_back({ L"Right stick moves cursor", RowType::BoolToggle,  0,      0,      0,     nullptr,                     &m_values.useRightStick,    L""       });
 
-    // ---- Section: Scrolling
     m_rows.push_back({ L"Scrolling",                RowType::SectionHeader });
     m_rows.push_back({ L"Scroll speed",             RowType::FloatSlider, 1.0f,   40.0f,  0.5f,  &m_values.scrollSpeed,       nullptr,                    L""       });
     m_rows.push_back({ L"Triggers as clicks",       RowType::BoolToggle,  0,      0,      0,     nullptr,                     &m_values.triggersAsClicks, L""       });
 
-    // ---- Section: Adaptive Speed
     m_rows.push_back({ L"Adaptive Speed",           RowType::SectionHeader });
     m_rows.push_back({ L"Adaptive speed",           RowType::BoolToggle,  0,      0,      0,     nullptr,                     &m_values.adaptiveSpeed,    L""       });
     m_rows.push_back({ L"Traversal time",           RowType::FloatSlider, 300.0f, 2000.f, 50.0f, &m_values.targetTraversalMs, nullptr,                    L" ms"    });
     m_rows.push_back({ L"DPI weight",               RowType::FloatSlider, 0.0f,   1.0f,   0.05f, &m_values.dpiWeight,         nullptr,                    L""       });
 
-    // ---- Section: Advanced
     m_rows.push_back({ L"Advanced",                 RowType::SectionHeader });
     m_rows.push_back({ L"Deadzone inner",           RowType::FloatSlider, 0.02f,  0.40f,  0.01f, &m_values.dzInner,           nullptr,                    L""       });
     m_rows.push_back({ L"Deadzone outer",           RowType::FloatSlider, 0.50f,  1.00f,  0.01f, &m_values.dzOuter,           nullptr,                    L""       });
@@ -68,21 +64,38 @@ int32_t SettingsMenu::NextInteractiveRow(int32_t from, int32_t dir) const noexce
 }
 
 void SettingsMenu::Open(const Values& current) {
-    m_values      = current;
+    m_values       = current;
     BuildRows();
-    m_selectedRow = NextInteractiveRow(-1, 1);
-    m_state       = State::Opening;
+    m_selectedRow  = NextInteractiveRow(-1, 1);
+    m_state        = State::Opening;
     m_animProgress = 0.0f;
     m_repeatTimer  = 0.0f;
+
+    // Reset all navigation state so a re-open starts clean
     m_stickNavActive   = false;
     m_stickNavCooldown = 0.0f;
+    m_dpadVertHeld     = false;
+    m_dpadVertTimer    = 0.0f;
+    m_dpadHorzHeld     = false;
+    m_dpadHorzTimer    = 0.0f;
+
     m_prevSouth = m_prevEast = m_prevNorth =
     m_prevDUp = m_prevDDown = m_prevDLeft = m_prevDRight = false;
 }
+
 void SettingsMenu::Close() {
     if (m_state == State::Hidden) return;
     m_state = State::Closing;
+
+    // Zero nav state so next Open() doesn’t inherit stale timers
+    m_stickNavActive   = false;
+    m_stickNavCooldown = 0.0f;
+    m_dpadVertHeld     = false;
+    m_dpadVertTimer    = 0.0f;
+    m_dpadHorzHeld     = false;
+    m_dpadHorzTimer    = 0.0f;
 }
+
 bool SettingsMenu::IsOpen() const noexcept { return m_state != State::Hidden; }
 
 void SettingsMenu::ResetToDefaults() {
@@ -92,8 +105,8 @@ void SettingsMenu::ResetToDefaults() {
     CommitChange();
 }
 
-void SettingsMenu::Update(const ControllerState& state, float deltaSeconds) {
-    UpdateAnimation(deltaSeconds);
+void SettingsMenu::Update(const ControllerState& state, float dt) {
+    UpdateAnimation(dt);
     if (m_state != State::Visible && m_state != State::Opening) return;
 
     const bool south  = HasButton(state.buttons, Button::South);
@@ -108,30 +121,27 @@ void SettingsMenu::Update(const ControllerState& state, float deltaSeconds) {
     if (north && !m_prevNorth) { ResetToDefaults(); goto done; }
 
     // -----------------------------------------------------------------------
-    // Vertical row navigation — DPad with snap cooldown
+    // DPad vertical: navigate rows with proper member-field cooldown
     // -----------------------------------------------------------------------
     {
-        // Edge-trigger on first press, then cooldown repeat for held DPad
-        static float sDpadNavTimer = 0.0f;
-        static bool  sDpadNavHeld  = false;
         const bool dVert = dUp || dDown;
         if (dVert) {
-            if (!sDpadNavHeld) {
-                sDpadNavHeld  = true;
-                sDpadNavTimer = kSnapFirst;
+            if (!m_dpadVertHeld) {
+                m_dpadVertHeld  = true;
+                m_dpadVertTimer = kSnapFirst;
                 if (dUp)   m_selectedRow = NextInteractiveRow(m_selectedRow, -1);
                 if (dDown) m_selectedRow = NextInteractiveRow(m_selectedRow,  1);
             } else {
-                sDpadNavTimer -= deltaSeconds;
-                if (sDpadNavTimer <= 0.0f) {
-                    sDpadNavTimer = kSnapNext;
+                m_dpadVertTimer -= dt;
+                if (m_dpadVertTimer <= 0.0f) {
+                    m_dpadVertTimer = kSnapNext;
                     if (dUp)   m_selectedRow = NextInteractiveRow(m_selectedRow, -1);
                     if (dDown) m_selectedRow = NextInteractiveRow(m_selectedRow,  1);
                 }
             }
         } else {
-            sDpadNavHeld  = false;
-            sDpadNavTimer = 0.0f;
+            m_dpadVertHeld  = false;
+            m_dpadVertTimer = 0.0f;
         }
     }
 
@@ -144,48 +154,45 @@ void SettingsMenu::Update(const ControllerState& state, float deltaSeconds) {
     }
 
     // -----------------------------------------------------------------------
-    // Horizontal slider — DPad left/right with snap cooldown
+    // DPad horizontal: adjust selected slider with proper member-field cooldown
     // -----------------------------------------------------------------------
     {
-        static float sHorzTimer = 0.0f;
-        static bool  sHorzHeld  = false;
         const bool hHorz = dLeft || dRight;
         if (hHorz) {
-            if (!sHorzHeld) {
-                sHorzHeld  = true;
-                sHorzTimer = kSnapFirst;
+            if (!m_dpadHorzHeld) {
+                m_dpadHorzHeld  = true;
+                m_dpadHorzTimer = kSnapFirst;
                 if (dLeft)  AdjustSelected(-1.0f, false);
                 if (dRight) AdjustSelected( 1.0f, false);
             } else {
-                sHorzTimer -= deltaSeconds;
-                if (sHorzTimer <= 0.0f) {
-                    sHorzTimer = kSnapNext;
+                m_dpadHorzTimer -= dt;
+                if (m_dpadHorzTimer <= 0.0f) {
+                    m_dpadHorzTimer = kSnapNext;
                     if (dLeft)  AdjustSelected(-1.0f, true);
                     if (dRight) AdjustSelected( 1.0f, true);
                 }
             }
         } else {
-            sHorzHeld  = false;
-            sHorzTimer = 0.0f;
+            m_dpadHorzHeld  = false;
+            m_dpadHorzTimer = 0.0f;
         }
     }
 
     // -----------------------------------------------------------------------
-    // Left stick: Y-axis navigates rows with magnet-snap, X-axis adjusts slider
+    // Left stick: Y-axis navigates rows, X-axis fine-tunes slider
     // -----------------------------------------------------------------------
     {
         const float ly = state.leftStick.y;
         const float lx = state.leftStick.x;
 
-        // Vertical: snap between rows
         if (std::abs(ly) > kNavDeadzone) {
-            const int dir = (ly > 0.0f) ? 1 : -1;  // positive Y = stick down = row down
+            const int dir = (ly > 0.0f) ? 1 : -1;
             if (!m_stickNavActive) {
                 m_stickNavActive   = true;
                 m_stickNavCooldown = kSnapFirst;
                 m_selectedRow = NextInteractiveRow(m_selectedRow, dir);
             } else {
-                m_stickNavCooldown -= deltaSeconds;
+                m_stickNavCooldown -= dt;
                 if (m_stickNavCooldown <= 0.0f) {
                     m_stickNavCooldown = kSnapNext;
                     m_selectedRow = NextInteractiveRow(m_selectedRow, dir);
@@ -196,12 +203,11 @@ void SettingsMenu::Update(const ControllerState& state, float deltaSeconds) {
             m_stickNavCooldown = 0.0f;
         }
 
-        // Horizontal: fine-tune slider value
         if (std::abs(lx) > 0.25f) {
             const auto& row = m_rows[static_cast<size_t>(m_selectedRow)];
             if (row.type == RowType::FloatSlider && row.fTarget) {
                 *row.fTarget = std::clamp(
-                    *row.fTarget + lx * deltaSeconds * row.step * 8.0f,
+                    *row.fTarget + lx * dt * row.step * 8.0f,
                     row.min, row.max);
                 CommitChange();
             }
@@ -214,8 +220,8 @@ done:
     m_prevDLeft = dLeft; m_prevDRight = dRight;
 }
 
-void SettingsMenu::UpdateAnimation(float deltaSeconds) {
-    const float step = deltaSeconds * 1000.0f / kAnimMs;
+void SettingsMenu::UpdateAnimation(float dt) {
+    const float step = dt * 1000.0f / kAnimMs;
     switch (m_state) {
     case State::Opening:
         m_animProgress = std::min(1.0f, m_animProgress + step);
@@ -228,6 +234,7 @@ void SettingsMenu::UpdateAnimation(float deltaSeconds) {
     default: break;
     }
 }
+
 void SettingsMenu::AdjustSelected(float direction, bool repeat) {
     if (!IsInteractiveRow(m_selectedRow)) return;
     const auto& row = m_rows[static_cast<size_t>(m_selectedRow)];
@@ -236,10 +243,11 @@ void SettingsMenu::AdjustSelected(float direction, bool repeat) {
     *row.fTarget = std::clamp(*row.fTarget + direction * step, row.min, row.max);
     CommitChange();
 }
+
 void SettingsMenu::CommitChange() { if (m_onChange) m_onChange(m_values); }
 
 // ---------------------------------------------------------------------------
-// Internal geometry helpers
+// Draw helpers
 // ---------------------------------------------------------------------------
 namespace {
 
@@ -247,19 +255,17 @@ static void DrawPanelChrome(
     ID2D1RenderTarget* rt, ID2D1Factory* fac,
     float px, float py, float pw, float ph, float r, float s, float ease) noexcept
 {
-    {
-        D2D1_ROUNDED_RECT rr{ D2D1::RectF(px, py, px+pw, py+ph), r, r };
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::GoldShadow(0.30f * ease), b.GetAddressOf());
-        if (b) rt->DrawRoundedRectangle(rr, b.Get(), 1.8f);
-    }
+    D2D1_ROUNDED_RECT rr{ D2D1::RectF(px, py, px+pw, py+ph), r, r };
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+    rt->CreateSolidColorBrush(Tok::GoldShadow(0.30f * ease), b.GetAddressOf());
+    if (b) rt->DrawRoundedRectangle(rr, b.Get(), 1.8f);
     (void)fac; (void)s;
 }
 
 } // anon
 
 // ---------------------------------------------------------------------------
-// Draw  (unchanged visual, full copy retained for compile integrity)
+// Draw
 // ---------------------------------------------------------------------------
 void SettingsMenu::Draw(
     void*  renderTargetPtr,
@@ -300,41 +306,38 @@ void SettingsMenu::Draw(
     // ---- Scrim
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::DeepVoid(0.55f * ease), b.GetAddressOf());
+        rt->CreateSolidColorBrush(Tok::Scrim(0.55f * ease), b.GetAddressOf());
         if (b) rt->FillRectangle(D2D1::RectF(0,0,screenW,screenH), b.Get());
     }
-    // ---- Panel
+    // ---- Panel fill
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::SurfaceBase(0.97f * ease), b.GetAddressOf());
         if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(px,py,px+pw,py+totalH),cr,cr};
                  rt->FillRoundedRectangle(rr, b.Get()); }
     }
-    // Gold accent top bar
+    // ---- Gold accent top bar
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldMid(0.88f * ease), b.GetAddressOf());
         if (b) {
             D2D1_ROUNDED_RECT rr{D2D1::RectF(px,py,px+pw,py+accentH+cr),cr,cr};
             rt->FillRoundedRectangle(rr, b.Get());
-            // mask lower part of rounded top to show only top bar
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b2;
             rt->CreateSolidColorBrush(Tok::SurfaceBase(0.97f * ease), b2.GetAddressOf());
-            if (b2) rt->FillRectangle(D2D1::RectF(px,py+accentH,px+pw,py+accentH+cr), b2.Get());
+            if (b2) rt->FillRectangle(D2D1::RectF(px, py+accentH, px+pw, py+accentH+cr), b2.Get());
         }
     }
-    // Panel border
     if (fac) DrawPanelChrome(rt, fac.Get(), px, py, pw, totalH, cr, s, ease);
 
     // ---- Rows
     float ry = py + padY + accentH;
     for (int32_t i = 0; i < static_cast<int32_t>(m_rows.size()); ++i) {
-        const auto& row  = m_rows[static_cast<size_t>(i)];
-        const bool  sel  = (i == m_selectedRow);
-        const float rh   = (row.type == RowType::SectionHeader) ? ph_hdr : ph_row;
+        const auto& row = m_rows[static_cast<size_t>(i)];
+        const bool  sel = (i == m_selectedRow);
+        const float rh  = (row.type == RowType::SectionHeader) ? ph_hdr : ph_row;
 
         if (row.type == RowType::SectionHeader) {
-            // Section label
             if (dwrite && row.label) {
                 Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
                 dwrite->CreateTextFormat(L"Segoe UI", nullptr,
@@ -347,11 +350,9 @@ void SettingsMenu::Draw(
                     if (b) rt->DrawText(row.label,
                         static_cast<UINT32>(std::wcslen(row.label)),
                         fmt.Get(),
-                        D2D1::RectF(px+padX, ry, px+pw-padX, ry+rh),
-                        b.Get());
+                        D2D1::RectF(px+padX, ry, px+pw-padX, ry+rh), b.Get());
                 }
             }
-            // Thin separator line below header
             {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                 rt->CreateSolidColorBrush(Tok::GoldDeep(0.18f * ease), b.GetAddressOf());
@@ -361,28 +362,23 @@ void SettingsMenu::Draw(
                     b.Get(), 0.8f);
             }
         } else {
-            // ---- Interactive row
-            // Selection highlight
+            // ---- Selection highlight
             if (sel) {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                 rt->CreateSolidColorBrush(Tok::SurfaceRaised(0.80f * ease), b.GetAddressOf());
-                if (b) {
-                    D2D1_ROUNDED_RECT rr{D2D1::RectF(px+8.0f*s, ry+1.0f*s,
-                                                      px+pw-8.0f*s, ry+rh-1.0f*s),
-                                         7.0f*s, 7.0f*s};
-                    rt->FillRoundedRectangle(rr, b.Get());
-                }
-                // Gold left accent bar
+                if (b) { D2D1_ROUNDED_RECT rr{
+                    D2D1::RectF(px+8.0f*s, ry+1.0f*s, px+pw-8.0f*s, ry+rh-1.0f*s),
+                    7.0f*s, 7.0f*s};
+                    rt->FillRoundedRectangle(rr, b.Get()); }
+                // Left accent bar
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> ab;
                 rt->CreateSolidColorBrush(Tok::GoldHi(0.85f * ease), ab.GetAddressOf());
-                if (ab) {
-                    D2D1_ROUNDED_RECT rr{D2D1::RectF(px+8.0f*s, ry+6.0f*s,
-                                                      px+11.5f*s, ry+rh-6.0f*s),
-                                         1.5f*s, 1.5f*s};
-                    rt->FillRoundedRectangle(rr, ab.Get());
-                }
+                if (ab) { D2D1_ROUNDED_RECT rr{
+                    D2D1::RectF(px+8.0f*s, ry+6.0f*s, px+11.5f*s, ry+rh-6.0f*s),
+                    1.5f*s, 1.5f*s};
+                    rt->FillRoundedRectangle(rr, ab.Get()); }
             }
-            // Row label
+            // ---- Row label
             if (dwrite && row.label) {
                 Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
                 dwrite->CreateTextFormat(L"Segoe UI", nullptr,
@@ -392,23 +388,23 @@ void SettingsMenu::Draw(
                     fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                     rt->CreateSolidColorBrush(
-                        sel ? Tok::GoldHi(0.96f * ease) : Tok::ChromeHi(0.82f * ease),
+                        sel ? Tok::GoldHi(0.96f*ease) : Tok::ChromeHi(0.82f*ease),
                         b.GetAddressOf());
                     if (b) rt->DrawText(row.label,
                         static_cast<UINT32>(std::wcslen(row.label)),
                         fmt.Get(),
-                        D2D1::RectF(px+padX+6.0f*s, ry, px+pw*0.5f, ry+rh),
-                        b.Get());
+                        D2D1::RectF(px+padX+6.0f*s, ry, px+pw*0.5f, ry+rh), b.Get());
                 }
             }
             // ---- Value widget (right half)
             const float wx  = px + pw * 0.5f;
             const float wx1 = px + pw - padX;
+
             if (row.type == RowType::FloatSlider && row.fTarget) {
                 const float t   = std::clamp((*row.fTarget - row.min) / (row.max - row.min + 0.0001f), 0.0f, 1.0f);
                 const float bcy = ry + rh * 0.5f;
                 const float bh2 = 5.0f * s;
-                // Track bg
+                // Track background
                 {
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                     rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.90f * ease), b.GetAddressOf());
@@ -420,14 +416,12 @@ void SettingsMenu::Draw(
                     const float fillX = wx + (wx1-wx)*t;
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                     rt->CreateSolidColorBrush(
-                        sel ? Tok::GoldMid(0.88f * ease) : Tok::GoldDeep(0.60f * ease),
+                        sel ? Tok::GoldMid(0.88f*ease) : Tok::GoldDeep(0.60f*ease),
                         b.GetAddressOf());
-                    if (b && fillX > wx) {
-                        D2D1_ROUNDED_RECT rr{D2D1::RectF(wx,bcy-bh2,fillX,bcy+bh2),bh2,bh2};
-                        rt->FillRoundedRectangle(rr, b.Get());
-                    }
+                    if (b && fillX > wx) { D2D1_ROUNDED_RECT rr{D2D1::RectF(wx,bcy-bh2,fillX,bcy+bh2),bh2,bh2};
+                                           rt->FillRoundedRectangle(rr, b.Get()); }
                 }
-                // Thumb
+                // Thumb fill
                 {
                     const float tx = wx + (wx1-wx)*t;
                     const float tr = 8.0f * s;
@@ -436,6 +430,16 @@ void SettingsMenu::Draw(
                         sel ? Tok::GoldBright(0.97f*ease) : Tok::GoldMid(0.60f*ease),
                         b.GetAddressOf());
                     if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(tx,bcy),tr,tr), b.Get());
+                }
+                // Thumb ring (selected only)
+                if (sel) {
+                    const float tx = wx + (wx1-wx)*t;
+                    const float tr = 8.0f * s;
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> rb;
+                    rt->CreateSolidColorBrush(Tok::GoldHi(0.55f*ease), rb.GetAddressOf());
+                    if (rb) rt->DrawEllipse(
+                        D2D1::Ellipse(D2D1::Point2F(tx,bcy), tr+1.5f*s, tr+1.5f*s),
+                        rb.Get(), 1.2f*s);
                 }
                 // Value label
                 if (dwrite && row.fTarget) {
@@ -457,7 +461,7 @@ void SettingsMenu::Draw(
                     }
                 }
             } else if (row.type == RowType::BoolToggle && row.bTarget) {
-                const bool on = *row.bTarget;
+                const bool  on  = *row.bTarget;
                 const float tcx = (wx + wx1) * 0.5f;
                 const float tcy = ry + rh * 0.5f;
                 const float tw  = 42.0f * s;
@@ -472,6 +476,15 @@ void SettingsMenu::Draw(
                         D2D1::RectF(tcx-tw*0.5f,tcy-th*0.5f,tcx+tw*0.5f,tcy+th*0.5f),
                         th*0.5f, th*0.5f};
                         rt->FillRoundedRectangle(rr, b.Get()); }
+                }
+                // Track border (selected)
+                if (sel) {
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+                    rt->CreateSolidColorBrush(Tok::GoldMid(0.45f*ease), b.GetAddressOf());
+                    if (b) { D2D1_ROUNDED_RECT rr{
+                        D2D1::RectF(tcx-tw*0.5f,tcy-th*0.5f,tcx+tw*0.5f,tcy+th*0.5f),
+                        th*0.5f, th*0.5f};
+                        rt->DrawRoundedRectangle(rr, b.Get(), 1.1f*s); }
                 }
                 // Thumb
                 {
@@ -490,7 +503,7 @@ void SettingsMenu::Draw(
 
     // ---- Hint bar
     if (dwrite) {
-        const float hy  = py + totalH - padY * 0.7f;
+        const float hy = py + totalH - padY * 0.7f;
         const wchar_t* hints = L"\u25CF Toggle   \u25C6 Close   \u25B2 Reset defaults";
         Microsoft::WRL::ComPtr<IDWriteTextFormat> hf;
         dwrite->CreateTextFormat(L"Segoe UI", nullptr,
