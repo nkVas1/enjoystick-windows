@@ -2,7 +2,6 @@
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
-#pragma comment(lib, "dcomp.lib")
 
 #include <stdexcept>
 #include <algorithm>
@@ -51,12 +50,12 @@ void OverlayWindowImpl::Hide() {
     m_shown = false;
 }
 
-bool    OverlayWindowImpl::IsShown()  const noexcept { return m_shown.load(); }
-HWND__* OverlayWindowImpl::GetHWND()  const noexcept { return m_hwnd; }
-RadialMenu& OverlayWindowImpl::GetRadialMenu()        { return m_radialMenu; }
+bool    OverlayWindowImpl::IsShown()     const noexcept { return m_shown.load(); }
+HWND__* OverlayWindowImpl::GetHWND()     const noexcept { return m_hwnd; }
+RadialMenu& OverlayWindowImpl::GetRadialMenu()         { return m_radialMenu; }
 
 // ---------------------------------------------------------------------------
-// PostState — lock-free double-buffer swap (input thread → render thread)
+// PostState
 // ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::PostState(const ControllerState& state) {
@@ -75,11 +74,11 @@ void OverlayWindowImpl::ShowToast(std::wstring message, uint32_t durationMs) {
 }
 
 // ---------------------------------------------------------------------------
-// Window + Direct2D initialisation
+// Window + D2D init
 // ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::CreateWindowAndD2D() {
-    // Find the target monitor by index
+    // Enumerate target monitor
     struct MonitorEnum {
         uint32_t target;
         uint32_t current = 0;
@@ -96,17 +95,16 @@ void OverlayWindowImpl::CreateWindowAndD2D() {
         reinterpret_cast<LPARAM>(&ctx));
 
     if (!ctx.result) {
-        // Fallback: primary monitor
         ctx.rect = { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
     }
 
-    m_monitor    = ctx.result;
+    m_monitor     = ctx.result;
     m_monitorRect = { ctx.rect.left, ctx.rect.top, ctx.rect.right, ctx.rect.bottom };
 
     const UINT dpi = GetDpiForSystem();
     m_dpiScale = static_cast<float>(dpi) / 96.0f;
 
-    // Register window class (idempotent: ignore ERROR_CLASS_ALREADY_EXISTS)
+    // Register window class
     WNDCLASSEXW wc = {};
     wc.cbSize        = sizeof(wc);
     wc.style         = CS_HREDRAW | CS_VREDRAW;
@@ -115,6 +113,9 @@ void OverlayWindowImpl::CreateWindowAndD2D() {
     wc.lpszClassName = L"EnjoyStickOverlay";
     RegisterClassExW(&wc);
 
+    // WS_EX_LAYERED: required for UpdateLayeredWindow.
+    // WS_EX_TRANSPARENT: click-through (input passes to windows below).
+    // WS_EX_NOACTIVATE:  never steals focus.
     m_hwnd = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
         L"EnjoyStickOverlay", L"EnjoyStick",
@@ -125,14 +126,12 @@ void OverlayWindowImpl::CreateWindowAndD2D() {
 
     if (!m_hwnd) throw std::runtime_error("OverlayWindow: CreateWindowEx failed");
 
-    SetLayeredWindowAttributes(m_hwnd, 0, 255, LWA_ALPHA);
+    // DO NOT call SetLayeredWindowAttributes here.
+    // UpdateLayeredWindow owns the window's visual appearance instead.
     ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
 
-    // D2D factory
+    // D2D factory (multi-threaded: render loop runs on its own thread)
     D2D1_FACTORY_OPTIONS opts{};
-#ifdef _DEBUG
-    opts.debugLevel = D2D1_DEBUG_LEVEL_INFORMATION;
-#endif
     if (FAILED(D2D1CreateFactory(
             D2D1_FACTORY_TYPE_MULTI_THREADED,
             __uuidof(ID2D1Factory1), &opts,
@@ -149,15 +148,54 @@ void OverlayWindowImpl::CreateWindowAndD2D() {
     {
         throw std::runtime_error("OverlayWindow: DWriteCreateFactory failed");
     }
+
+    // Pre-create the DIB for the full monitor size
+    EnsureDib(m_monitorRect.Width(), m_monitorRect.Height());
 }
 
 void OverlayWindowImpl::DestroyWindowAndD2D() {
+    DestroyDib();
     m_dwriteFactory.Reset();
     m_d2dFactory.Reset();
     if (m_hwnd) {
         DestroyWindow(m_hwnd);
         m_hwnd = nullptr;
     }
+}
+
+// ---------------------------------------------------------------------------
+// DIB management
+// ---------------------------------------------------------------------------
+
+void OverlayWindowImpl::EnsureDib(int w, int h) {
+    if (m_memDC && m_dibW == w && m_dibH == h) return;
+    DestroyDib();
+
+    HDC screenDC = GetDC(nullptr);
+    m_memDC = CreateCompatibleDC(screenDC);
+    ReleaseDC(nullptr, screenDC);
+
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth       =  w;
+    bmi.bmiHeader.biHeight      = -h;  // top-down
+    bmi.bmiHeader.biPlanes      =  1;
+    bmi.bmiHeader.biBitCount    = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* pvBits = nullptr;
+    m_hDib = CreateDIBSection(m_memDC, &bmi, DIB_RGB_COLORS, &pvBits, nullptr, 0);
+    if (!m_hDib) return;
+
+    SelectObject(m_memDC, m_hDib);
+    m_dibW = w;
+    m_dibH = h;
+}
+
+void OverlayWindowImpl::DestroyDib() {
+    if (m_hDib)  { DeleteObject(m_hDib);  m_hDib  = nullptr; }
+    if (m_memDC) { DeleteDC(m_memDC);     m_memDC = nullptr; }
+    m_dibW = m_dibH = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -187,13 +225,13 @@ void OverlayWindowImpl::RenderLoop() {
         const float dt = std::chrono::duration<float, std::milli>(now - prev).count();
         prev = now;
 
-        // Consume pending state snapshot
+        // Consume latest state snapshot
         if (auto* p = m_pendingState.exchange(nullptr, std::memory_order_acquire)) {
             m_lastState    = *p;
             m_activeBuffer = 1 - m_activeBuffer;
         }
 
-        // Drain pending toast queue under lock
+        // Drain pending toasts
         {
             std::lock_guard lock(m_toastMutex);
             while (!m_pendingToasts.empty()) {
@@ -202,9 +240,8 @@ void OverlayWindowImpl::RenderLoop() {
             }
         }
 
-        RenderFrame(dt * 0.001f);  // convert ms → seconds for animation
+        RenderFrame(dt * 0.001f);  // ms → seconds
 
-        // Sleep remainder of frame budget
         const float elapsed = std::chrono::duration<float, std::milli>(
             Clock::now() - prev).count();
         if (elapsed < targetMs) {
@@ -215,98 +252,111 @@ void OverlayWindowImpl::RenderLoop() {
 }
 
 // ---------------------------------------------------------------------------
-// RenderFrame  — Phase-1 implementation using ID2D1DCRenderTarget
+// RenderFrame — DIB + UpdateLayeredWindow path
 //
-// The DC-backed render target is created per-frame. This is intentional for
-// Phase 1: it avoids the swap-chain complexity of DirectComposition while
-// still delivering correct per-pixel alpha on the layered window.
-// Phase 2 will replace this with a DXGI swap chain + DComp for lower latency.
+// Per-pixel alpha works correctly here because UpdateLayeredWindow(ULW_ALPHA)
+// reads each pixel's alpha channel directly from the DIB. The D2D clear to
+// (0,0,0,0) leaves those pixels fully transparent on-screen.
 // ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
-    if (!m_hwnd || !m_d2dFactory) return;
+    if (!m_hwnd || !m_d2dFactory || !m_memDC || !m_hDib) return;
 
-    HDC hdc = GetDC(m_hwnd);
-    if (!hdc) return;
+    const int w = m_dibW;
+    const int h = m_dibH;
+    if (w == 0 || h == 0) return;
 
-    RECT wr{};
-    GetClientRect(m_hwnd, &wr);
-    const int w = wr.right - wr.left;
-    const int h = wr.bottom - wr.top;
-    if (w == 0 || h == 0) { ReleaseDC(m_hwnd, hdc); return; }
+    // Zero the DIB before each frame (clear to transparent black)
+    RECT dibRect{ 0, 0, w, h };
+    FillRect(m_memDC, &dibRect, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+    // Black fill sets alpha=0 in the DIB; D2D will overwrite with premultiplied values.
 
-    // Create DC render target (per-frame; cheap for Phase-1 prototype)
+    // Create DC render target bound to the memory DC
     Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> rt;
     const D2D1_RENDER_TARGET_PROPERTIES rtp = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_DEFAULT,
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
 
-    if (FAILED(m_d2dFactory->CreateDCRenderTarget(&rtp, rt.GetAddressOf()))) {
-        ReleaseDC(m_hwnd, hdc);
-        return;
-    }
-
-    if (FAILED(rt->BindDC(hdc, &wr))) {
-        ReleaseDC(m_hwnd, hdc);
-        return;
-    }
+    if (FAILED(m_d2dFactory->CreateDCRenderTarget(&rtp, rt.GetAddressOf()))) return;
+    if (FAILED(rt->BindDC(m_memDC, &dibRect))) return;
 
     rt->BeginDraw();
     rt->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));  // fully transparent
 
-    // Pass rt.Get() as ID2D1RenderTarget* — upcast is safe (DCRenderTarget
-    // inherits from ID2D1RenderTarget via ID2D1BitmapRenderTarget).
     m_radialMenu.Update(m_lastState, deltaSeconds);
-    m_radialMenu.Draw(rt.Get(), m_dpiScale);
+    m_radialMenu.Draw(rt.Get(), m_dwriteFactory.Get(), m_dpiScale,
+                      static_cast<float>(w), static_cast<float>(h));
 
     DrawActiveIndicator(rt.Get());
     DrawToasts(rt.Get(), deltaSeconds);
 
     rt->EndDraw();
-    ReleaseDC(m_hwnd, hdc);
+
+    // Push the DIB to the layered window with per-pixel alpha
+    POINT ptSrc  = { 0, 0 };
+    POINT ptDst  = { m_monitorRect.left, m_monitorRect.top };
+    SIZE  szWnd  = { w, h };
+    BLENDFUNCTION blend{};
+    blend.BlendOp             = AC_SRC_OVER;
+    blend.BlendFlags          = 0;
+    blend.SourceConstantAlpha = 255;   // use per-pixel alpha
+    blend.AlphaFormat         = AC_SRC_ALPHA;
+
+    UpdateLayeredWindow(
+        m_hwnd,
+        nullptr,     // use screen DC
+        &ptDst,
+        &szWnd,
+        m_memDC,
+        &ptSrc,
+        0,
+        &blend,
+        ULW_ALPHA);
 }
 
 // ---------------------------------------------------------------------------
 // DrawActiveIndicator
 //
-// Phase 1: minimal glowing dot in the bottom-right corner.
-// Indicates that EnjoyStick is active and a controller is connected.
-// Opacity: 80% to stay unobtrusive.
+// Small glowing dot (bottom-right corner) that confirms EnjoyStick is running.
+// Outer glow ring + filled centre.
 // ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::DrawActiveIndicator(ID2D1RenderTarget* rt) {
     if (!m_config.showActiveIndicator) return;
 
-    const float r    = 6.0f * m_dpiScale;
-    const float marg = 16.0f * m_dpiScale;
-    const float cx   = static_cast<float>(m_monitorRect.Width())  - marg;
-    const float cy   = static_cast<float>(m_monitorRect.Height()) - marg;
+    const float r    = 5.0f  * m_dpiScale;
+    const float glow = 9.0f  * m_dpiScale;
+    const float marg = 18.0f * m_dpiScale;
+    const float cx   = static_cast<float>(m_dibW) - marg;
+    const float cy   = static_cast<float>(m_dibH) - marg;
 
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+    // Glow ring
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> glowBrush;
     rt->CreateSolidColorBrush(
-        D2D1::ColorF(0.34f, 0.31f, 0.98f, 0.80f),  // EnjoyStick violet
-        brush.GetAddressOf());
-    if (!brush) return;
+        D2D1::ColorF(0.34f, 0.31f, 0.98f, 0.30f),
+        glowBrush.GetAddressOf());
+    if (glowBrush)
+        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), glow, glow), glowBrush.Get());
 
-    rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), brush.Get());
+    // Solid centre
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dotBrush;
+    rt->CreateSolidColorBrush(
+        D2D1::ColorF(0.34f, 0.31f, 0.98f, 0.90f),
+        dotBrush.GetAddressOf());
+    if (dotBrush)
+        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), dotBrush.Get());
 }
 
 // ---------------------------------------------------------------------------
 // DrawToasts
-//
-// Phase 1: simple white pill-shaped toast in the bottom-centre.
-// Fade-out starts at 80% of duration.
-// Phase 2: DWrite text, slide-in animation, background blur.
 // ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
     if (m_activeToasts.empty()) return;
 
-    // Age all toasts
     for (auto& t : m_activeToasts)
         t.elapsed += deltaSeconds * 1000.0f;
 
-    // Remove expired
     m_activeToasts.erase(
         std::remove_if(m_activeToasts.begin(), m_activeToasts.end(),
             [](const ToastNotification& t) {
@@ -314,23 +364,21 @@ void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
             }),
         m_activeToasts.end());
 
-    // Draw the most recent surviving toast
     if (m_activeToasts.empty()) return;
     const auto& toast = m_activeToasts.back();
 
-    // Opacity: fade out over last 20% of duration
     const float frac    = toast.elapsed / static_cast<float>(toast.durationMs);
-    const float opacity = (frac > 0.8f) ? (1.0f - (frac - 0.8f) / 0.2f) : 1.0f;
+    const float opacity = (frac > 0.80f) ? (1.0f - (frac - 0.80f) / 0.20f) : 1.0f;
+
+    const float pw = 340.0f * m_dpiScale;
+    const float ph = 48.0f  * m_dpiScale;
+    const float px = (static_cast<float>(m_dibW) - pw) * 0.5f;
+    const float py = static_cast<float>(m_dibH) - 96.0f * m_dpiScale;
 
     // Background pill
-    const float pw = 320.0f * m_dpiScale;
-    const float ph = 44.0f  * m_dpiScale;
-    const float px = (static_cast<float>(m_monitorRect.Width()) - pw) * 0.5f;
-    const float py = static_cast<float>(m_monitorRect.Height()) - 80.0f * m_dpiScale;
-
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush;
     rt->CreateSolidColorBrush(
-        D2D1::ColorF(0.10f, 0.10f, 0.14f, 0.85f * opacity),
+        D2D1::ColorF(0.08f, 0.08f, 0.12f, 0.88f * opacity),
         bgBrush.GetAddressOf());
     if (bgBrush) {
         D2D1_ROUNDED_RECT pill{};
@@ -339,15 +387,15 @@ void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
         rt->FillRoundedRectangle(pill, bgBrush.Get());
     }
 
-    // Text label — Phase 2 will use IDWriteTextLayout for proper glyph rendering;
-    // for now we use DrawText with a basic format object.
     if (!m_dwriteFactory) return;
 
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
     m_dwriteFactory->CreateTextFormat(
         L"Segoe UI", nullptr,
-        DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-        14.0f * m_dpiScale, L"en-us",
+        DWRITE_FONT_WEIGHT_SEMI_BOLD,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        15.0f * m_dpiScale, L"en-us",
         fmt.GetAddressOf());
     if (!fmt) return;
     fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -355,7 +403,7 @@ void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
     rt->CreateSolidColorBrush(
-        D2D1::ColorF(1.0f, 1.0f, 1.0f, opacity),
+        D2D1::ColorF(0.96f, 0.96f, 1.0f, opacity),
         textBrush.GetAddressOf());
     if (!textBrush) return;
 

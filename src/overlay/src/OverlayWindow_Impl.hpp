@@ -1,12 +1,10 @@
 #pragma once
 
-// NOTE: WIN32_LEAN_AND_MEAN and NOMINMAX are injected by CMake
-// target_compile_definitions for this module. Do NOT redefine them here.
+// WIN32_LEAN_AND_MEAN and NOMINMAX are injected by CMake target_compile_definitions.
 #include <Windows.h>
 #include <d2d1.h>
 #include <d2d1_1.h>
 #include <dwrite.h>
-#include <dcomp.h>
 #include <wrl/client.h>
 
 #include <enjoystick/overlay/OverlayWindow.hpp>
@@ -27,18 +25,16 @@ struct ToastNotification {
 };
 
 ///
-/// OverlayWindowImpl
+/// OverlayWindowImpl — layered window with per-pixel alpha.
 ///
-/// Render pipeline (Phase 1 — DC-backed):
-///   GetDC(m_hwnd)
-///   → ID2D1DCRenderTarget  (factory->CreateDCRenderTarget)
-///   → BindDC / BeginDraw / ... / EndDraw
-///   → ReleaseDC
+/// Render pipeline:
+///   CreateCompatibleDC + 32-bpp DIB
+///   → ID2D1DCRenderTarget::BindDC(memDC)
+///   → BeginDraw / ... / EndDraw
+///   → UpdateLayeredWindow(ULW_ALPHA)   ← true per-pixel transparency
 ///
-/// DrawActiveIndicator and DrawToasts accept ID2D1RenderTarget* which is
-/// the common base of ID2D1DCRenderTarget AND ID2D1DeviceContext, so the
-/// same helpers work with both Phase-1 (DCRenderTarget) and the planned
-/// Phase-2 (DeviceContext + DirectComposition swap chain) render paths.
+/// Background Clear(0,0,0,0) → genuinely invisible.
+/// Only drawn primitives are visible on screen.
 ///
 class OverlayWindowImpl final : public OverlayWindow {
 public:
@@ -57,19 +53,15 @@ private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
     void CreateWindowAndD2D();
     void DestroyWindowAndD2D();
+    void EnsureDib(int w, int h);
+    void DestroyDib();
     void RenderLoop();
     void RenderFrame(float deltaSeconds);
 
-    // ---- Drawing helpers ------------------------------------------------
-    // All helpers take ID2D1RenderTarget* — the common base of:
-    //   • ID2D1DCRenderTarget   (Phase 1, used now)
-    //   • ID2D1DeviceContext    (Phase 2, DirectComposition path)
-    // This prevents C2664 when upgrading the render path.
     void DrawActiveIndicator(ID2D1RenderTarget* rt);
     void DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds);
 
-    Config m_config;
-
+    Config   m_config;
     HWND     m_hwnd    = nullptr;
     HMONITOR m_monitor = nullptr;
     Rect     m_monitorRect = {};
@@ -77,30 +69,32 @@ private:
     // D2D / DirectWrite
     Microsoft::WRL::ComPtr<ID2D1Factory1>  m_d2dFactory;
     Microsoft::WRL::ComPtr<IDWriteFactory> m_dwriteFactory;
-    // Note: m_d2dContext (ID2D1DeviceContext) reserved for Phase-2.
-    // Phase-1 creates a fresh ID2D1DCRenderTarget per frame.
 
-    // State (written from input thread, read from render thread)
-    // Two buffers + atomic pointer for lock-free hand-off.
+    // DIB render surface (per-pixel alpha path)
+    HDC     m_memDC  = nullptr;
+    HBITMAP m_hDib   = nullptr;
+    int     m_dibW   = 0;
+    int     m_dibH   = 0;
+
+    // State double-buffer (input thread → render thread, lock-free)
     alignas(64) std::atomic<ControllerState*> m_pendingState{nullptr};
     ControllerState m_stateBuffers[2];
     int             m_activeBuffer = 0;
+    ControllerState m_lastState    = {};
 
     // Overlay components
     RadialMenu      m_radialMenu;
-    ControllerState m_lastState = {};
 
     // Toast queue
     std::mutex                      m_toastMutex;
     std::queue<ToastNotification>   m_pendingToasts;
     std::vector<ToastNotification>  m_activeToasts;
 
-    // Render thread control
+    // Render thread
     std::thread        m_renderThread;
     std::atomic<bool>  m_running{false};
     std::atomic<bool>  m_shown{false};
 
-    // DPI scale (set from GetDpiForSystem at window creation)
     float m_dpiScale = 1.0f;
 };
 
