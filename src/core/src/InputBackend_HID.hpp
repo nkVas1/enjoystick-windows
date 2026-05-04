@@ -25,11 +25,11 @@ namespace enjoystick::core {
 ///
 /// Design notes:
 ///   * USB Input Report 0x01 is 64 bytes.  BT is 78 bytes (report 0x31).
-///     This implementation handles USB only; BT is detected and skipped.
-///   * ReadFile is called in blocking mode on a dedicated thread.
+///     Bluetooth is detected via HIDP_CAPS and handled transparently.
+///   * ReadFile is called in overlapped mode on a dedicated high-priority thread.
 ///   * Only the first DualSense found is used (index 0).
-///   * Touchpad finger-0 acts as a secondary left-stick delta source
-///     (useful when useRightStick == false in app config).
+///   * After a disconnect the poll thread enters a wait-then-enumerate loop
+///     (kReconnectIntervalMs) until the device reappears or Stop() is called.
 ///
 class HidBackend final : public InputEngine {
 public:
@@ -53,8 +53,11 @@ public:
 
 private:
     void PollLoop();
+    void ReconnectLoop();
+    bool OpenDevice();   ///< Enumerate HID buses and open the first DualSense found.
     bool ParseReport(const uint8_t* buf, size_t len, ControllerState& out) const noexcept;
     void SendRumbleReport(float low, float high) noexcept;
+    void CloseDevice() noexcept;
 
     void FireInput     (const ControllerState& s);
     void FireConnection(ControllerId id, ConnectionEvent ev);
@@ -86,6 +89,10 @@ private:
     // ---- Poll thread ----------------------------------------------------
     std::thread       m_thread;
     std::atomic<bool> m_running{false};
+
+    // ---- Reconnect -------------------------------------------------------
+    /// Interval between re-enumeration attempts after a disconnect (ms).
+    static constexpr DWORD kReconnectIntervalMs = 1500;
 
     // DualSense USB vendor/product IDs
     static constexpr uint16_t kSonyVid      = 0x054C;
