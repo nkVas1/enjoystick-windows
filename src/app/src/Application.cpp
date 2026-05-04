@@ -99,20 +99,25 @@ static void SendBrowserTab(bool forward) noexcept {
 
 } // anonymous namespace
 
+// ---------------------------------------------------------------------------
+// Helpers: translate between config/UI value bags and MouseConfig
+// ---------------------------------------------------------------------------
+
 static cursor::MouseConfig VMConfigFromSettings(
     const overlay::SettingsMenu::Values& v) noexcept
 {
     cursor::MouseConfig c;
-    c.maxSpeedPx       = v.cursorSpeed;
-    c.curveExponent    = v.curveExponent;
-    c.accelerationMs   = v.accelerationMs;
-    c.scrollSpeed      = v.scrollSpeed;
-    c.triggersAsClicks = v.triggersAsClicks;
-    c.useRightStick    = v.useRightStick;
-    c.adaptiveSpeed    = true;
-    c.targetScreenFracPerSec = 0.26f;
-    c.adaptiveMinScale = 0.38f;
-    c.adaptiveMaxScale = 0.92f;
+    c.maxSpeedPx         = v.cursorSpeed;
+    c.curveExponent      = v.curveExponent;
+    c.accelerationMs     = v.accelerationMs;
+    c.scrollSpeed        = v.scrollSpeed;
+    c.triggersAsClicks   = v.triggersAsClicks;
+    c.useRightStick      = v.useRightStick;
+    c.adaptiveSpeed      = v.adaptiveSpeed;
+    c.targetTraversalMs  = v.targetTraversalMs;
+    c.dpiWeight          = v.dpiWeight;
+    c.adaptiveMinScale   = 0.30f;
+    c.adaptiveMaxScale   = 2.50f;
     return c;
 }
 
@@ -121,14 +126,17 @@ static overlay::SettingsMenu::Values SettingsValuesFromConfig(
     const config::InputCfg&  ic) noexcept
 {
     overlay::SettingsMenu::Values v;
-    v.cursorSpeed      = mc.maxSpeed;
-    v.curveExponent    = mc.exponent;
-    v.accelerationMs   = mc.accelerationMs;
-    v.scrollSpeed      = mc.scrollSpeed;
-    v.triggersAsClicks = mc.triggersAsClicks;
-    v.useRightStick    = mc.useRightStick;
-    v.dzInner          = ic.deadzoneInner;
-    v.dzOuter          = ic.deadzoneOuter;
+    v.cursorSpeed        = mc.maxSpeed;
+    v.curveExponent      = mc.exponent;
+    v.accelerationMs     = mc.accelerationMs;
+    v.scrollSpeed        = mc.scrollSpeed;
+    v.triggersAsClicks   = mc.triggersAsClicks;
+    v.useRightStick      = mc.useRightStick;
+    v.adaptiveSpeed      = mc.adaptiveSpeed;
+    v.targetTraversalMs  = mc.targetTraversalMs;
+    v.dpiWeight          = mc.dpiWeight;
+    v.dzInner            = ic.deadzoneInner;
+    v.dzOuter            = ic.deadzoneOuter;
     return v;
 }
 
@@ -150,18 +158,19 @@ public:
 
         const auto& cfg = m_config->Get();
         cursor::MouseConfig vmCfg;
-        vmCfg.maxSpeedPx       = cfg.mouse.maxSpeed;
-        vmCfg.curveExponent    = cfg.mouse.exponent;
-        vmCfg.linearZone       = cfg.mouse.linearZone;
-        vmCfg.scrollSpeed      = cfg.mouse.scrollSpeed;
-        vmCfg.wrapEdges        = cfg.mouse.wrapEdges;
-        vmCfg.triggersAsClicks = cfg.mouse.triggersAsClicks;
-        vmCfg.useRightStick    = cfg.mouse.useRightStick;
-        vmCfg.accelerationMs   = cfg.mouse.accelerationMs;
-        vmCfg.adaptiveSpeed    = cfg.mouse.adaptiveSpeed;
-        vmCfg.targetScreenFracPerSec = cfg.mouse.targetScreenFracPerSec;
-        vmCfg.adaptiveMinScale = cfg.mouse.adaptiveMinScale;
-        vmCfg.adaptiveMaxScale = cfg.mouse.adaptiveMaxScale;
+        vmCfg.maxSpeedPx        = cfg.mouse.maxSpeed;
+        vmCfg.curveExponent     = cfg.mouse.exponent;
+        vmCfg.linearZone        = cfg.mouse.linearZone;
+        vmCfg.scrollSpeed       = cfg.mouse.scrollSpeed;
+        vmCfg.wrapEdges         = cfg.mouse.wrapEdges;
+        vmCfg.triggersAsClicks  = cfg.mouse.triggersAsClicks;
+        vmCfg.useRightStick     = cfg.mouse.useRightStick;
+        vmCfg.accelerationMs    = cfg.mouse.accelerationMs;
+        vmCfg.adaptiveSpeed     = cfg.mouse.adaptiveSpeed;
+        vmCfg.targetTraversalMs = cfg.mouse.targetTraversalMs;
+        vmCfg.dpiWeight         = cfg.mouse.dpiWeight;
+        vmCfg.adaptiveMinScale  = cfg.mouse.adaptiveMinScale;
+        vmCfg.adaptiveMaxScale  = cfg.mouse.adaptiveMaxScale;
         m_virtualMouse = std::make_unique<cursor::VirtualMouse>(vmCfg);
         m_keyMapper    = std::make_unique<input::KeyboardMapper>();
 
@@ -186,18 +195,19 @@ public:
 
         m_configHandle = m_config->OnChanged([this](const config::Config& c) {
             cursor::MouseConfig mc;
-            mc.maxSpeedPx       = c.mouse.maxSpeed;
-            mc.curveExponent    = c.mouse.exponent;
-            mc.linearZone       = c.mouse.linearZone;
-            mc.scrollSpeed      = c.mouse.scrollSpeed;
-            mc.wrapEdges        = c.mouse.wrapEdges;
-            mc.triggersAsClicks = c.mouse.triggersAsClicks;
-            mc.useRightStick    = c.mouse.useRightStick;
-            mc.accelerationMs   = c.mouse.accelerationMs;
-            mc.adaptiveSpeed    = c.mouse.adaptiveSpeed;
-            mc.targetScreenFracPerSec = c.mouse.targetScreenFracPerSec;
-            mc.adaptiveMinScale = c.mouse.adaptiveMinScale;
-            mc.adaptiveMaxScale = c.mouse.adaptiveMaxScale;
+            mc.maxSpeedPx        = c.mouse.maxSpeed;
+            mc.curveExponent     = c.mouse.exponent;
+            mc.linearZone        = c.mouse.linearZone;
+            mc.scrollSpeed       = c.mouse.scrollSpeed;
+            mc.wrapEdges         = c.mouse.wrapEdges;
+            mc.triggersAsClicks  = c.mouse.triggersAsClicks;
+            mc.useRightStick     = c.mouse.useRightStick;
+            mc.accelerationMs    = c.mouse.accelerationMs;
+            mc.adaptiveSpeed     = c.mouse.adaptiveSpeed;
+            mc.targetTraversalMs = c.mouse.targetTraversalMs;
+            mc.dpiWeight         = c.mouse.dpiWeight;
+            mc.adaptiveMinScale  = c.mouse.adaptiveMinScale;
+            mc.adaptiveMaxScale  = c.mouse.adaptiveMaxScale;
             m_virtualMouse->SetConfig(mc);
         });
 
