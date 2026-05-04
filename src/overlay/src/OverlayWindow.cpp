@@ -275,15 +275,27 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
     rt->BeginDraw();
     rt->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
-    const bool settingsOpen = m_settingsMenu.IsOpen();
-    if (settingsOpen) {
-        m_settingsMenu.Update(m_lastState, deltaSeconds);
-        ControllerState empty{};
-        m_radialMenu.Update(empty, deltaSeconds);
-    } else {
+    // --- Strict input isolation -------------------------------------------
+    // Only the "active" UI element receives controller state.
+    // The other element always receives an empty state so it never processes
+    // input that belongs to the user’s current context.
+    const bool radialActive   = m_radialMenu.IsVisible();
+    const bool settingsActive = m_settingsMenu.IsOpen();
+
+    static const ControllerState kEmptyState{};
+
+    if (radialActive) {
         m_radialMenu.Update(m_lastState, deltaSeconds);
-        ControllerState empty{};
-        m_settingsMenu.Update(empty, deltaSeconds);
+        m_settingsMenu.Update(kEmptyState, deltaSeconds);
+    } else if (settingsActive) {
+        m_settingsMenu.Update(m_lastState, deltaSeconds);
+        m_radialMenu.Update(kEmptyState, deltaSeconds);
+    } else {
+        // Neither menu is active: radialMenu handles open trigger via
+        // Application.cpp; both get empty state here so they don’t
+        // accidentally process stale input.
+        m_radialMenu.Update(kEmptyState, deltaSeconds);
+        m_settingsMenu.Update(kEmptyState, deltaSeconds);
     }
 
     m_radialMenu.Draw(rt, m_dwriteFactory.Get(), m_dpiScale,
@@ -318,40 +330,36 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
 void OverlayWindowImpl::DrawActiveIndicator(ID2D1RenderTarget* rt) {
     if (!m_config.showActiveIndicator) return;
 
-    const float s    = m_dpiScale;
-    const float cx   = static_cast<float>(m_dibW) - 22.0f * s;
-    const float cy   = static_cast<float>(m_dibH) - 22.0f * s;
+    const float s  = m_dpiScale;
+    const float cx = static_cast<float>(m_dibW) - 22.0f * s;
+    const float cy = static_cast<float>(m_dibH) - 22.0f * s;
 
-    // Outer wide gold glow
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldGlow(0.22f), b.GetAddressOf());
         if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx,cy), 18*s, 18*s), b.Get());
     }
-    // Mid gold ring (stroke)
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldShadow(0.55f), b.GetAddressOf());
         if (b) rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx,cy), 13*s, 13*s), b.Get(), 1.0f*s);
     }
-    // Inner bright gold ring
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldMid(0.80f), b.GetAddressOf());
         if (b) rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx,cy), 8*s, 8*s), b.Get(), 1.2f*s);
     }
-    // Core filled dot — gold hi
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldHi(0.95f), b.GetAddressOf());
         if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx,cy), 4*s, 4*s), b.Get());
     }
-    // Specular gleam on core (tiny white top-left arc)
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::White(0.60f), b.GetAddressOf());
-        if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx - 1.2f*s, cy - 1.2f*s),
-                                              1.5f*s, 1.5f*s), b.Get());
+        if (b) rt->FillEllipse(
+                   D2D1::Ellipse(D2D1::Point2F(cx - 1.2f*s, cy - 1.2f*s),
+                                 1.5f*s, 1.5f*s), b.Get());
     }
 }
 
@@ -376,7 +384,7 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt) {
     const float fSize = 11.5f * s;
     const float left  = 16.0f * s;
     const float bot   = static_cast<float>(m_dibH) - 18.0f * s;
-    const float accentW = 3.0f * s;  // gold left-border bar width
+    const float accentW = 3.0f * s;
 
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
     m_dwriteFactory->CreateTextFormat(
@@ -400,7 +408,6 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt) {
     const float chipY = bot - chipH;
     const float r     = chipH * 0.38f;
 
-    // Obsidian pill background
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::DeepVoid(0.88f), b.GetAddressOf());
@@ -411,7 +418,6 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt) {
             rt->FillRoundedRectangle(rr, b.Get());
         }
     }
-    // Gold left-side accent bar
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldMid(0.90f), b.GetAddressOf());
@@ -423,7 +429,6 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt) {
             rt->FillRoundedRectangle(bar, b.Get());
         }
     }
-    // Outer border hairline — gold mid, subtle
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldShadow(0.40f), b.GetAddressOf());
@@ -435,7 +440,6 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt) {
             rt->DrawRoundedRectangle(rr, b.Get(), 0.8f);
         }
     }
-    // Silver label text
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::SilverLt(0.92f), b.GetAddressOf());
@@ -447,7 +451,7 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt) {
 }
 
 // ---------------------------------------------------------------------------
-// DrawToasts  — Dark Regalia: obsidian pill + gold top-border gleam
+// DrawToasts
 // ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
@@ -479,7 +483,6 @@ void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
     const float py = static_cast<float>(m_dibH) - 112.0f * s;
     const float rr = ph * 0.5f;
 
-    // Obsidian pill
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::DeepVoid(0.92f * opacity), b.GetAddressOf());
@@ -488,18 +491,15 @@ void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
             rt->FillRoundedRectangle(pill, b.Get());
         }
     }
-    // Gold top-border gleam line
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldMid(0.70f * opacity), b.GetAddressOf());
-        if (b) {
+        if (b)
             rt->DrawLine(
                 D2D1::Point2F(px + rr, py + 0.8f),
                 D2D1::Point2F(px + pw - rr, py + 0.8f),
                 b.Get(), 1.2f * s);
-        }
     }
-    // Outer border gold shadow
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldShadow(0.30f * opacity), b.GetAddressOf());
@@ -508,7 +508,6 @@ void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
             rt->DrawRoundedRectangle(pill, b.Get(), 0.8f);
         }
     }
-    // Text
     if (!m_dwriteFactory) return;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
     m_dwriteFactory->CreateTextFormat(
