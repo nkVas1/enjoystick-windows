@@ -80,11 +80,30 @@ enum class Button : uint32_t {
     Touchpad    = 1 << 17,
 };
 
+// ─── Button bitmask operators ─────────────────────────────────────────────────
+// Provide the full set of bitwise operators so Button can be used as a
+// proper bitmask type without casts at every call-site.
+
 [[nodiscard]] constexpr Button operator|(Button a, Button b) noexcept {
     return static_cast<Button>(static_cast<uint32_t>(a) | static_cast<uint32_t>(b));
 }
+[[nodiscard]] constexpr Button operator&(Button a, Button b) noexcept {
+    return static_cast<Button>(static_cast<uint32_t>(a) & static_cast<uint32_t>(b));
+}
+[[nodiscard]] constexpr Button operator^(Button a, Button b) noexcept {
+    return static_cast<Button>(static_cast<uint32_t>(a) ^ static_cast<uint32_t>(b));
+}
+[[nodiscard]] constexpr Button operator~(Button a) noexcept {
+    return static_cast<Button>(~static_cast<uint32_t>(a));
+}
+
+constexpr Button& operator|=(Button& a, Button b) noexcept { return a = a | b; }
+constexpr Button& operator&=(Button& a, Button b) noexcept { return a = a & b; }
+constexpr Button& operator^=(Button& a, Button b) noexcept { return a = a ^ b; }
+
+/// Convenience: test whether any bit of `mask` is set in `state`.
 [[nodiscard]] constexpr bool HasButton(Button state, Button mask) noexcept {
-    return (static_cast<uint32_t>(state) & static_cast<uint32_t>(mask)) != 0;
+    return (state & mask) != Button::None;
 }
 
 // ─── Full controller state snapshot ──────────────────────────────────────────
