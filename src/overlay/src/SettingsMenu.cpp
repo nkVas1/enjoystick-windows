@@ -75,14 +75,14 @@ void SettingsMenu::Update(const ControllerState& state, float deltaSeconds) {
     if (m_state != State::Visible && m_state != State::Opening) return;
 
     // -----------------------------------------------------------------------
-    // Button edge detection
+    // Button state (use HasButton helper - consistent with RadialMenu.cpp)
     // -----------------------------------------------------------------------
-    const bool south  = (state.buttons & Button::South)  != Button::None;
-    const bool east   = (state.buttons & Button::East)   != Button::None;
-    const bool dUp    = (state.buttons & Button::DUp)    != Button::None;
-    const bool dDown  = (state.buttons & Button::DDown)  != Button::None;
-    const bool dLeft  = (state.buttons & Button::DLeft)  != Button::None;
-    const bool dRight = (state.buttons & Button::DRight) != Button::None;
+    const bool south  = HasButton(state.buttons, Button::South);
+    const bool east   = HasButton(state.buttons, Button::East);
+    const bool dUp    = HasButton(state.buttons, Button::DPadUp);
+    const bool dDown  = HasButton(state.buttons, Button::DPadDown);
+    const bool dLeft  = HasButton(state.buttons, Button::DPadLeft);
+    const bool dRight = HasButton(state.buttons, Button::DPadRight);
 
     const bool southDown  = south  && !m_prevSouth;
     const bool eastDown   = east   && !m_prevEast;
