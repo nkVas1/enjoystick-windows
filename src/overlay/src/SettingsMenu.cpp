@@ -74,6 +74,8 @@ void SettingsMenu::Open(const Values& current) {
     m_state       = State::Opening;
     m_animProgress = 0.0f;
     m_repeatTimer  = 0.0f;
+    m_stickNavActive   = false;
+    m_stickNavCooldown = 0.0f;
     m_prevSouth = m_prevEast = m_prevNorth =
     m_prevDUp = m_prevDDown = m_prevDLeft = m_prevDRight = false;
 }
@@ -105,8 +107,16 @@ void SettingsMenu::Update(const ControllerState& state, float deltaSeconds) {
     if (east  && !m_prevEast)  { Close(); goto done; }
     if (north && !m_prevNorth) { ResetToDefaults(); goto done; }
 
+    // -------------------------------------------------------------------
+    // DPad Up / Down — row navigation (edge-detect only, no auto-repeat
+    // since DPad is digital and already sends repeated events via OS)
+    // -------------------------------------------------------------------
     if (dUp   && !m_prevDUp)   { m_selectedRow = NextInteractiveRow(m_selectedRow, -1); m_repeatTimer = 0.0f; }
     if (dDown && !m_prevDDown) { m_selectedRow = NextInteractiveRow(m_selectedRow,  1); m_repeatTimer = 0.0f; }
+
+    // -------------------------------------------------------------------
+    // South button — toggle bool / confirm
+    // -------------------------------------------------------------------
     if (south && !m_prevSouth) {
         const auto& row = m_rows[static_cast<size_t>(m_selectedRow)];
         if (row.type == RowType::BoolToggle && row.bTarget) {
@@ -114,6 +124,10 @@ void SettingsMenu::Update(const ControllerState& state, float deltaSeconds) {
             CommitChange();
         }
     }
+
+    // -------------------------------------------------------------------
+    // DPad Left / Right — slider adjustment with auto-repeat
+    // -------------------------------------------------------------------
     {
         const bool hLeft  = dLeft;
         const bool hRight = dRight;
@@ -128,16 +142,54 @@ void SettingsMenu::Update(const ControllerState& state, float deltaSeconds) {
             }
         } else { m_repeatTimer = 0.0f; }
     }
+
+    // -------------------------------------------------------------------
+    // Left stick — two-axis magnet-snap navigation
+    //   Y axis: navigate rows with snap-cooldown (magnetic feel)
+    //   X axis: fine-adjust slider continuously
+    // -------------------------------------------------------------------
     {
         const float lx = state.leftStick.x;
+        const float ly = state.leftStick.y;
+
+        // Y-axis: vertical row navigation with magnet snap
+        const bool stickUp   = (ly < -kNavDeadzone);
+        const bool stickDown = (ly >  kNavDeadzone);
+        if (stickUp || stickDown) {
+            const int32_t dir = stickDown ? 1 : -1;
+            if (!m_stickNavActive) {
+                // First movement: snap immediately, then wait kSnapFirst
+                m_stickNavActive   = true;
+                m_stickNavCooldown = kSnapFirst;
+                m_selectedRow      = NextInteractiveRow(m_selectedRow, dir);
+                m_repeatTimer      = 0.0f;
+            } else {
+                m_stickNavCooldown -= deltaSeconds;
+                if (m_stickNavCooldown <= 0.0f) {
+                    // Subsequent snaps every kSnapNext
+                    m_stickNavCooldown = kSnapNext;
+                    m_selectedRow      = NextInteractiveRow(m_selectedRow, dir);
+                    m_repeatTimer      = 0.0f;
+                }
+            }
+        } else {
+            // Stick returned to centre — reset snap state
+            m_stickNavActive   = false;
+            m_stickNavCooldown = 0.0f;
+        }
+
+        // X-axis: fine slider adjustment (continuous, analogue)
         if (std::abs(lx) > 0.25f) {
             const auto& row = m_rows[static_cast<size_t>(m_selectedRow)];
             if (row.type == RowType::FloatSlider && row.fTarget) {
-                *row.fTarget = std::clamp(*row.fTarget + lx * deltaSeconds * row.step * 10.0f, row.min, row.max);
+                *row.fTarget = std::clamp(
+                    *row.fTarget + lx * deltaSeconds * row.step * 10.0f,
+                    row.min, row.max);
                 CommitChange();
             }
         }
     }
+
 done:
     m_prevSouth = south; m_prevEast  = east;  m_prevNorth = north;
     m_prevDUp   = dUp;   m_prevDDown = dDown;
@@ -378,267 +430,196 @@ void SettingsMenu::Draw(
                 fs->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_FAR);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sb;
                 rt->CreateSolidColorBrush(Tok::ChromeMute(0.64f * ease), sb.GetAddressOf());
-                // "EnjoyStick  bullet  Controller Settings"
                 if (sb) rt->DrawText(L"EnjoyStick  \u2022  Controller Settings",
                     static_cast<UINT32>(std::wcslen(L"EnjoyStick  \u2022  Controller Settings")),
                     fs.Get(),
                     D2D1::RectF(bx + bw + 16.0f*s, panelY,
-                                panelX + kPanelW * 0.60f, panelY + kHeaderH - 10.0f*s), sb.Get());
-            }
-            Microsoft::WRL::ComPtr<IDWriteTextFormat> fh;
-            dwrite->CreateTextFormat(L"Segoe UI", nullptr,
-                DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                kFHint, L"en-us", fh.GetAddressOf());
-            if (fh) {
-                fh->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
-                fh->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hb;
-                rt->CreateSolidColorBrush(Tok::ChromeMute(0.58f * ease), hb.GetAddressOf());
-                if (hb) rt->DrawText(L"(B) Close", 9, fh.Get(),
-                    D2D1::RectF(panelX + kPanelW * 0.60f, panelY,
-                                panelX + kPanelW - kPadX, panelY + kHeaderH), hb.Get());
+                                panelX + kPanelW - kPadX, panelY + kHeaderH), sb.Get());
             }
         }
-        {
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sep;
-            rt->CreateSolidColorBrush(Tok::GoldDeep(0.52f * ease), sep.GetAddressOf());
-            if (sep) rt->DrawLine(
-                D2D1::Point2F(panelX + kPadX + kAccentW + 5.0f*s, panelY + kHeaderH - 0.5f),
-                D2D1::Point2F(panelX + kPanelW - kPadX,             panelY + kHeaderH - 0.5f),
-                sep.Get(), 0.9f);
-        }
-        {
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sep;
-            rt->CreateSolidColorBrush(Tok::GoldShadow(0.26f * ease), sep.GetAddressOf());
-            if (sep) rt->DrawLine(
-                D2D1::Point2F(panelX + kPadX + kAccentW + 5.0f*s, panelY + kHeaderH + 0.5f),
-                D2D1::Point2F(panelX + kPanelW - kPadX,             panelY + kHeaderH + 0.5f),
-                sep.Get(), 0.5f);
-        }
+    }
+
+    // ---- Header divider
+    {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+        rt->CreateSolidColorBrush(Tok::GoldDeep(0.42f * ease), b.GetAddressOf());
+        if (b) rt->DrawLine(
+            D2D1::Point2F(panelX + kPadX,            panelY + kHeaderH),
+            D2D1::Point2F(panelX + kPanelW - kPadX,  panelY + kHeaderH),
+            b.Get(), 0.8f * s);
     }
 
     // ---- Rows
-    if (!dwrite) return;
-    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtRow, fmtVal, fmtSec;
-    dwrite->CreateTextFormat(L"Segoe UI", nullptr,
-        DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-        kFBody, L"en-us", fmtRow.GetAddressOf());
-    dwrite->CreateTextFormat(L"Segoe UI", nullptr,
-        DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-        kFVal, L"en-us", fmtVal.GetAddressOf());
-    dwrite->CreateTextFormat(L"Segoe UI", nullptr,
-        DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-        kFSec, L"en-us", fmtSec.GetAddressOf());
-    if (!fmtRow || !fmtVal || !fmtSec) return;
-    fmtRow->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-    fmtVal->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
-    fmtVal->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-    fmtSec->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    float rowY = panelY + kHeaderH + kPadY;
+    for (int32_t ri = 0; ri < static_cast<int32_t>(m_rows.size()); ++ri) {
+        const auto& row = m_rows[static_cast<size_t>(ri)];
+        const bool  sel = (ri == m_selectedRow);
 
-    const float rowsBot = panelY + kPanelH - kFooterH - kPadY;
-    const float labelR  = panelX + kPanelW * 0.54f;
-    const float valueL  = panelX + kPanelW * 0.54f + 5.0f * s;
-    const float valueR  = panelX + kPanelW - kPadX;
-    const float labelX  = panelX + kPadX + kAccentW * 2.0f + 12.0f * s;
-
-    float curY = panelY + kHeaderH + 1.0f;
-    const int32_t rowCount = static_cast<int32_t>(m_rows.size());
-    for (int32_t i = 0; i < rowCount; ++i) {
-        if (curY + 4.0f > rowsBot) break;
-        const auto& row = m_rows[static_cast<size_t>(i)];
-
-        // ---- Section Header
         if (row.type == RowType::SectionHeader) {
-            const float ry    = curY;
-            const float lineY = ry + kSecH * 0.5f;
-            // Hairline separator
+            // Section label
+            if (dwrite) {
+                Microsoft::WRL::ComPtr<IDWriteTextFormat> sf;
+                dwrite->CreateTextFormat(L"Segoe UI", nullptr,
+                    DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                    kFSec, L"en-us", sf.GetAddressOf());
+                if (sf) {
+                    sf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sb;
+                    rt->CreateSolidColorBrush(Tok::GoldMid(0.72f * ease), sb.GetAddressOf());
+                    if (sb) rt->DrawText(row.label,
+                        static_cast<UINT32>(std::wcslen(row.label)), sf.Get(),
+                        D2D1::RectF(panelX + kPadX + kAccentW + 8.0f*s, rowY,
+                                    panelX + kPanelW - kPadX, rowY + kSecH), sb.Get());
+                }
+            }
+            // Section separator line
             {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                rt->CreateSolidColorBrush(Tok::GoldDeep(0.38f * ease), b.GetAddressOf());
+                rt->CreateSolidColorBrush(Tok::GoldDeep(0.22f * ease), b.GetAddressOf());
                 if (b) rt->DrawLine(
-                    D2D1::Point2F(labelX, lineY),
-                    D2D1::Point2F(panelX + kPanelW - kPadX, lineY),
-                    b.Get(), 0.7f);
+                    D2D1::Point2F(panelX + kPadX + kAccentW + 8.0f*s, rowY + kSecH - 1.0f),
+                    D2D1::Point2F(panelX + kPanelW - kPadX,            rowY + kSecH - 1.0f),
+                    b.Get(), 0.6f);
             }
-            // Label pill background
-            if (row.label) {
-                const float textW = static_cast<float>(std::wcslen(row.label)) * kFSec * 0.60f + 14.0f * s;
-                const float pillX = labelX - 4.0f * s;
-                const float pillY = lineY - kFSec * 0.72f;
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bg;
-                rt->CreateSolidColorBrush(Tok::SurfaceBase(0.97f * ease), bg.GetAddressOf());
-                if (bg) rt->FillRectangle(D2D1::RectF(pillX, pillY, pillX + textW, pillY + kFSec * 1.44f), bg.Get());
-                // Label text
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> tb;
-                rt->CreateSolidColorBrush(Tok::ChromeMute(0.58f * ease), tb.GetAddressOf());
-                if (tb) rt->DrawText(row.label,
-                    static_cast<UINT32>(std::wcslen(row.label)),
-                    fmtSec.Get(),
-                    D2D1::RectF(labelX, ry, labelX + 200.0f*s, ry + kSecH),
-                    tb.Get());
-            }
-            curY += kSecH;
+            rowY += kSecH;
             continue;
         }
 
-        // ---- Interactive Row
-        const float ry  = curY;
-        const bool  sel = (i == m_selectedRow);
-
+        // ---- Selection highlight
         if (sel) {
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> rb;
-            rt->CreateSolidColorBrush(Tok::SurfaceRaised(0.74f * ease), rb.GetAddressOf());
-            if (rb) {
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+            rt->CreateSolidColorBrush(Tok::SurfaceRaised(0.38f * ease), b.GetAddressOf());
+            if (b) {
                 D2D1_ROUNDED_RECT rr{ D2D1::RectF(
-                    panelX + kAccentW + 7.0f*s, ry + 2.5f*s,
-                    panelX + kPanelW - 7.0f*s,  ry + kRowH - 2.5f*s), 10.0f*s, 10.0f*s };
-                rt->FillRoundedRectangle(rr, rb.Get());
+                    panelX + kAccentW + 2.0f*s, rowY + 2.0f*s,
+                    panelX + kPanelW  - 2.0f*s, rowY + kRowH - 2.0f*s),
+                    8.0f*s, 8.0f*s };
+                rt->FillRoundedRectangle(rr, b.Get());
             }
-            {
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> ab;
-                rt->CreateSolidColorBrush(Tok::GoldWarm(0.99f * ease), ab.GetAddressOf());
-                if (ab) {
-                    D2D1_ROUNDED_RECT ar{ D2D1::RectF(
-                        panelX + kAccentW + 7.0f*s, ry + 10.0f*s,
-                        panelX + kAccentW + 7.0f*s + kAccentW, ry + kRowH - 10.0f*s),
-                        kAccentW*0.5f, kAccentW*0.5f };
-                    rt->FillRoundedRectangle(ar, ab.Get());
-                }
-            }
-            {
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> ab;
-                rt->CreateSolidColorBrush(Tok::GoldShadow(0.38f * ease), ab.GetAddressOf());
-                if (ab) {
-                    D2D1_ROUNDED_RECT rr{ D2D1::RectF(
-                        panelX + kAccentW + 7.0f*s, ry + 2.5f*s,
-                        panelX + kPanelW - 7.0f*s,  ry + kRowH - 2.5f*s), 10.0f*s, 10.0f*s };
-                    rt->DrawRoundedRectangle(rr, ab.Get(), 0.9f);
-                }
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bb;
+            rt->CreateSolidColorBrush(Tok::GoldMid(0.55f * ease), bb.GetAddressOf());
+            if (bb) {
+                D2D1_ROUNDED_RECT rr{ D2D1::RectF(
+                    panelX + kAccentW + 2.0f*s, rowY + 2.0f*s,
+                    panelX + kPanelW  - 2.0f*s, rowY + kRowH - 2.0f*s),
+                    8.0f*s, 8.0f*s };
+                rt->DrawRoundedRectangle(rr, bb.Get(), 0.8f);
             }
         }
 
-        // Label
-        {
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> lb;
-            rt->CreateSolidColorBrush(
-                sel ? Tok::ChromeHi(0.98f * ease) : Tok::ChromeMid(0.70f * ease),
-                lb.GetAddressOf());
-            if (lb) rt->DrawText(row.label, static_cast<UINT32>(std::wcslen(row.label)),
-                fmtRow.Get(), D2D1::RectF(labelX, ry, labelR, ry + kRowH), lb.Get());
+        // ---- Row label
+        if (dwrite && row.label) {
+            Microsoft::WRL::ComPtr<IDWriteTextFormat> lf;
+            dwrite->CreateTextFormat(L"Segoe UI", nullptr,
+                DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                kFBody, L"en-us", lf.GetAddressOf());
+            if (lf) {
+                lf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> lb;
+                rt->CreateSolidColorBrush(
+                    sel ? Tok::GoldHi(0.97f * ease) : Tok::ChromeMid(0.80f * ease),
+                    lb.GetAddressOf());
+                if (lb) rt->DrawText(row.label,
+                    static_cast<UINT32>(std::wcslen(row.label)), lf.Get(),
+                    D2D1::RectF(panelX + kPadX + kAccentW + 8.0f*s, rowY,
+                                panelX + kPanelW * 0.55f, rowY + kRowH), lb.Get());
+            }
         }
 
-        // Value / Control
+        // ---- Value / control
+        const float ctrlX0 = panelX + kPanelW * 0.55f;
+        const float ctrlX1 = panelX + kPanelW - kPadX;
+        const float ctrlCY = rowY + kRowH * 0.5f;
+
         if (row.type == RowType::BoolToggle && row.bTarget) {
-            const bool  on    = *row.bTarget;
-            const float pillW = 66.0f * s;
-            const float pillH = 34.0f * s;
-            const float px0   = valueR - pillW;
-            const float py0   = ry + (kRowH - pillH) * 0.5f;
-            const float pr    = pillH * 0.5f;
+            const bool on = *row.bTarget;
+            // Track
+            const float tw = 52.0f * s, th = 26.0f * s;
+            const float tx = ctrlX0 + (ctrlX1 - ctrlX0 - tw) * 0.5f;
+            const float ty = ctrlCY - th * 0.5f;
             {
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pb;
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                 rt->CreateSolidColorBrush(
-                    on ? Tok::GoldWarm(0.92f * ease) : Tok::InkLine(0.87f * ease),
-                    pb.GetAddressOf());
-                if (pb) { D2D1_ROUNDED_RECT pill{ D2D1::RectF(px0,py0,px0+pillW,py0+pillH), pr, pr };
-                    rt->FillRoundedRectangle(pill, pb.Get()); }
+                    on ? Tok::GoldDeep(0.78f * ease) : Tok::SurfaceRaised(0.60f * ease),
+                    b.GetAddressOf());
+                if (b) { D2D1_ROUNDED_RECT rr{ D2D1::RectF(tx,ty,tx+tw,ty+th), th*0.5f,th*0.5f };
+                    rt->FillRoundedRectangle(rr, b.Get()); }
             }
             {
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pb;
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                 rt->CreateSolidColorBrush(
-                    on ? Tok::GoldHi(0.64f * ease) : Tok::ChromeMute(0.44f * ease),
-                    pb.GetAddressOf());
-                if (pb) { D2D1_ROUNDED_RECT pill{ D2D1::RectF(px0,py0,px0+pillW,py0+pillH), pr, pr };
-                    rt->DrawRoundedRectangle(pill, pb.Get(), 0.9f); }
+                    on ? Tok::GoldMid(0.60f*ease) : Tok::InkLine(0.72f*ease), b.GetAddressOf());
+                if (b) { D2D1_ROUNDED_RECT rr{ D2D1::RectF(tx,ty,tx+tw,ty+th), th*0.5f,th*0.5f };
+                    rt->DrawRoundedRectangle(rr, b.Get(), 1.0f); }
             }
+            // Thumb
+            const float thumbX = on ? (tx + tw - th*0.5f) : (tx + th*0.5f);
             {
-                const float margin = pr * 0.85f;
-                const float tx = on ? px0 + pillW - margin : px0 + margin;
-                const float ty = py0 + pr;
-                const float tr = pr * 0.56f;
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> tb;
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                 rt->CreateSolidColorBrush(
-                    on ? Tok::ChromeHi(0.98f * ease) : Tok::ChromeMute(0.70f * ease),
-                    tb.GetAddressOf());
-                if (tb) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(tx, ty), tr, tr), tb.Get());
-                if (on) {
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sp;
-                    rt->CreateSolidColorBrush(Tok::White(0.32f * ease), sp.GetAddressOf());
-                    if (sp) rt->FillEllipse(
-                        D2D1::Ellipse(
-                            D2D1::Point2F(tx - tr * 0.25f, ty - tr * 0.30f),
-                            tr * 0.30f, tr * 0.22f),
-                        sp.Get());
+                    on ? Tok::GoldBright(0.99f*ease) : Tok::ChromeMute(0.60f*ease), b.GetAddressOf());
+                if (b) rt->FillEllipse(
+                    D2D1::Ellipse(D2D1::Point2F(thumbX, ctrlCY), th*0.4f, th*0.4f), b.Get());
+            }
+        } else if (row.type == RowType::FloatSlider && row.fTarget) {
+            const float frac = std::clamp((*row.fTarget - row.min) / (row.max - row.min), 0.0f, 1.0f);
+            const float bx0  = ctrlX0 + 8.0f * s;
+            const float bx1  = ctrlX1 - 56.0f * s;
+            DrawProgressBar(rt, bx0, ctrlCY - kBarH * 0.5f, bx1, kBarH, kBarR, frac, sel, ease);
+
+            // Numeric value label
+            if (dwrite) {
+                wchar_t valBuf[32];
+                std::swprintf(valBuf, 32, L"%.2f%ls", *row.fTarget, row.unit ? row.unit : L"");
+                Microsoft::WRL::ComPtr<IDWriteTextFormat> vf;
+                dwrite->CreateTextFormat(L"Segoe UI", nullptr,
+                    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                    kFVal, L"en-us", vf.GetAddressOf());
+                if (vf) {
+                    vf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+                    vf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> vb;
+                    rt->CreateSolidColorBrush(
+                        sel ? Tok::GoldHi(0.96f*ease) : Tok::ChromeMute(0.66f*ease),
+                        vb.GetAddressOf());
+                    if (vb) rt->DrawText(valBuf,
+                        static_cast<UINT32>(std::wcslen(valBuf)), vf.Get(),
+                        D2D1::RectF(bx1 + 4.0f*s, rowY, ctrlX1, rowY + kRowH), vb.Get());
                 }
             }
-        } else if (row.type == RowType::FloatSlider) {
-            wchar_t valBuf[80] = {};
-            if (row.fTarget) {
-                if      (row.step < 0.05f) std::swprintf(valBuf, 80, L"%.2f%ls", *row.fTarget, row.unit);
-                else if (row.step < 1.0f)  std::swprintf(valBuf, 80, L"%.1f%ls", *row.fTarget, row.unit);
-                else                       std::swprintf(valBuf, 80, L"%.0f%ls", *row.fTarget, row.unit);
-            }
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> vb;
-            rt->CreateSolidColorBrush(
-                sel ? Tok::GoldHi(0.97f * ease) : Tok::ChromeMid(0.64f * ease),
-                vb.GetAddressOf());
-            if (vb) rt->DrawText(valBuf, static_cast<UINT32>(std::wcslen(valBuf)),
-                fmtVal.Get(), D2D1::RectF(valueL, ry, valueR, ry + kRowH * 0.6f), vb.Get());
         }
 
-        // Progress bar
-        if (row.type == RowType::FloatSlider && row.fTarget) {
-            const float frac = std::clamp(
-                (*row.fTarget - row.min) / (row.max - row.min), 0.0f, 1.0f);
-            const float bx0 = labelX;
-            const float bx1 = valueR - 100.0f * s;
-            const float by  = ry + kRowH - kBarH - 9.0f * s;
-            if (bx1 > bx0 + 24.0f * s)
-                DrawProgressBar(rt, bx0, by, bx1, kBarH, kBarR, frac, sel, ease);
-        }
-
-        // Row divider (skip before next section header)
-        const bool nextIsHeader = (i + 1 < rowCount &&
-            m_rows[static_cast<size_t>(i + 1)].type == RowType::SectionHeader);
-        if (i < rowCount - 1 && !nextIsHeader) {
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> div;
-            rt->CreateSolidColorBrush(Tok::InkLine(0.62f * ease), div.GetAddressOf());
-            if (div) rt->DrawLine(
-                D2D1::Point2F(panelX + kPadX + kAccentW + 5.0f*s, ry + kRowH - 0.5f),
-                D2D1::Point2F(panelX + kPanelW - kPadX,             ry + kRowH - 0.5f),
-                div.Get(), 0.6f);
-        }
-
-        curY += kRowH;
+        rowY += kRowH;
     }
 
-    // ---- Footer
-    if (dwrite) {
+    // ---- Footer hint bar
+    {
         const float fy = panelY + kPanelH - kFooterH;
-        {
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sep;
-            rt->CreateSolidColorBrush(Tok::GoldDeep(0.42f * ease), sep.GetAddressOf());
-            if (sep) rt->DrawLine(
-                D2D1::Point2F(panelX + kPadX + kAccentW + 5.0f*s, fy + 0.5f),
-                D2D1::Point2F(panelX + kPanelW - kPadX,             fy + 0.5f),
-                sep.Get(), 0.8f);
-        }
-        Microsoft::WRL::ComPtr<IDWriteTextFormat> fh;
-        dwrite->CreateTextFormat(L"Segoe UI", nullptr,
-            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-            kFHint, L"en-us", fh.GetAddressOf());
-        if (fh) {
-            fh->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            fh->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hb;
-            rt->CreateSolidColorBrush(Tok::ChromeMute(0.58f * ease), hb.GetAddressOf());
-            // "up/down Navigate  left/right Adjust  (A) Toggle  (Y) Reset  (B) Close"
-            static const wchar_t kHint[] =
-                L"\u25b2\u25bc Navigate  \u25c4\u25ba Adjust  (A) Toggle  (Y) Reset  (B) Close";
-            if (hb) rt->DrawText(kHint, static_cast<UINT32>(std::wcslen(kHint)),
-                fh.Get(),
-                D2D1::RectF(panelX + kPadX, fy, panelX + kPanelW - kPadX, panelY + kPanelH),
-                hb.Get());
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+        rt->CreateSolidColorBrush(Tok::GoldDeep(0.18f * ease), b.GetAddressOf());
+        if (b) rt->DrawLine(
+            D2D1::Point2F(panelX + kPadX, fy),
+            D2D1::Point2F(panelX + kPanelW - kPadX, fy),
+            b.Get(), 0.6f);
+
+        if (dwrite) {
+            Microsoft::WRL::ComPtr<IDWriteTextFormat> hf;
+            dwrite->CreateTextFormat(L"Segoe UI", nullptr,
+                DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                kFHint, L"en-us", hf.GetAddressOf());
+            if (hf) {
+                hf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                hf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hb;
+                rt->CreateSolidColorBrush(Tok::ChromeMute(0.52f * ease), hb.GetAddressOf());
+                if (hb) rt->DrawText(
+                    L"\u25CF Toggle  \u00B7  \u2194 Adjust  \u00B7  \u25B2 Reset  \u00B7  \u25C6 Close",
+                    static_cast<UINT32>(std::wcslen(
+                        L"\u25CF Toggle  \u00B7  \u2194 Adjust  \u00B7  \u25B2 Reset  \u00B7  \u25C6 Close")),
+                    hf.Get(),
+                    D2D1::RectF(panelX + kPadX, fy, panelX + kPanelW - kPadX, panelY + kPanelH),
+                    hb.Get());
+            }
         }
     }
 }
