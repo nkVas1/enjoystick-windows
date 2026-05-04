@@ -25,7 +25,7 @@ RadialMenu::~RadialMenu() = default;
 
 void RadialMenu::SetItems(std::vector<RadialMenuItem> items) {
     m_items        = std::move(items);
-    m_hoveredIndex = -1;
+    m_hoveredIndex = m_latchedIndex = -1;
 }
 
 bool              RadialMenu::IsVisible()      const noexcept { return m_state != State::Hidden; }
@@ -35,7 +35,8 @@ int32_t           RadialMenu::GetHoveredIndex() const noexcept { return m_hovere
 void RadialMenu::Open() {
     if (m_state == State::Visible || m_state == State::Opening) return;
     m_state = State::Opening;
-    m_hoveredIndex = m_confirmedIndex = -1;
+    m_hoveredIndex = m_latchedIndex = m_confirmedIndex = -1;
+    m_latchTimer = 0.0f;
 }
 void RadialMenu::Close() {
     if (m_state == State::Hidden || m_state == State::Closing) return;
@@ -44,8 +45,13 @@ void RadialMenu::Close() {
 
 void RadialMenu::Update(const ControllerState& state, float deltaSeconds) {
     UpdateAnimation(deltaSeconds);
-    if (m_state == State::Hidden) { m_prevSouth = m_prevEast = false; return; }
-    UpdateSelection(state.rightStick);
+    if (m_state == State::Hidden) {
+        m_prevSouth = m_prevEast = false;
+        m_latchedIndex = -1;
+        m_latchTimer   = 0.0f;
+        return;
+    }
+    UpdateSelection(state.rightStick, deltaSeconds);
     const bool south = HasButton(state.buttons, Button::South);
     const bool east  = HasButton(state.buttons, Button::East);
     if (south && !m_prevSouth) ConfirmSelection();
@@ -55,37 +61,69 @@ void RadialMenu::Update(const ControllerState& state, float deltaSeconds) {
 }
 
 void RadialMenu::UpdateAnimation(float deltaSeconds) {
-    const float step = (deltaSeconds * 1000.0f) / m_config.animMs;
-    switch (m_state) {
-    case State::Opening:
+    const bool opening = (m_state == State::Opening);
+    const bool closing = (m_state == State::Closing);
+    const float animMs = opening ? m_config.openAnimMs : m_config.closeAnimMs;
+    const float step   = (animMs > 0.0f)
+        ? (deltaSeconds * 1000.0f) / animMs
+        : 1.0f;
+
+    if (opening) {
         m_animProgress = std::min(1.0f, m_animProgress + step);
-        if (m_animProgress >= 1.0f) m_state = State::Visible;
-        break;
-    case State::Closing:
+        if (m_animProgress >= 1.0f) {
+            m_state = State::Visible;
+            if (m_onOpen) m_onOpen();
+        }
+    } else if (closing) {
         m_animProgress = std::max(0.0f, m_animProgress - step);
-        if (m_animProgress <= 0.0f) m_state = State::Hidden;
-        break;
-    default: break;
+        if (m_animProgress <= 0.0f) {
+            m_state = State::Hidden;
+            if (m_onClose) m_onClose();
+        }
     }
 }
 
-void RadialMenu::UpdateSelection(Vec2 stick) {
+void RadialMenu::UpdateSelection(Vec2 stick, float deltaSeconds) {
     if (m_items.empty()) return;
-    if (stick.LengthSq() < m_config.selectionDeadzone * m_config.selectionDeadzone) {
-        m_hoveredIndex = -1; return;
+
+    const float magSq = stick.LengthSq();
+    const float dzSq  = m_config.selectionDeadzone * m_config.selectionDeadzone;
+
+    if (magSq < dzSq) {
+        // Stick is inside deadzone: run latch timer
+        if (m_latchedIndex >= 0) {
+            m_latchTimer += deltaSeconds * 1000.0f;
+            if (m_latchTimer >= m_config.latchMs) {
+                // Latch expired — clear selection
+                m_latchedIndex = -1;
+                m_hoveredIndex = -1;
+            } else {
+                // Keep the latched sector highlighted during window
+                m_hoveredIndex = m_latchedIndex;
+            }
+        } else {
+            m_hoveredIndex = -1;
+        }
+        return;
     }
+
+    // Stick outside deadzone: reset latch timer and update sector
+    m_latchTimer = 0.0f;
     float angle = std::atan2(stick.y, stick.x);
     if (angle < 0.0f) angle += k2Pi;
     const float sector   = k2Pi / static_cast<float>(m_items.size());
     const float adjusted = std::fmod(angle + kPi * 0.5f, k2Pi);
-    m_hoveredIndex = static_cast<int32_t>(adjusted / sector) %
-                     static_cast<int32_t>(m_items.size());
+    const int32_t idx    = static_cast<int32_t>(adjusted / sector) %
+                           static_cast<int32_t>(m_items.size());
+    m_hoveredIndex = idx;
+    m_latchedIndex = idx;  // remember for latch window
 }
 
 void RadialMenu::ConfirmSelection() {
-    if (m_hoveredIndex < 0 ||
-        m_hoveredIndex >= static_cast<int32_t>(m_items.size())) return;
-    m_confirmedIndex = m_hoveredIndex;
+    // Accept either live hover or latched sector
+    const int32_t target = (m_hoveredIndex >= 0) ? m_hoveredIndex : m_latchedIndex;
+    if (target < 0 || target >= static_cast<int32_t>(m_items.size())) return;
+    m_confirmedIndex = target;
     if (const auto& a = m_items[static_cast<size_t>(m_confirmedIndex)].action) a();
     Close();
 }
@@ -126,6 +164,9 @@ void RadialMenu::Draw(
     const float itemR  = 32.0f * sc * dpiScale;
     const float s      = dpiScale;
 
+    // For draw purposes: use hovered (which already reflects latch logic)
+    const int32_t displayHovered = m_hoveredIndex;
+
     Microsoft::WRL::ComPtr<ID2D1Factory> factory;
     rt->GetFactory(factory.GetAddressOf());
 
@@ -147,10 +188,10 @@ void RadialMenu::Draw(
     }
 
     // ---- Sector highlight ---------------------------------------------------
-    if (m_hoveredIndex >= 0 && m_items.size() > 1 && factory) {
+    if (displayHovered >= 0 && m_items.size() > 1 && factory) {
         const int32_t n      = static_cast<int32_t>(m_items.size());
         const float   sector = k2Pi / static_cast<float>(n);
-        const float   startA = AngleForIndex(m_hoveredIndex) - sector * 0.5f;
+        const float   startA = AngleForIndex(displayHovered) - sector * 0.5f;
         const float   endA   = startA + sector;
         const float   outerR = radius + itemR * 0.6f;
 
@@ -235,7 +276,7 @@ void RadialMenu::Draw(
     // ---- Item circles + icons + labels -------------------------------------
     for (int32_t i = 0; i < static_cast<int32_t>(m_items.size()); ++i) {
         const Vec2  pos     = PositionForIndex(i, cx, cy, radius);
-        const bool  hovered = (i == m_hoveredIndex);
+        const bool  hovered = (i == displayHovered);
         const float px = pos.x, py = pos.y;
 
         // Glow under hovered item
@@ -309,9 +350,9 @@ void RadialMenu::Draw(
         }
     }
 
-    // ---- Centre hint -------------------------------------------------------
-    if (dwrite && m_hoveredIndex >= 0) {
-        const wchar_t* hint = m_items[static_cast<size_t>(m_hoveredIndex)].label.c_str();
+    // ---- Centre hint (active sector label) ---------------------------------
+    if (dwrite && displayHovered >= 0) {
+        const wchar_t* hint = m_items[static_cast<size_t>(displayHovered)].label.c_str();
         if (hint && hint[0] != L'\0') {
             Microsoft::WRL::ComPtr<IDWriteTextFormat> hf;
             dwrite->CreateTextFormat(
@@ -329,6 +370,27 @@ void RadialMenu::Draw(
                                  D2D1::RectF(cx-discR, cy-discR, cx+discR, cy+discR),
                                  hb.Get());
             }
+        }
+    }
+
+    // ---- Hint line: [A] confirm  [B] cancel  (bottom of disc) -------------
+    if (dwrite && displayHovered >= 0) {
+        const wchar_t* hintLine = L"\u25CF  Confirm       \u25C6  Cancel";
+        Microsoft::WRL::ComPtr<IDWriteTextFormat> hf;
+        dwrite->CreateTextFormat(
+            L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+            9.5f * sc * s, L"en-us", hf.GetAddressOf());
+        if (hf) {
+            hf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            hf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_FAR);
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hb;
+            rt->CreateSolidColorBrush(Tok::SilverMute(0.55f * alpha), hb.GetAddressOf());
+            if (hb)
+                rt->DrawText(hintLine, static_cast<UINT32>(std::wcslen(hintLine)),
+                             hf.Get(),
+                             D2D1::RectF(cx - discR, cy - discR, cx + discR, cy + discR*0.85f),
+                             hb.Get());
         }
     }
 }

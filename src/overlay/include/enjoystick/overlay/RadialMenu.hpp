@@ -26,9 +26,11 @@ public:
     struct Config {
         int32_t centreX = -1;  ///< -1 = screen centre
         int32_t centreY = -1;
-        float   radius  = 200.0f;          ///< outer item ring radius (logical px)
+        float   radius            = 200.0f;   ///< outer item ring radius (logical px)
         float   selectionDeadzone = 0.25f;
-        float   animMs  = 140.0f;
+        float   openAnimMs        = 80.0f;    ///< opening animation duration
+        float   closeAnimMs       = 60.0f;    ///< closing animation duration
+        float   latchMs           = 350.0f;   ///< hold last sector after stick returns to centre
         uint32_t colourBackground  = 0xCC1A1A2E;
         uint32_t colourItemNormal  = 0xFF2E2E4A;
         uint32_t colourItemHovered = 0xFF5A4FF3;
@@ -43,9 +45,14 @@ public:
     void Open();
     void Close();
 
-    [[nodiscard]] bool  IsVisible()      const noexcept;
-    [[nodiscard]] State GetState()        const noexcept;
-    [[nodiscard]] int32_t GetHoveredIndex() const noexcept;
+    /// Callback fired when the menu fully opens (State transitions to Visible).
+    void SetOnOpen(std::function<void()> cb)  { m_onOpen  = std::move(cb); }
+    /// Callback fired when the menu is dismissed (State transitions to Hidden).
+    void SetOnClose(std::function<void()> cb) { m_onClose = std::move(cb); }
+
+    [[nodiscard]] bool    IsVisible()       const noexcept;
+    [[nodiscard]] State   GetState()         const noexcept;
+    [[nodiscard]] int32_t GetHoveredIndex()  const noexcept;
 
     void Update(const ControllerState& state, float deltaSeconds);
 
@@ -66,7 +73,7 @@ public:
 
 private:
     void UpdateAnimation(float deltaSeconds);
-    void UpdateSelection(Vec2 stick);
+    void UpdateSelection(Vec2 stick, float deltaSeconds);
     void ConfirmSelection();
 
     [[nodiscard]] float AngleForIndex(int32_t index) const noexcept;
@@ -76,10 +83,15 @@ private:
     std::vector<RadialMenuItem> m_items;
     State                       m_state          = State::Hidden;
     int32_t                     m_hoveredIndex   = -1;
+    int32_t                     m_latchedIndex   = -1;   ///< sector held during latch window
     int32_t                     m_confirmedIndex = -1;
     float                       m_animProgress   = 0.0f;
+    float                       m_latchTimer     = 0.0f; ///< counts up while stick is in deadzone
     bool                        m_prevSouth       = false;
     bool                        m_prevEast        = false;
+
+    std::function<void()> m_onOpen;
+    std::function<void()> m_onClose;
 };
 
 } // namespace enjoystick::overlay
