@@ -27,7 +27,6 @@ static const wchar_t* InputModeLabel(InputMode m) noexcept {
         : L"\u2B06  Navigate mode";
 }
 
-// Returns a human-readable label for the controller type.
 static const wchar_t* ControllerTypeLabel(ControllerType t) noexcept {
     switch (t) {
         case ControllerType::PlayStation: return L"PlayStation";
@@ -110,7 +109,7 @@ static void SendBrowserTab(bool forward) noexcept {
 } // anonymous namespace
 
 // ---------------------------------------------------------------------------
-// Helpers: translate between config/UI value bags and MouseConfig
+// Config adapters
 // ---------------------------------------------------------------------------
 
 static cursor::MouseConfig VMConfigFromSettings(
@@ -149,6 +148,10 @@ static overlay::SettingsMenu::Values SettingsValuesFromConfig(
     v.dzOuter            = ic.deadzoneOuter;
     return v;
 }
+
+// ---------------------------------------------------------------------------
+// ApplicationImpl
+// ---------------------------------------------------------------------------
 
 class ApplicationImpl final : public Application {
 public:
@@ -190,12 +193,12 @@ public:
         m_overlay = overlay::OverlayWindow::Create({});
         SetupRadialMenu();
         SetupSettingsMenu();
+        SetupKeyboard();
         m_overlay->Show();
         m_overlay->SetModeLabel(InputModeLabel(m_mode));
 
         m_tray = SystemTray::Create(L"EnjoyStick \u2014 gamepad navigation active");
         m_tray->SetMenuItems(BuildTrayMenu());
-        // Double-click on the tray icon opens Settings (same as right-click → Open Settings).
         m_tray->SetOnDoubleClick([this] { OpenSettingsMenu(); });
 
         m_inputHandle = m_inputEngine->OnInput([this](const ControllerState& s) {
@@ -248,12 +251,17 @@ public:
     }
 
 private:
+    // -------------------------------------------------------------------------
+    // Setup helpers
+    // -------------------------------------------------------------------------
+
     void SetupRadialMenu() {
         using RM = overlay::RadialMenuItem;
         m_overlay->GetRadialMenu().SetItems({
             RM{ L"Desktop",  L"\U0001F5A5", []{ ShellExecuteW(nullptr, L"open", L"shell:Desktop", nullptr, nullptr, SW_SHOW); } },
             RM{ L"Files",    L"\U0001F4C2", []{ ShellExecuteW(nullptr, L"open", L"explorer.exe", nullptr, nullptr, SW_SHOW); } },
-            RM{ L"Settings", L"\u2699", [this]{ OpenSettingsMenu(); } },
+            RM{ L"Settings", L"\u2699",     [this]{ OpenSettingsMenu(); } },
+            RM{ L"Keyboard", L"\u2328",     [this]{ OpenKeyboard(); } },
             RM{ L"Search",   L"\U0001F50D", []{ keybd_event(VK_LWIN, 0, 0, 0); keybd_event('S', 0, 0, 0); keybd_event('S', 0, KEYEVENTF_KEYUP, 0); keybd_event(VK_LWIN, 0, KEYEVENTF_KEYUP, 0); } },
             RM{ L"Media",    L"\U0001F3B5", []{ keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, 0); keybd_event(VK_MEDIA_PLAY_PAUSE, 0, KEYEVENTF_KEYUP, 0); } },
             RM{ L"Mode",     L"\U0001F501", [this]{ ToggleInputMode(); } },
@@ -264,7 +272,7 @@ private:
             m_virtualMouse->SetEnabled(false);
         });
         m_overlay->GetRadialMenu().SetOnClose([this] {
-            if (m_mode == InputMode::Cursor)
+            if (m_mode == InputMode::Cursor && !m_overlay->GetVirtualKeyboard().IsOpen())
                 m_virtualMouse->SetEnabled(true);
         });
     }
@@ -287,11 +295,39 @@ private:
         );
     }
 
+    void SetupKeyboard() {
+        auto& kb = m_overlay->GetVirtualKeyboard();
+        kb.SetOnSubmit([this](const std::wstring& text) {
+            // Type the submitted text as keyboard events
+            for (wchar_t ch : text) {
+                INPUT inp{};
+                inp.type       = INPUT_KEYBOARD;
+                inp.ki.wVk     = 0;
+                inp.ki.wScan   = ch;
+                inp.ki.dwFlags = KEYEVENTF_UNICODE;
+                SendInput(1, &inp, sizeof(INPUT));
+                inp.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+                SendInput(1, &inp, sizeof(INPUT));
+            }
+            // Re-enable mouse once keyboard closes
+            if (m_mode == InputMode::Cursor)
+                m_virtualMouse->SetEnabled(true);
+        });
+    }
+
     void OpenSettingsMenu() {
         const auto& cfg  = m_config->Get();
         const auto  vals = SettingsValuesFromConfig(cfg.mouse, cfg.input);
         m_overlay->GetSettingsMenu().Open(vals);
         m_overlay->GetRadialMenu().Close();
+    }
+
+    void OpenKeyboard() {
+        // Suspend mouse while keyboard is open
+        m_virtualMouse->SetEnabled(false);
+        m_overlay->GetVirtualKeyboard().Open();
+        m_overlay->GetRadialMenu().Close();
+        m_overlay->ShowToast(L"\u2328  Virtual keyboard — [Y] submit  [B] cancel", 3000);
     }
 
     void SetMode(InputMode newMode) {
@@ -300,7 +336,8 @@ private:
 
         const bool cursor   = (m_mode == InputMode::Cursor);
         const bool menuOpen = m_overlay->GetRadialMenu().IsVisible();
-        m_virtualMouse->SetEnabled(cursor && !menuOpen);
+        const bool kbOpen   = m_overlay->GetVirtualKeyboard().IsOpen();
+        m_virtualMouse->SetEnabled(cursor && !menuOpen && !kbOpen);
         m_keyMapper->SetEnabled(!cursor);
 
         if (m_overlay) {
@@ -314,6 +351,10 @@ private:
             ScheduleRumble(m_inputEngine.get(), ControllerId{0}, {0.0f, 0.40f, 60}, 120);
         }
     }
+
+    // -------------------------------------------------------------------------
+    // Controller state handler
+    // -------------------------------------------------------------------------
 
     void OnControllerState(const ControllerState& state) {
         LARGE_INTEGER now;
@@ -342,18 +383,53 @@ private:
 
         const bool radialOpen   = m_overlay->GetRadialMenu().IsVisible();
         const bool settingsOpen = m_overlay->GetSettingsMenu().IsOpen();
+        const bool kbOpen       = m_overlay->GetVirtualKeyboard().IsOpen();
 
+        // -----------------------------------------------------------------
+        // Virtual keyboard — highest priority; it consumes all input.
+        // Mouse and all other actions are fully suspended.
+        // The keyboard itself handles East=cancel, North=submit, West=backspace.
+        // -----------------------------------------------------------------
+        if (kbOpen) {
+            m_overlay->GetVirtualKeyboard().Update(state, dt * 0.001f);
+            // Re-enable mouse when keyboard finishes closing
+            if (!m_overlay->GetVirtualKeyboard().IsOpen() && m_mode == InputMode::Cursor)
+                m_virtualMouse->SetEnabled(true);
+            m_prevButtons = state.buttons;
+            return;  // nothing else runs while keyboard is open
+        }
+
+        // -----------------------------------------------------------------
+        // Guide-chord combos:
+        //   Guide alone (release)          → Radial menu toggle
+        //   Guide + Start (Options)        → Settings
+        //   Guide + Select (Share/Create)  → Virtual keyboard
+        // -----------------------------------------------------------------
         if (pressed(Button::Guide)) {
-            if (settingsOpen) {
-                m_overlay->GetSettingsMenu().Close();
+            m_guideChordUsed = false;  // reset chord flag on press
+        }
+
+        if (held(Button::Guide)) {
+            if (pressed(Button::Start)) {
+                m_guideChordUsed = true;
+                if (settingsOpen) {
+                    m_overlay->GetSettingsMenu().Close();
+                } else {
+                    OpenSettingsMenu();
+                }
                 return;
             }
-            if (held(Button::Select)) {
-                auto& sm = m_overlay->GetSettingsMenu();
-                if (!radialOpen) {
-                    if (sm.IsOpen()) sm.Close();
-                    else             OpenSettingsMenu();
-                }
+            if (pressed(Button::Select)) {
+                m_guideChordUsed = true;
+                OpenKeyboard();
+                return;
+            }
+        }
+
+        // Guide release (no chord used) → toggle radial menu
+        if (released(Button::Guide) && !m_guideChordUsed) {
+            if (settingsOpen) {
+                m_overlay->GetSettingsMenu().Close();
             } else {
                 auto& rm = m_overlay->GetRadialMenu();
                 if (rm.IsVisible()) rm.Close();
@@ -372,6 +448,7 @@ private:
             return;
         }
 
+        // LB + RB chord → toggle input mode
         if (held(Button::LB) && held(Button::RB)) {
             if (!m_lbRbChordActive) {
                 m_lbRbChordActive = true;
@@ -439,6 +516,8 @@ private:
             }
         }
 
+        // Mouse update only runs when keyboard is NOT open (keyboard consumes
+        // left stick entirely — the early-return above guarantees this).
         m_virtualMouse->Update(state, dt);
         m_keyMapper->Update(state);
         m_overlay->PostState(state);
@@ -447,9 +526,6 @@ private:
     void OnConnectionEvent(ControllerId id, ConnectionEvent ev) {
         const bool connected = (ev == ConnectionEvent::Connected);
 
-        // Determine the controller type label for a richer notification.
-        // GetConnectedControllers() is live; on disconnect the list may already
-        // be cleared, so we default to a generic label.
         std::wstring typeLabel;
         if (m_inputEngine) {
             const auto list = m_inputEngine->GetConnectedControllers();
@@ -483,11 +559,16 @@ private:
             { L"",                {},       true  },
             { modeLabel,          [this]{ ToggleInputMode(); } },
             { L"Open Settings",   [this]{ OpenSettingsMenu(); } },
+            { L"Open Keyboard",   [this]{ OpenKeyboard(); } },
             { autoLabel, [autoOn]{ if (autoOn) AutoStart::Disable(); else AutoStart::Enable(); } },
             { L"",     {},       true },
             { L"Exit", [this]{ Exit(); } },
         };
     }
+
+    // -------------------------------------------------------------------------
+    // Members
+    // -------------------------------------------------------------------------
 
     std::unique_ptr<config::ConfigStore>    m_config;
     std::unique_ptr<core::InputEngine>      m_inputEngine;
@@ -505,6 +586,7 @@ private:
     LARGE_INTEGER  m_qpcFreq         = {};
     Button         m_prevButtons     = Button::None;
     bool           m_lbRbChordActive = false;
+    bool           m_guideChordUsed  = false;   ///< true if Guide+ chord fired this press
 
     static constexpr float kEastLongPressMs = 600.0f;
     float  m_eastHoldMs     = 0.0f;
