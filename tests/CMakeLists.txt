@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-# Fetch GoogleTest (MIT license, no external cost)
+# Fetch GoogleTest (MIT license)
 include(FetchContent)
 FetchContent_Declare(
     googletest
@@ -15,12 +15,14 @@ add_executable(enjoystick_tests
     test_deadzone.cpp
     test_virtual_mouse.cpp
     test_radial_menu.cpp
+    test_config.cpp
 )
 
 target_link_libraries(enjoystick_tests
     PRIVATE enjoystick_core
     PRIVATE enjoystick_cursor
     PRIVATE enjoystick_overlay
+    PRIVATE enjoystick_config
     PRIVATE GTest::gtest_main
 )
 
