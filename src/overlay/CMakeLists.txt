@@ -4,13 +4,15 @@ cmake_minimum_required(VERSION 3.14)
 # enjoystick_overlay
 #
 # Direct2D / DirectWrite layered-window overlay.
-# Renders: active indicator, toast notifications, radial menu, settings menu.
+# Renders: active indicator, toast notifications, radial menu,
+#          settings menu, virtual keyboard.
 # ---------------------------------------------------------------------------
 
 add_library(enjoystick_overlay STATIC
     src/OverlayWindow.cpp
     src/RadialMenu.cpp
     src/SettingsMenu.cpp
+    src/VirtualKeyboard.cpp
 )
 
 target_compile_definitions(enjoystick_overlay PUBLIC
