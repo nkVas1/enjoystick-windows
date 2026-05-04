@@ -10,7 +10,6 @@
 
 #include <cmath>
 #include <algorithm>
-#include <stdexcept>
 
 #ifndef M_PI
 static constexpr double M_PI = 3.14159265358979323846;
@@ -37,9 +36,9 @@ void RadialMenu::SetItems(std::vector<RadialMenuItem> items) {
     m_hoveredIndex = -1;
 }
 
-bool  RadialMenu::IsVisible()    const noexcept { return m_state != State::Hidden; }
-State RadialMenu::GetState()     const noexcept { return m_state; }
-int32_t RadialMenu::GetHoveredIndex() const noexcept { return m_hoveredIndex; }
+bool             RadialMenu::IsVisible()      const noexcept { return m_state != State::Hidden; }
+RadialMenu::State RadialMenu::GetState()       const noexcept { return m_state; }
+int32_t          RadialMenu::GetHoveredIndex() const noexcept { return m_hoveredIndex; }
 
 // ---------------------------------------------------------------------------
 // Open / Close
@@ -47,8 +46,8 @@ int32_t RadialMenu::GetHoveredIndex() const noexcept { return m_hoveredIndex; }
 
 void RadialMenu::Open() {
     if (m_state == State::Visible || m_state == State::Opening) return;
-    m_state        = State::Opening;
-    m_hoveredIndex = -1;
+    m_state          = State::Opening;
+    m_hoveredIndex   = -1;
     m_confirmedIndex = -1;
 }
 
@@ -58,7 +57,7 @@ void RadialMenu::Close() {
 }
 
 // ---------------------------------------------------------------------------
-// Update — called every render frame
+// Update
 // ---------------------------------------------------------------------------
 
 void RadialMenu::Update(const ControllerState& state, float deltaSeconds) {
@@ -74,11 +73,8 @@ void RadialMenu::Update(const ControllerState& state, float deltaSeconds) {
 
     UpdateSelection(state.rightStick);
 
-    // Confirm on South rising edge
     if (south && !m_prevSouth) ConfirmSelection();
-
-    // Cancel on East rising edge
-    if (east && !m_prevEast) Close();
+    if (east  && !m_prevEast)  Close();
 
     m_prevSouth = south;
     m_prevEast  = east;
@@ -86,7 +82,6 @@ void RadialMenu::Update(const ControllerState& state, float deltaSeconds) {
 
 void RadialMenu::UpdateAnimation(float deltaSeconds) {
     const float step = (deltaSeconds * 1000.0f) / m_config.animMs;
-
     switch (m_state) {
     case State::Opening:
         m_animProgress = std::min(1.0f, m_animProgress + step);
@@ -110,16 +105,15 @@ void RadialMenu::UpdateSelection(Vec2 stick) {
         return;
     }
 
-    // atan2 returns angle in [-pi, pi]; convert to [0, 2pi]
     float angle = std::atan2(stick.y, stick.x);
     if (angle < 0.0f) angle += static_cast<float>(2.0 * M_PI);
 
-    // Sector width
     const float sectorWidth = static_cast<float>(2.0 * M_PI) /
                               static_cast<float>(m_items.size());
-    // Offset so item 0 is at top (12 o’clock = -pi/2)
+    // Offset so item 0 is at top (12 o'clock)
     const float adjusted = std::fmod(
-        angle + static_cast<float>(M_PI / 2.0), static_cast<float>(2.0 * M_PI));
+        angle + static_cast<float>(M_PI / 2.0),
+        static_cast<float>(2.0 * M_PI));
     m_hoveredIndex = static_cast<int32_t>(adjusted / sectorWidth) %
                      static_cast<int32_t>(m_items.size());
 }
@@ -138,7 +132,6 @@ void RadialMenu::ConfirmSelection() {
 // ---------------------------------------------------------------------------
 
 float RadialMenu::AngleForIndex(int32_t index) const noexcept {
-    // Item 0 at top (-pi/2), clockwise
     const float sectorWidth = static_cast<float>(2.0 * M_PI) /
                               static_cast<float>(m_items.size());
     return -static_cast<float>(M_PI / 2.0) +
@@ -148,63 +141,59 @@ float RadialMenu::AngleForIndex(int32_t index) const noexcept {
 Vec2 RadialMenu::PositionForIndex(int32_t index, float scale) const noexcept {
     const float angle = AngleForIndex(index);
     const float r     = m_config.radius * scale;
-    float cx = (m_config.centreX < 0) ? 960.0f : static_cast<float>(m_config.centreX);
-    float cy = (m_config.centreY < 0) ? 540.0f : static_cast<float>(m_config.centreY);
+    const float cx    = (m_config.centreX < 0) ? 960.0f : static_cast<float>(m_config.centreX);
+    const float cy    = (m_config.centreY < 0) ? 540.0f : static_cast<float>(m_config.centreY);
     return { cx + r * std::cos(angle), cy + r * std::sin(angle) };
 }
 
 // ---------------------------------------------------------------------------
-// Draw  — accepts void* cast back to ID2D1RenderTarget*
+// Draw
 // ---------------------------------------------------------------------------
 
 void RadialMenu::Draw(void* renderTargetPtr, float dpiScale) const {
     if (m_state == State::Hidden || m_animProgress <= 0.0f) return;
     if (!renderTargetPtr) return;
 
-    // The render target pointer is passed as void* to avoid pulling D2D headers
-    // into the public header. Cast back to ID2D1RenderTarget*.
     auto* rt = static_cast<ID2D1RenderTarget*>(renderTargetPtr);
 
-    const float scale  = m_animProgress;  // [0,1] drives both size and opacity
-    const float alpha  = scale;
+    const float scale = m_animProgress;
+    const float alpha = scale;
 
-    // ----- Background disc -----------------------------------------------
-    auto abgr = [](uint32_t c, float a) -> D2D1_COLOR_F {
-        // Input is ABGR layout stored as uint32 (see RadialMenu.hpp)
+    // Unpack ABGR uint32 -> D2D1_COLOR_F
+    auto toColor = [](uint32_t c, float a) -> D2D1_COLOR_F {
         return {
-            ((c >>  0) & 0xFF) / 255.0f,   // R
-            ((c >>  8) & 0xFF) / 255.0f,   // G
-            ((c >> 16) & 0xFF) / 255.0f,   // B
-            ((c >> 24) & 0xFF) / 255.0f * a // A
+            ((c >>  0) & 0xFF) / 255.0f,
+            ((c >>  8) & 0xFF) / 255.0f,
+            ((c >> 16) & 0xFF) / 255.0f,
+            ((c >> 24) & 0xFF) / 255.0f * a
         };
     };
 
-    const float cx = (m_config.centreX < 0) ? 960.0f : static_cast<float>(m_config.centreX);
-    const float cy = (m_config.centreY < 0) ? 540.0f : static_cast<float>(m_config.centreY);
+    const float cx    = (m_config.centreX < 0) ? 960.0f : static_cast<float>(m_config.centreX);
+    const float cy    = (m_config.centreY < 0) ? 540.0f : static_cast<float>(m_config.centreY);
     const float discR = m_config.radius * 0.45f * scale * dpiScale;
 
+    // Background disc
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush;
-    rt->CreateSolidColorBrush(abgr(m_config.colourBackground, alpha), bgBrush.GetAddressOf());
+    rt->CreateSolidColorBrush(toColor(m_config.colourBackground, alpha), bgBrush.GetAddressOf());
     if (bgBrush)
         rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), discR, discR), bgBrush.Get());
 
     if (m_items.empty()) return;
 
-    // ----- Item slices ---------------------------------------------------
+    // Item circles
     for (int32_t i = 0; i < static_cast<int32_t>(m_items.size()); ++i) {
-        const Vec2 pos = PositionForIndex(i, scale * dpiScale);
-        const bool hovered = (i == m_hoveredIndex);
+        const Vec2  pos     = PositionForIndex(i, scale * dpiScale);
+        const bool  hovered = (i == m_hoveredIndex);
+        const float itemR   = 30.0f * scale * dpiScale;
 
-        const uint32_t colItem = hovered ? m_config.colourItemHovered
-                                         : m_config.colourItemNormal;
-        const float itemR = 30.0f * scale * dpiScale;
-
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> itemBrush;
-        rt->CreateSolidColorBrush(abgr(colItem, alpha), itemBrush.GetAddressOf());
-        if (itemBrush)
+        const uint32_t col = hovered ? m_config.colourItemHovered : m_config.colourItemNormal;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+        rt->CreateSolidColorBrush(toColor(col, alpha), brush.GetAddressOf());
+        if (brush)
             rt->FillEllipse(
                 D2D1::Ellipse(D2D1::Point2F(pos.x, pos.y), itemR, itemR),
-                itemBrush.Get());
+                brush.Get());
     }
 }
 
