@@ -1,19 +1,13 @@
 #include "enjoystick/config/ConfigSerializer.hpp"
 #include "enjoystick/config/Config.hpp"
 
-// nlohmann/json single-header, vendored in third_party/
 #include <nlohmann/json.hpp>
-
 #include <stdexcept>
 #include <string>
 
 using json = nlohmann::json;
 
 namespace enjoystick::config {
-
-// ---------------------------------------------------------------------------
-// Helpers: read a field if present, ignore otherwise.
-// ---------------------------------------------------------------------------
 
 template<typename T>
 static void Read(const json& j, const char* key, T& out) {
@@ -27,37 +21,35 @@ static void Read(const json& j, const char* key, T& out) {
 std::string ConfigSerializer::ToJson(const Config& cfg) {
     json j;
 
-    // --- mouse ---
-    j["mouse"]["max_speed"]   = cfg.mouse.maxSpeed;
-    j["mouse"]["exponent"]    = cfg.mouse.exponent;
-    j["mouse"]["linear_zone"] = cfg.mouse.linearZone;
-    j["mouse"]["wrap_edges"]  = cfg.mouse.wrapEdges;
-    j["mouse"]["scroll_speed"]= cfg.mouse.scrollSpeed;
+    j["mouse"]["max_speed"]           = cfg.mouse.maxSpeed;
+    j["mouse"]["exponent"]            = cfg.mouse.exponent;
+    j["mouse"]["linear_zone"]         = cfg.mouse.linearZone;
+    j["mouse"]["wrap_edges"]          = cfg.mouse.wrapEdges;
+    j["mouse"]["scroll_speed"]        = cfg.mouse.scrollSpeed;
+    j["mouse"]["triggers_as_clicks"]  = cfg.mouse.triggersAsClicks;
+    j["mouse"]["use_right_stick"]     = cfg.mouse.useRightStick;
+    j["mouse"]["acceleration_ms"]     = cfg.mouse.accelerationMs;
 
-    // --- input ---
-    j["input"]["polling_rate_hz"]      = cfg.input.pollingRateHz;
-    j["input"]["deadzone_inner"]       = cfg.input.deadzoneInner;
-    j["input"]["deadzone_outer"]       = cfg.input.deadzoneOuter;
-    j["input"]["haptics_enabled"]      = cfg.input.hapticsEnabled;
+    j["input"]["polling_rate_hz"] = cfg.input.pollingRateHz;
+    j["input"]["deadzone_inner"]  = cfg.input.deadzoneInner;
+    j["input"]["deadzone_outer"]  = cfg.input.deadzoneOuter;
+    j["input"]["haptics_enabled"] = cfg.input.hapticsEnabled;
 
-    // --- overlay ---
     j["overlay"]["show_active_indicator"] = cfg.overlay.showActiveIndicator;
     j["overlay"]["monitor_index"]         = cfg.overlay.monitorIndex;
     j["overlay"]["render_hz"]             = cfg.overlay.renderHz;
     j["overlay"]["mode_label"]            = cfg.overlay.modeLabel;
 
-    // --- app ---
-    j["app"]["auto_start"]   = cfg.app.autoStart;
-    j["app"]["tray_icon"]    = cfg.app.trayIcon;
-    j["app"]["language"]     = cfg.app.language;
+    j["app"]["auto_start"]       = cfg.app.autoStart;
+    j["app"]["tray_icon"]        = cfg.app.trayIcon;
+    j["app"]["language"]         = cfg.app.language;
     j["app"]["minimize_to_tray"] = cfg.app.minimizeToTray;
 
-    // --- keyboard mappings ---
     json mappings = json::array();
     for (const auto& km : cfg.keyMappings) {
         json m;
         m["name"]    = km.name;
-        m["buttons"] = km.buttonMask;  // uint32 bitmask
+        m["buttons"] = km.buttonMask;
         json seq = json::array();
         for (const auto& vk : km.sequence) {
             json v;
@@ -70,7 +62,7 @@ std::string ConfigSerializer::ToJson(const Config& cfg) {
     }
     j["key_mappings"] = mappings;
 
-    return j.dump(4);  // 4-space indent
+    return j.dump(4);
 }
 
 // ---------------------------------------------------------------------------
@@ -82,18 +74,22 @@ Config ConfigSerializer::FromJson(const std::string& jsonStr) {
     try {
         j = json::parse(jsonStr);
     } catch (const json::exception& e) {
-        throw std::runtime_error(std::string("ConfigSerializer: JSON parse error: ") + e.what());
+        throw std::runtime_error(
+            std::string("ConfigSerializer: JSON parse error: ") + e.what());
     }
 
-    Config cfg;  // start with defaults
+    Config cfg;
 
     if (j.contains("mouse")) {
         const auto& m = j["mouse"];
-        Read(m, "max_speed",   cfg.mouse.maxSpeed);
-        Read(m, "exponent",    cfg.mouse.exponent);
-        Read(m, "linear_zone", cfg.mouse.linearZone);
-        Read(m, "wrap_edges",  cfg.mouse.wrapEdges);
-        Read(m, "scroll_speed",cfg.mouse.scrollSpeed);
+        Read(m, "max_speed",          cfg.mouse.maxSpeed);
+        Read(m, "exponent",           cfg.mouse.exponent);
+        Read(m, "linear_zone",        cfg.mouse.linearZone);
+        Read(m, "wrap_edges",         cfg.mouse.wrapEdges);
+        Read(m, "scroll_speed",       cfg.mouse.scrollSpeed);
+        Read(m, "triggers_as_clicks", cfg.mouse.triggersAsClicks);
+        Read(m, "use_right_stick",    cfg.mouse.useRightStick);
+        Read(m, "acceleration_ms",    cfg.mouse.accelerationMs);
     }
 
     if (j.contains("input")) {
@@ -114,10 +110,10 @@ Config ConfigSerializer::FromJson(const std::string& jsonStr) {
 
     if (j.contains("app")) {
         const auto& a = j["app"];
-        Read(a, "auto_start",      cfg.app.autoStart);
-        Read(a, "tray_icon",       cfg.app.trayIcon);
-        Read(a, "language",        cfg.app.language);
-        Read(a, "minimize_to_tray",cfg.app.minimizeToTray);
+        Read(a, "auto_start",       cfg.app.autoStart);
+        Read(a, "tray_icon",        cfg.app.trayIcon);
+        Read(a, "language",         cfg.app.language);
+        Read(a, "minimize_to_tray", cfg.app.minimizeToTray);
     }
 
     if (j.contains("key_mappings") && j["key_mappings"].is_array()) {
