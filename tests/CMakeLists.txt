@@ -16,6 +16,7 @@ add_executable(enjoystick_tests
     test_virtual_mouse.cpp
     test_radial_menu.cpp
     test_config.cpp
+    test_overlay.cpp
 )
 
 target_link_libraries(enjoystick_tests
