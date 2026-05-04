@@ -3,6 +3,7 @@
 #include <enjoystick/shared/Types.hpp>
 #include <enjoystick/overlay/RadialMenu.hpp>
 #include <enjoystick/overlay/SettingsMenu.hpp>
+#include <enjoystick/overlay/VirtualKeyboard.hpp>
 #include <memory>
 #include <string>
 #include <functional>
@@ -20,7 +21,7 @@ namespace enjoystick::overlay {
 ///
 /// Architecture:
 ///   - HWND created with WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST
-///   - DirectComposition for per-pixel alpha without GDI overhead
+///   - DIB-section back-buffer + UpdateLayeredWindow for per-pixel alpha
 ///   - Dedicated render thread; PostState() is called from the input thread
 ///     via a lock-free state snapshot.
 ///   - Supports multi-monitor setups: one OverlayWindow per HMONITOR
@@ -32,6 +33,8 @@ namespace enjoystick::overlay {
 ///   overlay->PostState(state);
 ///   // update the HUD mode chip:
 ///   overlay->SetModeLabel(L"\U0001F5B1  Cursor mode");
+///   // open keyboard:
+///   overlay->GetVirtualKeyboard().Open(L"");
 ///
 class OverlayWindow {
 public:
@@ -70,6 +73,9 @@ public:
 
     /// Access the gamepad-driven settings panel.
     virtual SettingsMenu& GetSettingsMenu() = 0;
+
+    /// Access the gamepad-driven virtual keyboard.
+    virtual VirtualKeyboard& GetVirtualKeyboard() = 0;
 
     /// Trigger a toast notification (thread-safe).
     virtual void ShowToast(std::wstring message, uint32_t durationMs = 2500) = 0;
