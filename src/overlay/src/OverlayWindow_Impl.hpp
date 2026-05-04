@@ -76,8 +76,14 @@ private:
     int     m_dibW   = 0;
     int     m_dibH   = 0;
 
-    // State double-buffer (input thread → render thread, lock-free)
+    // State double-buffer (input thread → render thread, lock-free).
+    // alignas(64) is intentional: it places m_pendingState on its own
+    // cache line, preventing false sharing. C4324 (padding warning) is
+    // expected and benign — suppressed locally.
+#pragma warning(push)
+#pragma warning(disable: 4324)
     alignas(64) std::atomic<ControllerState*> m_pendingState{nullptr};
+#pragma warning(pop)
     ControllerState m_stateBuffers[2];
     int             m_activeBuffer = 0;
     ControllerState m_lastState    = {};
