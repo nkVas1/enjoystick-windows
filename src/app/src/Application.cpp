@@ -3,6 +3,7 @@
 #include "AutoStart.hpp"
 
 #include <Windows.h>
+#include <shlobj.h>     // SHGetKnownFolderPath (used via ConfigStore::Create)
 #include <shellapi.h>
 
 #include <stdexcept>
@@ -28,39 +29,39 @@ static const wchar_t* InputModeLabel(InputMode m) noexcept {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: convert SettingsMenu::Values -> VirtualMouse::Config
+// Helper: SettingsMenu::Values -> VirtualMouse::Config
 // ---------------------------------------------------------------------------
 
-static cursor::VirtualMouse::Config VMConfigFromSettings(
+static cursor::MouseConfig VMConfigFromSettings(
     const overlay::SettingsMenu::Values& v) noexcept
 {
-    cursor::VirtualMouse::Config c;
-    c.maxSpeedPx        = v.cursorSpeed;
-    c.curveExponent     = v.curveExponent;
-    c.accelerationMs    = v.accelerationMs;
-    c.scrollSpeed       = v.scrollSpeed;
-    c.triggersAsClicks  = v.triggersAsClicks;
-    c.useRightStick     = v.useRightStick;
+    cursor::MouseConfig c;
+    c.maxSpeedPx       = v.cursorSpeed;
+    c.curveExponent    = v.curveExponent;
+    c.accelerationMs   = v.accelerationMs;
+    c.scrollSpeed      = v.scrollSpeed;
+    c.triggersAsClicks = v.triggersAsClicks;
+    c.useRightStick    = v.useRightStick;
     return c;
 }
 
 // ---------------------------------------------------------------------------
-// Helper: convert VirtualMouse::Config + DeadzoneConfig -> SettingsMenu::Values
+// Helper: VirtualMouse::Config + DeadzoneConfig -> SettingsMenu::Values
 // ---------------------------------------------------------------------------
 
 static overlay::SettingsMenu::Values SettingsValuesFromConfig(
-    const cursor::VirtualMouse::Config& c,
-    const core::DeadzoneConfig&         dz) noexcept
+    const config::MouseCfg&  mc,
+    const config::InputCfg&  ic) noexcept
 {
     overlay::SettingsMenu::Values v;
-    v.cursorSpeed      = c.maxSpeedPx;
-    v.curveExponent    = c.curveExponent;
-    v.accelerationMs   = c.accelerationMs;
-    v.scrollSpeed      = c.scrollSpeed;
-    v.triggersAsClicks = c.triggersAsClicks;
-    v.useRightStick    = c.useRightStick;
-    v.dzInner          = dz.innerRadius;
-    v.dzOuter          = dz.outerRadius;
+    v.cursorSpeed      = mc.maxSpeed;
+    v.curveExponent    = mc.exponent;
+    v.accelerationMs   = 0.0f;          // not in MouseCfg — set default
+    v.scrollSpeed      = mc.scrollSpeed;
+    v.triggersAsClicks = false;         // not in MouseCfg — set default
+    v.useRightStick    = true;          // not in MouseCfg — set default
+    v.dzInner          = ic.deadzoneInner;
+    v.dzOuter          = ic.deadzoneOuter;
     return v;
 }
 
@@ -78,9 +79,8 @@ public:
     // -----------------------------------------------------------------------
 
     void Init() override {
-        // Config
+        // Config — Create() opens %APPDATA%\Enjoystick\config.json
         m_config = config::ConfigStore::Create();
-        m_config->Load();
         m_config->StartWatcher();
 
         // Input engine
@@ -89,9 +89,15 @@ public:
         engCfg.hapticsEnabled = true;
         m_inputEngine = core::InputEngine::Create(engCfg);
 
-        // Subsystems
+        // VirtualMouse — translate stored MouseCfg -> MouseConfig
         const auto& cfg = m_config->Get();
-        m_virtualMouse = std::make_unique<cursor::VirtualMouse>(cfg.cursor);
+        cursor::MouseConfig vmCfg;
+        vmCfg.maxSpeedPx    = cfg.mouse.maxSpeed;
+        vmCfg.curveExponent = cfg.mouse.exponent;
+        vmCfg.linearZone    = cfg.mouse.linearZone;
+        vmCfg.scrollSpeed   = cfg.mouse.scrollSpeed;
+        vmCfg.wrapEdges     = cfg.mouse.wrapEdges;
+        m_virtualMouse = std::make_unique<cursor::VirtualMouse>(vmCfg);
         m_keyMapper    = std::make_unique<input::KeyboardMapper>();
 
         // Start in Cursor mode
@@ -116,9 +122,15 @@ public:
             OnConnectionEvent(id, ev);
         });
 
-        // Live config propagation (hot-reload from file watcher)
-        m_configHandle = m_config->OnChanged([this](const config::AppConfig& c) {
-            m_virtualMouse->SetConfig(c.cursor);
+        // Live config propagation (hot-reload)
+        m_configHandle = m_config->OnChanged([this](const config::Config& c) {
+            cursor::MouseConfig mc;
+            mc.maxSpeedPx    = c.mouse.maxSpeed;
+            mc.curveExponent = c.mouse.exponent;
+            mc.linearZone    = c.mouse.linearZone;
+            mc.scrollSpeed   = c.mouse.scrollSpeed;
+            mc.wrapEdges     = c.mouse.wrapEdges;
+            m_virtualMouse->SetConfig(mc);
         });
 
         m_inputEngine->Start();
@@ -181,27 +193,25 @@ private:
 
     // -----------------------------------------------------------------------
     // SetupSettingsMenu
-    //
-    // Use SetOnChanged() instead of copy-assigning a new SettingsMenu object.
-    // SettingsMenu::operator=(const SettingsMenu&) is deleted because Row
-    // structs hold raw pointers into m_values.
     // -----------------------------------------------------------------------
 
     void SetupSettingsMenu() {
         m_overlay->GetSettingsMenu().SetOnChanged(
             [this](const overlay::SettingsMenu::Values& v) {
-                // Update cursor config
+                // Update VirtualMouse config
                 const auto vmCfg = VMConfigFromSettings(v);
-                m_config->SetCursorConfig(vmCfg);
                 m_virtualMouse->SetConfig(vmCfg);
 
-                // Update deadzone config
+                // Persist cursor section
+                m_config->SetCursorConfig(vmCfg);
+
+                // Persist deadzone section
                 core::DeadzoneConfig dz;
                 dz.innerRadius = v.dzInner;
                 dz.outerRadius = v.dzOuter;
                 m_config->SetDeadzoneConfig(dz);
 
-                // Short haptic confirmation (non-blocking)
+                // Short haptic confirmation
                 if (m_inputEngine)
                     m_inputEngine->Rumble(ControllerId{0}, {0.0f, 0.20f, 30});
             }
@@ -213,8 +223,8 @@ private:
     // -----------------------------------------------------------------------
 
     void OpenSettingsMenu() {
-        const auto& cfg = m_config->Get();
-        const auto vals = SettingsValuesFromConfig(cfg.cursor, cfg.deadzone);
+        const auto& cfg  = m_config->Get();
+        const auto  vals = SettingsValuesFromConfig(cfg.mouse, cfg.input);
         m_overlay->GetSettingsMenu().Open(vals);
         m_overlay->GetRadialMenu().Close();
     }
@@ -246,7 +256,7 @@ private:
     }
 
     // -----------------------------------------------------------------------
-    // OnControllerState (250 Hz polling thread)
+    // OnControllerState  (250 Hz polling thread)
     // -----------------------------------------------------------------------
 
     void OnControllerState(const ControllerState& state) {
@@ -254,8 +264,8 @@ private:
         QueryPerformanceFrequency(&freq);
         QueryPerformanceCounter(&now);
         const float dt = (m_lastTick == 0)
-            ? 0.004f
-            : static_cast<float>(now.QuadPart - m_lastTick) /
+            ? 4.0f   // assume 4 ms for the very first frame
+            : static_cast<float>(now.QuadPart - m_lastTick) * 1000.0f /
               static_cast<float>(freq.QuadPart);
         m_lastTick = now.QuadPart;
 
@@ -345,7 +355,7 @@ private:
                   if (autoOn) AutoStart::Disable();
                   else        AutoStart::Enable();
               } },
-            { L"",   {},       true },
+            { L"",     {},       true },
             { L"Exit", [this]{ Exit(); } },
         };
     }
@@ -362,7 +372,7 @@ private:
 
     CallbackHandle m_inputHandle;
     CallbackHandle m_connHandle;
-    CallbackHandle m_configHandle;
+    ConfigCallbackHandle m_configHandle;
 
     InputMode m_mode            = InputMode::Cursor;
     int64_t   m_lastTick        = 0;

@@ -20,30 +20,74 @@ VirtualMouse::VirtualMouse(MouseConfig config)
 void VirtualMouse::SetConfig(MouseConfig config) { m_config = config; }
 const MouseConfig& VirtualMouse::GetConfig() const noexcept { return m_config; }
 
+void VirtualMouse::SetEnabled(bool enabled) noexcept {
+    m_enabled = enabled;
+    if (!enabled) {
+        // Reset accumulators so we don't lurch on re-enable
+        m_accumX    = 0.0f;
+        m_accumY    = 0.0f;
+        m_scrollAccum = 0.0f;
+        m_ltWasDown  = false;
+        m_rtWasDown  = false;
+    }
+}
+
+bool VirtualMouse::IsEnabled() const noexcept { return m_enabled; }
+
+// ---------------------------------------------------------------------------
+// High-level Update (ControllerState overload)
+// ---------------------------------------------------------------------------
+
+void VirtualMouse::Update(const ControllerState& state, float deltaMs) {
+    if (!m_enabled) return;
+
+    // Choose stick axis based on config
+    const Vec2 stick = m_config.useRightStick ? state.rightStick : state.leftStick;
+
+    // Cursor movement
+    Update(stick.x, stick.y, deltaMs);
+
+    // Scroll: when right stick is used for cursor, left-stick Y scrolls;
+    //         when left stick drives the cursor, right-stick Y scrolls.
+    const float scrollY = m_config.useRightStick ? state.leftStick.y : state.rightStick.y;
+    ScrollStick(scrollY, deltaMs);
+
+    // Trigger-as-click
+    if (m_config.triggersAsClicks) {
+        const bool ltDown = state.leftTrigger  > 0.5f;
+        const bool rtDown = state.rightTrigger > 0.5f;
+
+        if (ltDown && !m_ltWasDown)  LeftDown();
+        if (!ltDown && m_ltWasDown)  LeftUp();
+        if (rtDown && !m_rtWasDown)  RightClick();
+
+        m_ltWasDown = ltDown;
+        m_rtWasDown = rtDown;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Acceleration model
 //
-//  |axis| in [0, linearZone]   → speed = |axis| * maxSpeed           (linear)
-//  |axis| in (linearZone, 1]   → speed = pow(|axis|, exp) * maxSpeed (accelerated)
+//  |axis| in [0, linearZone]   -> speed = |axis| * maxSpeedPx       (linear)
+//  |axis| in (linearZone, 1]   -> speed = pow(|axis|, curveExponent) * maxSpeedPx
 //
-// The linear zone prevents micro-jitter when the stick rests near centre.
 // ---------------------------------------------------------------------------
 
 float VirtualMouse::Accelerate(float magnitude) const noexcept {
     if (magnitude <= 0.0f) return 0.0f;
     if (magnitude <= m_config.linearZone)
-        return magnitude * m_config.maxSpeed;
-    return std::pow(magnitude, m_config.exponent) * m_config.maxSpeed;
+        return magnitude * m_config.maxSpeedPx;
+    return std::pow(magnitude, m_config.curveExponent) * m_config.maxSpeedPx;
 }
 
 // ---------------------------------------------------------------------------
-// Update — called per-frame with normalised stick axes and delta time
+// Low-level Update
 // ---------------------------------------------------------------------------
 
 void VirtualMouse::Update(float dx, float dy, float deltaMs) {
-    if (deltaMs <= 0.0f) return;
+    if (!m_enabled || deltaMs <= 0.0f) return;
 
-    // Magnitude-preserve the direction vector
     const float mag = std::sqrt(dx * dx + dy * dy);
     if (mag < 1e-6f) {
         m_accumX = m_accumY = 0.0f;
@@ -52,7 +96,7 @@ void VirtualMouse::Update(float dx, float dy, float deltaMs) {
 
     const float speed = Accelerate(std::min(mag, 1.0f));
     const float nx    = dx / mag;
-    const float ny    = -dy / mag;  // Y is inverted on screen
+    const float ny    = -dy / mag;  // screen Y is inverted
 
     m_accumX += nx * speed * deltaMs;
     m_accumY += ny * speed * deltaMs;
@@ -66,15 +110,13 @@ void VirtualMouse::Update(float dx, float dy, float deltaMs) {
     if (ix == 0 && iy == 0) return;
 
     if (m_config.wrapEdges) {
-        // Retrieve cursor then clamp + wrap
         POINT pt;
         GetCursorPos(&pt);
         const int screenW = GetSystemMetrics(SM_CXSCREEN);
         const int screenH = GetSystemMetrics(SM_CYSCREEN);
-
-        const int nx2 = (static_cast<int>(pt.x) + ix + screenW) % screenW;
-        const int ny2 = (static_cast<int>(pt.y) + iy + screenH) % screenH;
-        SetCursorPos(nx2, ny2);
+        SetCursorPos(
+            (static_cast<int>(pt.x) + ix + screenW) % screenW,
+            (static_cast<int>(pt.y) + iy + screenH) % screenH);
     } else {
         PostMouseInput(ix, iy, MOUSEEVENTF_MOVE);
     }
@@ -85,6 +127,7 @@ void VirtualMouse::Update(float dx, float dy, float deltaMs) {
 // ---------------------------------------------------------------------------
 
 void VirtualMouse::ScrollStick(float dy, float deltaMs) {
+    if (!m_enabled) return;
     if (std::abs(dy) < 1e-6f) { m_scrollAccum = 0.0f; return; }
 
     m_scrollAccum += dy * m_config.scrollSpeed * deltaMs;
@@ -101,22 +144,31 @@ void VirtualMouse::ScrollStick(float dy, float deltaMs) {
 // ---------------------------------------------------------------------------
 
 void VirtualMouse::LeftClick()  {
+    if (!m_enabled) return;
     PostMouseInput(0, 0, MOUSEEVENTF_LEFTDOWN);
     PostMouseInput(0, 0, MOUSEEVENTF_LEFTUP);
 }
 void VirtualMouse::RightClick() {
+    if (!m_enabled) return;
     PostMouseInput(0, 0, MOUSEEVENTF_RIGHTDOWN);
     PostMouseInput(0, 0, MOUSEEVENTF_RIGHTUP);
 }
 void VirtualMouse::MiddleClick() {
+    if (!m_enabled) return;
     PostMouseInput(0, 0, MOUSEEVENTF_MIDDLEDOWN);
     PostMouseInput(0, 0, MOUSEEVENTF_MIDDLEUP);
 }
-void VirtualMouse::LeftDown() { PostMouseInput(0, 0, MOUSEEVENTF_LEFTDOWN); }
-void VirtualMouse::LeftUp()   { PostMouseInput(0, 0, MOUSEEVENTF_LEFTUP); }
+void VirtualMouse::LeftDown() {
+    if (!m_enabled) return;
+    PostMouseInput(0, 0, MOUSEEVENTF_LEFTDOWN);
+}
+void VirtualMouse::LeftUp()   {
+    if (!m_enabled) return;
+    PostMouseInput(0, 0, MOUSEEVENTF_LEFTUP);
+}
 
 // ---------------------------------------------------------------------------
-// PostMouseInput — single SendInput call
+// PostMouseInput
 // ---------------------------------------------------------------------------
 
 void VirtualMouse::PostMouseInput(

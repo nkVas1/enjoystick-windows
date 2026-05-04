@@ -1,6 +1,6 @@
 #pragma once
 
-#include <enjoystick/core/InputTypes.hpp>
+#include <enjoystick/shared/Types.hpp>
 
 #include <cstdint>
 #include <functional>
@@ -19,7 +19,7 @@ struct VKey {
 /// A complete binding: when all buttons in `mask` are held AND rise together,
 /// fire the `sequence` of VKeys.
 struct KeyBinding {
-    uint32_t         mask;      ///< OR of Button enum values
+    uint32_t          mask;      ///< OR of Button enum values
     std::vector<VKey> sequence; ///< keys to inject (pressed in order, released in reverse)
     std::string       name;     ///< human-readable label (for UI / logging)
 };
@@ -44,11 +44,18 @@ public:
     /// Clear all bindings.
     void ClearBindings();
 
-    /// Call once per input event. Detects rising edges, resolves chords,
+    /// Enable or disable all output. When disabled, Update() is a no-op.
+    void SetEnabled(bool enabled) noexcept;
+    [[nodiscard]] bool IsEnabled() const noexcept;
+
+    /// Convenience: dispatches to Press() and Release() based on edge detection.
+    /// Call once per input event from OnControllerState().
+    void Update(const ControllerState& state);
+
+    /// Call when new state arrives. Detects rising edges, resolves chords,
     /// and fires SendInput for matched bindings.
-    /// @param state  Current controller state (buttons bitmask used).
-    void Press  (const core::ControllerState& state);
-    void Release(const core::ControllerState& state);
+    void Press  (const ControllerState& state);
+    void Release(const ControllerState& state);
 
     [[nodiscard]] const std::vector<KeyBinding>& GetBindings() const noexcept;
 
@@ -60,7 +67,8 @@ private:
 
     std::vector<KeyBinding> m_bindings;
     uint32_t                m_prevButtons = 0;
-    uint32_t                m_activeChord = 0;  ///< mask of currently held chord, 0 if none
+    uint32_t                m_activeChord = 0;
+    bool                    m_enabled     = true;
 };
 
 } // namespace enjoystick::input

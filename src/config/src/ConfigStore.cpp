@@ -12,6 +12,23 @@
 namespace enjoystick::config {
 
 // ---------------------------------------------------------------------------
+// Default path helper
+// ---------------------------------------------------------------------------
+
+static std::filesystem::path DefaultConfigPath() {
+    wchar_t* appData = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData))) {
+        std::filesystem::path p(appData);
+        CoTaskMemFree(appData);
+        return p / L"Enjoystick" / L"config.json";
+    }
+    // Fallback: next to the executable
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    return std::filesystem::path(exePath).parent_path() / L"config.json";
+}
+
+// ---------------------------------------------------------------------------
 // Open (factory)
 // ---------------------------------------------------------------------------
 
@@ -34,7 +51,6 @@ ConfigStore::Open(const std::filesystem::path& configPath) {
     }
 
     if (!loaded) {
-        // Write defaults so the user can see and edit the file.
         initial = Config{};
         std::filesystem::create_directories(configPath.parent_path(), ec);
         std::ofstream out(configPath);
@@ -45,12 +61,21 @@ ConfigStore::Open(const std::filesystem::path& configPath) {
 }
 
 // ---------------------------------------------------------------------------
+// Create (convenience factory — uses %APPDATA%\Enjoystick\config.json)
+// ---------------------------------------------------------------------------
+
+std::unique_ptr<ConfigStore> ConfigStore::Create() {
+    return Open(DefaultConfigPath());
+}
+
+// ---------------------------------------------------------------------------
 // Constructor / Destructor
 // ---------------------------------------------------------------------------
 
 ConfigStore::ConfigStore(std::filesystem::path path, Config initial)
     : m_path(std::move(path))
     , m_currentCopy(initial)
+    , m_dirHandle(INVALID_HANDLE_VALUE)
 {
     m_current.store(std::make_shared<Config>(std::move(initial)),
                     std::memory_order_release);
@@ -61,12 +86,10 @@ ConfigStore::~ConfigStore() {
 }
 
 // ---------------------------------------------------------------------------
-// GetConfig (lock-free read)
+// GetConfig (read-path)
 // ---------------------------------------------------------------------------
 
 const Config& ConfigStore::GetConfig() const noexcept {
-    // Return reference to the cached copy. Under write-lock this is updated
-    // atomically with m_current, so the two are always in sync.
     std::shared_lock lock(m_configMutex);
     return m_currentCopy;
 }
@@ -76,7 +99,6 @@ const Config& ConfigStore::GetConfig() const noexcept {
 // ---------------------------------------------------------------------------
 
 void ConfigStore::Save(Config config) {
-    // Write to temp then rename (atomic on NTFS).
     const auto tmp = std::filesystem::path(m_path).replace_extension(".json.tmp");
     {
         std::ofstream out(tmp);
@@ -86,20 +108,47 @@ void ConfigStore::Save(Config config) {
     std::error_code ec;
     std::filesystem::rename(tmp, m_path, ec);
 
-    // Update in-memory snapshot
     {
         std::unique_lock lock(m_configMutex);
         m_currentCopy = config;
         m_current.store(std::make_shared<Config>(config), std::memory_order_release);
     }
 
-    // Notify subscribers (under shared lock so multiple callbacks run in parallel)
     {
         std::shared_lock lock(m_cbMutex);
         for (const auto& cb : m_callbacks) {
             if (cb.fn) cb.fn(config);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Convenience setters
+// ---------------------------------------------------------------------------
+
+void ConfigStore::SetCursorConfig(const cursor::MouseConfig& mc) {
+    Config cfg;
+    {
+        std::shared_lock lock(m_configMutex);
+        cfg = m_currentCopy;
+    }
+    cfg.mouse.maxSpeed    = mc.maxSpeedPx;
+    cfg.mouse.exponent    = mc.curveExponent;
+    cfg.mouse.linearZone  = mc.linearZone;
+    cfg.mouse.scrollSpeed = mc.scrollSpeed;
+    cfg.mouse.wrapEdges   = mc.wrapEdges;
+    Save(std::move(cfg));
+}
+
+void ConfigStore::SetDeadzoneConfig(const core::DeadzoneConfig& dz) {
+    Config cfg;
+    {
+        std::shared_lock lock(m_configMutex);
+        cfg = m_currentCopy;
+    }
+    cfg.input.deadzoneInner = dz.innerRadius;
+    cfg.input.deadzoneOuter = dz.outerRadius;
+    Save(std::move(cfg));
 }
 
 // ---------------------------------------------------------------------------
@@ -129,7 +178,6 @@ void ConfigStore::Watch() {
 
 void ConfigStore::Unwatch() {
     if (!m_watching.exchange(false)) return;
-    // Wake the blocking ReadDirectoryChangesW call
     if (m_dirHandle != INVALID_HANDLE_VALUE)
         CancelIoEx(m_dirHandle, nullptr);
     if (m_watchThread.joinable()) m_watchThread.join();
@@ -137,10 +185,6 @@ void ConfigStore::Unwatch() {
 
 // ---------------------------------------------------------------------------
 // WatchThread
-//
-// Uses overlapped I/O (IOCP-style) so that CancelIoEx reliably wakes us.
-// ReadDirectoryChangesW is on the *directory*, filtered to last-write events.
-// We match by exact filename to avoid reloading on unrelated file changes.
 // ---------------------------------------------------------------------------
 
 void ConfigStore::WatchThread() {
@@ -161,7 +205,6 @@ void ConfigStore::WatchThread() {
         return;
     }
 
-    // 8 KB is enough for typical config-dir activity
     static constexpr DWORD kBufSize = 8 * 1024;
     alignas(DWORD) uint8_t buf[kBufSize];
 
@@ -172,20 +215,19 @@ void ConfigStore::WatchThread() {
         ResetEvent(ov.hEvent);
         const BOOL ok = ReadDirectoryChangesW(
             m_dirHandle, buf, kBufSize,
-            FALSE,  // non-recursive
+            FALSE,
             FILE_NOTIFY_CHANGE_LAST_WRITE,
             nullptr, &ov, nullptr);
 
-        if (!ok) break;  // CancelIoEx causes ERROR_OPERATION_ABORTED here
+        if (!ok) break;
 
         const DWORD wait = WaitForSingleObject(ov.hEvent, INFINITE);
         if (wait != WAIT_OBJECT_0) break;
 
         DWORD transferred = 0;
         if (!GetOverlappedResult(m_dirHandle, &ov, &transferred, FALSE)) break;
-        if (transferred == 0) continue;  // buffer overflow — retry
+        if (transferred == 0) continue;
 
-        // Walk notification records
         const uint8_t* ptr = buf;
         for (;;) {
             const auto* fni =
@@ -196,8 +238,6 @@ void ConfigStore::WatchThread() {
                     fni->FileName,
                     fni->FileNameLength / sizeof(wchar_t));
                 if (_wcsicmp(changed.c_str(), file.c_str()) == 0) {
-                    // Small delay: editors write in two flushes; wait for the
-                    // second one before re-reading (avoids empty-read race).
                     Sleep(80);
                     ReloadFromDisk();
                 }
@@ -215,7 +255,7 @@ void ConfigStore::WatchThread() {
 }
 
 // ---------------------------------------------------------------------------
-// ReloadFromDisk — called from watcher thread
+// ReloadFromDisk
 // ---------------------------------------------------------------------------
 
 bool ConfigStore::ReloadFromDisk() {
@@ -230,7 +270,7 @@ bool ConfigStore::ReloadFromDisk() {
     try {
         parsed = ConfigSerializer::FromJson(ss.str());
     } catch (...) {
-        return false;  // keep current config on parse error
+        return false;
     }
 
     {
@@ -239,7 +279,6 @@ bool ConfigStore::ReloadFromDisk() {
         m_current.store(std::make_shared<Config>(parsed), std::memory_order_release);
     }
 
-    // Fire callbacks under shared lock
     {
         std::shared_lock lock(m_cbMutex);
         for (const auto& cb : m_callbacks) {
