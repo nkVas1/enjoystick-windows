@@ -91,7 +91,7 @@ static cursor::MouseConfig VMConfigFromSettings(
 }
 
 // ---------------------------------------------------------------------------
-// SettingsValuesFromConfig
+// SettingsValuesFromConfig  (fixed: all MouseCfg fields are now read)
 // ---------------------------------------------------------------------------
 
 static overlay::SettingsMenu::Values SettingsValuesFromConfig(
@@ -101,10 +101,10 @@ static overlay::SettingsMenu::Values SettingsValuesFromConfig(
     overlay::SettingsMenu::Values v;
     v.cursorSpeed      = mc.maxSpeed;
     v.curveExponent    = mc.exponent;
-    v.accelerationMs   = 0.0f;
+    v.accelerationMs   = mc.accelerationMs;    // was: 0.0f
     v.scrollSpeed      = mc.scrollSpeed;
-    v.triggersAsClicks = false;
-    v.useRightStick    = true;
+    v.triggersAsClicks = mc.triggersAsClicks;  // was: false
+    v.useRightStick    = mc.useRightStick;     // was: true
     v.dzInner          = ic.deadzoneInner;
     v.dzOuter          = ic.deadzoneOuter;
     return v;
@@ -132,11 +132,14 @@ public:
 
         const auto& cfg = m_config->Get();
         cursor::MouseConfig vmCfg;
-        vmCfg.maxSpeedPx    = cfg.mouse.maxSpeed;
-        vmCfg.curveExponent = cfg.mouse.exponent;
-        vmCfg.linearZone    = cfg.mouse.linearZone;
-        vmCfg.scrollSpeed   = cfg.mouse.scrollSpeed;
-        vmCfg.wrapEdges     = cfg.mouse.wrapEdges;
+        vmCfg.maxSpeedPx       = cfg.mouse.maxSpeed;
+        vmCfg.curveExponent    = cfg.mouse.exponent;
+        vmCfg.linearZone       = cfg.mouse.linearZone;
+        vmCfg.scrollSpeed      = cfg.mouse.scrollSpeed;
+        vmCfg.wrapEdges        = cfg.mouse.wrapEdges;
+        vmCfg.triggersAsClicks = cfg.mouse.triggersAsClicks;
+        vmCfg.useRightStick    = cfg.mouse.useRightStick;
+        vmCfg.accelerationMs   = cfg.mouse.accelerationMs;
         m_virtualMouse = std::make_unique<cursor::VirtualMouse>(vmCfg);
         m_keyMapper    = std::make_unique<input::KeyboardMapper>();
 
@@ -147,9 +150,6 @@ public:
         SetupRadialMenu();
         SetupSettingsMenu();
         m_overlay->Show();
-
-        // Set initial HUD label immediately after Show() so it's visible
-        // from the very first rendered frame.
         m_overlay->SetModeLabel(InputModeLabel(m_mode));
 
         m_tray = SystemTray::Create(L"EnjoyStick \u2014 gamepad navigation active");
@@ -162,13 +162,18 @@ public:
             OnConnectionEvent(id, ev);
         });
 
+        // Config hot-reload: propagate ALL mouse fields (fixed: was missing
+        // triggersAsClicks, useRightStick, accelerationMs)
         m_configHandle = m_config->OnChanged([this](const config::Config& c) {
             cursor::MouseConfig mc;
-            mc.maxSpeedPx    = c.mouse.maxSpeed;
-            mc.curveExponent = c.mouse.exponent;
-            mc.linearZone    = c.mouse.linearZone;
-            mc.scrollSpeed   = c.mouse.scrollSpeed;
-            mc.wrapEdges     = c.mouse.wrapEdges;
+            mc.maxSpeedPx       = c.mouse.maxSpeed;
+            mc.curveExponent    = c.mouse.exponent;
+            mc.linearZone       = c.mouse.linearZone;
+            mc.scrollSpeed      = c.mouse.scrollSpeed;
+            mc.wrapEdges        = c.mouse.wrapEdges;
+            mc.triggersAsClicks = c.mouse.triggersAsClicks;
+            mc.useRightStick    = c.mouse.useRightStick;
+            mc.accelerationMs   = c.mouse.accelerationMs;
             m_virtualMouse->SetConfig(mc);
         });
 
@@ -255,14 +260,12 @@ private:
         m_virtualMouse->SetEnabled(cursor);
         m_keyMapper->SetEnabled(!cursor);
 
-        // Update HUD chip and toast
         if (m_overlay) {
             m_overlay->SetModeLabel(InputModeLabel(m_mode));
             m_overlay->ShowToast(InputModeLabel(m_mode));
         }
         if (m_tray) m_tray->SetMenuItems(BuildTrayMenu());
 
-        // Haptic double-pulse via ThreadpoolTimer (no detach)
         if (m_inputEngine) {
             m_inputEngine->Rumble(ControllerId{0}, {0.0f, 0.55f, 80});
             ScheduleRumble(m_inputEngine.get(), ControllerId{0},
