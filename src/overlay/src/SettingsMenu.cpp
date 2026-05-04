@@ -149,7 +149,7 @@ static void DrawPanelChrome(
         rt->CreateSolidColorBrush(Tok::InkLine(0.85f * ease), b.GetAddressOf());
         if (b) rt->DrawRoundedRectangle(rr, b.Get(), 0.65f);
     }
-    // Top brushed-edge luminance strip (NOT an oval blob — it is a thin line)
+    // Top brushed-edge luminance strip (thin line, NOT oval blob)
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sp;
         rt->CreateSolidColorBrush(Tok::White(0.06f * ease), sp.GetAddressOf());
@@ -456,8 +456,9 @@ void SettingsMenu::Draw(
         // Value / Control
         if (row.type == RowType::BoolToggle && row.bTarget) {
             const bool  on    = *row.bTarget;
-            const float pillW = 48.0f * s;
-            const float pillH = 24.0f * s;
+            // Toggle pill — no text label inside; thumb position conveys state.
+            const float pillW = 52.0f * s;
+            const float pillH = 26.0f * s;
             const float px0   = valueR - pillW;
             const float py0   = ry + (kRowH - pillH) * 0.5f;
             const float pr    = pillH * 0.5f;
@@ -479,32 +480,26 @@ void SettingsMenu::Draw(
                 if (pb) { D2D1_ROUNDED_RECT pill{ D2D1::RectF(px0,py0,px0+pillW,py0+pillH), pr, pr };
                     rt->DrawRoundedRectangle(pill, pb.Get(), 0.8f); }
             }
-            // Thumb — small functional dot (intentional, not an artefact)
+            // Thumb — positioned left (off) or right (on), with inset margin
             {
-                const float tx = on ? px0 + pillW - pr : px0 + pr;
+                const float margin = pr * 0.85f;
+                const float tx = on ? px0 + pillW - margin : px0 + margin;
                 const float ty = py0 + pr;
-                const float tr = pr * 0.58f;
+                const float tr = pr * 0.56f;
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> tb;
                 rt->CreateSolidColorBrush(
-                    on ? Tok::ChromeHi(0.96f * ease) : Tok::ChromeMute(0.70f * ease),
+                    on ? Tok::ChromeHi(0.97f * ease) : Tok::ChromeMute(0.68f * ease),
                     tb.GetAddressOf());
                 if (tb) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(tx, ty), tr, tr), tb.Get());
-            }
-            // ON/OFF label inside pill
-            if (dwrite) {
-                Microsoft::WRL::ComPtr<IDWriteTextFormat> tf;
-                dwrite->CreateTextFormat(L"Segoe UI", nullptr,
-                    DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                    9.5f*s, L"en-us", tf.GetAddressOf());
-                if (tf) {
-                    tf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-                    tf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> lb;
-                    rt->CreateSolidColorBrush(
-                        on ? Tok::SurfaceSunken(0.85f * ease) : Tok::ChromeMute(0.55f * ease),
-                        lb.GetAddressOf());
-                    if (lb) rt->DrawText(on ? L"ON" : L"OFF", on ? 2u : 3u, tf.Get(),
-                        D2D1::RectF(px0, py0, px0+pillW, py0+pillH), lb.Get());
+                // Thumb highlight arc (top-edge specular on ON state)
+                if (on) {
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sp;
+                    rt->CreateSolidColorBrush(Tok::White(0.30f * ease), sp.GetAddressOf());
+                    if (sp) rt->FillEllipse(
+                        D2D1::Ellipse(
+                            D2D1::Point2F(tx - tr * 0.25f, ty - tr * 0.30f),
+                            tr * 0.30f, tr * 0.22f),
+                        sp.Get());
                 }
             }
         } else {
