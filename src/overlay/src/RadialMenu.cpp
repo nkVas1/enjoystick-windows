@@ -30,6 +30,41 @@ static float BounceEaseOut(float t) noexcept {
 static float EaseInQuad(float t) noexcept { return t * t; }
 
 // ---------------------------------------------------------------------------
+// Helper — top-edge arc stroke specular (no fill blob)
+// ---------------------------------------------------------------------------
+static void DrawArcSpecular(
+    ID2D1RenderTarget* rt,
+    ID2D1Factory*      fac,
+    float cx, float cy, float r,
+    float alpha) noexcept
+{
+    if (!rt || !fac || r < 2.0f || alpha < 0.004f) return;
+    const float aFrom = -kPi * 0.76f;
+    const float aTo   = -kPi * 0.24f;
+    Microsoft::WRL::ComPtr<ID2D1PathGeometry> g;
+    fac->CreatePathGeometry(g.GetAddressOf());
+    if (!g) return;
+    Microsoft::WRL::ComPtr<ID2D1GeometrySink> s;
+    g->Open(s.GetAddressOf());
+    if (!s) return;
+    const float ar = r - 1.5f;
+    s->BeginFigure(
+        D2D1::Point2F(cx + ar * std::cos(aFrom), cy + ar * std::sin(aFrom)),
+        D2D1_FIGURE_BEGIN_HOLLOW);
+    D2D1_ARC_SEGMENT arc{};
+    arc.point          = D2D1::Point2F(cx + ar * std::cos(aTo), cy + ar * std::sin(aTo));
+    arc.size           = D2D1::SizeF(ar, ar);
+    arc.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
+    arc.arcSize        = D2D1_ARC_SIZE_SMALL;
+    s->AddArc(arc);
+    s->EndFigure(D2D1_FIGURE_END_OPEN);
+    s->Close();
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+    rt->CreateSolidColorBrush(Tok::White(alpha), b.GetAddressOf());
+    if (b) rt->DrawGeometry(g.Get(), b.Get(), 0.9f);
+}
+
+// ---------------------------------------------------------------------------
 // RadialMenu
 // ---------------------------------------------------------------------------
 RadialMenu::RadialMenu(Config config) : m_config(std::move(config)) {}
@@ -162,7 +197,7 @@ Vec2 RadialMenu::PositionForIndex(int32_t index, float cx, float cy, float radiu
 }
 
 // ---------------------------------------------------------------------------
-// Draw  — Futurist Glamour  (v2 — no oval artefacts)
+// Draw  — Futurist Glamour  (v3 — zero oval fill artefacts)
 // ---------------------------------------------------------------------------
 void RadialMenu::Draw(
     void*  renderTargetPtr,
@@ -196,7 +231,7 @@ void RadialMenu::Draw(
         if (b) rt->FillRectangle(D2D1::RectF(0.0f, 0.0f, screenW, screenH), b.Get());
     }
 
-    // ---- Outer ornamental gold ring -----------------------------------------
+    // ---- Outer ornamental gold ring (stroke only) ---------------------------
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldShadow(0.35f * alpha), b.GetAddressOf());
@@ -204,9 +239,10 @@ void RadialMenu::Draw(
             D2D1::Ellipse(D2D1::Point2F(cx,cy), radius + itemR*0.82f, radius + itemR*0.82f),
             b.Get(), 1.2f * s);
     }
+    // Inner concentric ring (stroke only, no fill)
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::GoldGlow(0.20f * alpha), b.GetAddressOf());
+        rt->CreateSolidColorBrush(Tok::GoldShadow(0.18f * alpha), b.GetAddressOf());
         if (b) rt->DrawEllipse(
             D2D1::Ellipse(D2D1::Point2F(cx,cy), radius + itemR*0.52f, radius + itemR*0.52f),
             b.Get(), 0.6f * s);
@@ -266,7 +302,6 @@ void RadialMenu::Draw(
                 sink->EndFigure(D2D1_FIGURE_END_CLOSED);
                 sink->Close();
 
-                // Lit facet fill: SurfaceRaised with subtle gold tint
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fill;
                 rt->CreateSolidColorBrush(
                     Tok::SurfaceRaised(latchPulse * 0.55f * alpha), fill.GetAddressOf());
@@ -299,7 +334,7 @@ void RadialMenu::Draw(
         }
     }
 
-    // ---- Background disc — two solid fills (sunken core + base rim) ---------
+    // ---- Background disc — solid fills (sunken core + base rim) -------------
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::SurfaceBase(0.88f * alpha), b.GetAddressOf());
@@ -317,39 +352,14 @@ void RadialMenu::Draw(
         if (b) rt->DrawEllipse(
             D2D1::Ellipse(D2D1::Point2F(cx,cy), discR, discR), b.Get(), 1.4f * s);
     }
-    // Top-edge luminance arc on disc (replaces oval blob)
-    // A short arc stroke from ~320° to ~40° at discR - 1px, 4% white.
+    // Top-edge specular arc stroke on disc (replaces any oval fill)
     if (factory) {
-        const float arcR  = discR - 1.2f * s;
-        const float aFrom = -kPi * 0.72f; // ~-130° (upper-left)
-        const float aTo   = -kPi * 0.28f; // ~-50°  (upper-right)
-        Microsoft::WRL::ComPtr<ID2D1PathGeometry> arcGeom;
-        factory->CreatePathGeometry(arcGeom.GetAddressOf());
-        if (arcGeom) {
-            Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
-            arcGeom->Open(sink.GetAddressOf());
-            if (sink) {
-                sink->BeginFigure(
-                    D2D1::Point2F(cx + arcR * std::cos(aFrom), cy + arcR * std::sin(aFrom)),
-                    D2D1_FIGURE_BEGIN_HOLLOW);
-                D2D1_ARC_SEGMENT arc{};
-                arc.point         = D2D1::Point2F(cx + arcR * std::cos(aTo), cy + arcR * std::sin(aTo));
-                arc.size          = D2D1::SizeF(arcR, arcR);
-                arc.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
-                arc.arcSize       = D2D1_ARC_SIZE_SMALL;
-                sink->AddArc(arc);
-                sink->EndFigure(D2D1_FIGURE_END_OPEN);
-                sink->Close();
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> wb;
-                rt->CreateSolidColorBrush(Tok::White(0.08f * alpha), wb.GetAddressOf());
-                if (wb) rt->DrawGeometry(arcGeom.Get(), wb.Get(), 1.0f * s);
-            }
-        }
+        DrawArcSpecular(rt, factory.Get(), cx, cy, discR, 0.07f * alpha);
     }
 
     if (m_items.empty()) return;
 
-    // ---- Item circles + icons + labels -------------------------------------
+    // ---- Item circles + icons + labels --------------------------------------
     const float glowBreathe = 0.5f + 0.5f * std::sin(m_glowPhase);
 
     for (int32_t i = 0; i < static_cast<int32_t>(m_items.size()); ++i) {
@@ -362,17 +372,25 @@ void RadialMenu::Draw(
 
         if (iR <= 0.0f) continue;
 
-        // Animated outer glow ring for hovered item
+        // Animated glow for hovered item — two stroke rings (NO fill blobs)
         if (hovered) {
-            const float glowR = iR * (1.55f + 0.12f * glowBreathe);
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g;
-            rt->CreateSolidColorBrush(
-                Tok::GoldGlow((0.22f + 0.12f * glowBreathe) * alpha), g.GetAddressOf());
-            if (g) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(px,py), glowR, glowR), g.Get());
-
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g2;
-            rt->CreateSolidColorBrush(Tok::GoldGlow(0.18f * alpha), g2.GetAddressOf());
-            if (g2) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(px,py), iR * 1.25f, iR * 1.25f), g2.Get());
+            const float g1R = iR * (1.55f + 0.12f * glowBreathe);
+            const float g2R = iR * 1.25f;
+            {
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g;
+                rt->CreateSolidColorBrush(
+                    Tok::GoldGlow((0.30f + 0.14f * glowBreathe) * alpha), g.GetAddressOf());
+                if (g) rt->DrawEllipse(
+                    D2D1::Ellipse(D2D1::Point2F(px,py), g1R, g1R),
+                    g.Get(), 3.5f * s);
+            }
+            {
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g2;
+                rt->CreateSolidColorBrush(Tok::GoldGlow(0.20f * alpha), g2.GetAddressOf());
+                if (g2) rt->DrawEllipse(
+                    D2D1::Ellipse(D2D1::Point2F(px,py), g2R, g2R),
+                    g2.Get(), 1.5f * s);
+            }
         }
 
         // Circle fill (sunken deep)
@@ -381,13 +399,14 @@ void RadialMenu::Draw(
             rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.90f * alpha), b.GetAddressOf());
             if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(px,py), iR, iR), b.Get());
         }
-        // Inner raised surface (creates depth — like a pressed button face)
+        // Inner face: single SurfaceRaised fill (hovered) or SurfaceBase (idle)
+        // NO separate inner-circle oval blob — border contrast creates the depth
         {
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
             rt->CreateSolidColorBrush(
-                hovered ? Tok::SurfaceRaised(0.80f * alpha) : Tok::SurfaceBase(0.68f * alpha),
+                hovered ? Tok::SurfaceRaised(0.72f * alpha) : Tok::SurfaceBase(0.58f * alpha),
                 b.GetAddressOf());
-            if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(px,py), iR * 0.72f, iR * 0.72f), b.Get());
+            if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(px,py), iR * 0.82f, iR * 0.82f), b.Get());
         }
 
         // Circle border
@@ -409,6 +428,11 @@ void RadialMenu::Draw(
                 if (bv) rt->DrawEllipse(
                     D2D1::Ellipse(D2D1::Point2F(px,py), bevelR, bevelR), bv.Get(), 0.8f * s);
             }
+        }
+        // Top specular arc stroke (replaces oval fill blob entirely)
+        if (factory) {
+            DrawArcSpecular(rt, factory.Get(), px, py, iR,
+                (hovered ? 0.09f : 0.04f) * alpha);
         }
 
         if (!dwrite) continue;
@@ -460,7 +484,7 @@ void RadialMenu::Draw(
         }
     }
 
-    // ---- Centre disc: active label + button hint ---------------------------
+    // ---- Centre disc: active label + button hint ----------------------------
     if (dwrite && displayHovered >= 0) {
         const wchar_t* hint = m_items[static_cast<size_t>(displayHovered)].label.c_str();
         if (hint && hint[0] != L'\0') {
