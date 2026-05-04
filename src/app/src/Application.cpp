@@ -106,6 +106,19 @@ static void SendBrowserTab(bool forward) noexcept {
     if (!forward) SendKey(VK_SHIFT, false);
 }
 
+// Synthesise a proper OS double-click: two down/up pairs spaced within
+// GetDoubleClickTime() so the window manager counts them as one event.
+static void SendDoubleClick(DWORD flags_down, DWORD flags_up) noexcept {
+    const DWORD gap = std::min(GetDoubleClickTime() / 3, static_cast<DWORD>(80));
+    INPUT inp[2]{};
+    inp[0].type = inp[1].type = INPUT_MOUSE;
+    inp[0].mi.dwFlags = flags_down;
+    inp[1].mi.dwFlags = flags_up;
+    SendInput(2, inp, sizeof(INPUT));
+    Sleep(gap);
+    SendInput(2, inp, sizeof(INPUT));
+}
+
 } // anonymous namespace
 
 // ---------------------------------------------------------------------------
@@ -407,8 +420,9 @@ private:
 
         // -----------------------------------------------------------------
         // Guide-chord combos:
-        //   Guide alone (release) → Radial menu toggle
-        //   Guide + Start         → Settings
+        //   Guide alone (release)  → Radial menu toggle
+        //   Guide + Start          → Settings
+        //   Guide + LB             → Virtual keyboard  (alternative binding)
         // -----------------------------------------------------------------
         if (pressed(Button::Guide)) {
             m_guideChordUsed = false;
@@ -422,6 +436,11 @@ private:
                 } else {
                     OpenSettingsMenu();
                 }
+                return;
+            }
+            if (pressed(Button::LB)) {
+                m_guideChordUsed = true;
+                if (!kbOpen) OpenKeyboard();
                 return;
             }
         }
@@ -443,10 +462,7 @@ private:
         // Must not be combined with Guide (handled above)
         // -----------------------------------------------------------------
         if (pressed(Button::Start) && !held(Button::Guide)) {
-            if (kbOpen) {
-                // already handled above, but guard anyway
-            } else if (radialOpen) {
-                // Options inside radial: open keyboard directly
+            if (radialOpen) {
                 m_overlay->GetRadialMenu().Close();
                 OpenKeyboard();
             } else {
@@ -481,6 +497,11 @@ private:
                 if (pressed(Button::RB)) { SendBrowserTab(true);  }
             }
 
+            // LS press → proper OS double-click (respects system double-click time)
+            if (pressed(Button::LS)) {
+                SendDoubleClick(MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP);
+            }
+
             if (pressed(Button::North)) m_virtualMouse->MiddleClick();
 
             if (pressed(Button::West)) {
@@ -488,31 +509,32 @@ private:
                 SendXButton(XBUTTON1, false);
             }
 
-            if (pressed(Button::DPadLeft)) {
+            // Select (Back) held + DPad → fast scroll (5× multiplier)
+            // This lets users rapidly scroll long pages without moving the stick.
+            const bool selectHeld = held(Button::Select);
+            const int scrollMult = selectHeld ? 5 : 1;
+
+            if (pressed(Button::DPadLeft) && !selectHeld) {
                 SendKey(VK_MENU,  true,  true);
                 SendKey(VK_LEFT,  true,  true);
                 SendKey(VK_LEFT,  false, true);
                 SendKey(VK_MENU,  false, true);
             }
-            if (pressed(Button::DPadRight)) {
+            if (pressed(Button::DPadRight) && !selectHeld) {
                 SendKey(VK_MENU,  true,  true);
                 SendKey(VK_RIGHT, true,  true);
                 SendKey(VK_RIGHT, false, true);
                 SendKey(VK_MENU,  false, true);
             }
-            if (pressed(Button::DPadUp))   SendScrollLines(+1);
-            if (pressed(Button::DPadDown)) SendScrollLines(-1);
+            if (pressed(Button::DPadUp))   SendScrollLines(+scrollMult);
+            if (pressed(Button::DPadDown)) SendScrollLines(-scrollMult);
 
-            if (pressed(Button::Select)) {
+            // Select alone (no DPad) → Win+Tab (task view)
+            if (!selectHeld && pressed(Button::Select)) {
                 SendKey(VK_LWIN, true);
                 SendKey(VK_TAB,  true,  true);
                 SendKey(VK_TAB,  false, true);
                 SendKey(VK_LWIN, false);
-            }
-
-            if (pressed(Button::LS)) {
-                m_virtualMouse->LeftClick();
-                m_virtualMouse->LeftClick();
             }
 
             // RS press → open keyboard (alternative binding)
@@ -560,8 +582,8 @@ private:
         if (typeLabel.empty()) typeLabel = L"Controller";
 
         const std::wstring msg = connected
-            ? (L"\U0001F3AE  " + typeLabel + L" connected")
-            : (L"\u26A0  "     + typeLabel + L" disconnected");
+            ? (L"[OK] \U0001F3AE  " + typeLabel + L" connected")
+            : (L"[WARN] \u26A0  "   + typeLabel + L" disconnected");
 
         if (m_overlay) m_overlay->ShowToast(msg);
         if (m_tray)    m_tray->ShowBalloon(L"EnjoyStick", msg);
