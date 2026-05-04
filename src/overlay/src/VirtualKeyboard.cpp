@@ -37,7 +37,6 @@ static constexpr float kFSpec_base  = 17.0f;
 static constexpr float kFText_base  = 17.0f;
 static constexpr float kFHint_base  = 12.0f;
 static constexpr float kFBadge_base = 11.0f;
-// Gold accent bar height at top of panel
 static constexpr float kAccentH_base = 3.0f;
 
 // ---------------------------------------------------------------------------
@@ -206,7 +205,6 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     const bool rb    = HasButton(state.buttons, Button::RB);
     const bool ls    = HasButton(state.buttons, Button::LS);
 
-    // Edge-detect all face buttons and shoulder buttons
     if (east  && !m_prevEast)  { Close(); goto done; }
     if (north && !m_prevNorth) { if (m_onSubmit) m_onSubmit(m_text); Close(); goto done; }
     if (west  && !m_prevWest)  { if (!m_text.empty()) m_text.pop_back(); goto done; }
@@ -216,6 +214,7 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     if (south && !m_prevSouth) {
         if (const Key* k = CurrentKey()) {
             TypeKey(*k);
+            // Trigger scale pop animation on key press
             m_cursorScaleSpring.value    = 1.18f;
             m_cursorScaleSpring.velocity = 0.0f;
             m_cursorScaleSpring.SetTarget(1.0f);
@@ -224,13 +223,12 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     }
 
     {
-        // Left stick navigates the grid.
-        // Deadzone raised to 0.50 for deliberate snap-to-key behaviour:
-        // the cursor "snaps" to a key and won't drift to the next unless
-        // the user gives a clear intentional push past the threshold.
         const float lx = state.leftStick.x;
         const float ly = state.leftStick.y;
-        const float dz = 0.50f;  // was 0.35 — tighter snap deadzone
+        // kSnapDeadzone: high threshold for deliberate magnetic snap.
+        // At 0.50 the stick must move clearly off-centre to jump to the next key,
+        // giving a satisfying "lock onto key" feel when released back to centre.
+        const float dz = kSnapDeadzone;
         const bool  hx = std::abs(lx) > dz;
         const bool  hy = std::abs(ly) > dz;
         if (hx || hy) {
@@ -278,7 +276,6 @@ void VirtualKeyboard::TypeKey(const Key& k) {
 // ---------------------------------------------------------------------------
 namespace {
 
-/// Thin specular arc on the top face of a keycap.
 static void DrawArcSpecular(
     ID2D1RenderTarget* rt, ID2D1Factory* fac,
     float cx, float cy, float rx, float ry, float alpha) noexcept
@@ -311,7 +308,6 @@ static void DrawArcSpecular(
     if (b) rt->DrawGeometry(g.Get(), b.Get(), 0.9f);
 }
 
-/// Draw a compact button-label chip: e.g. "[Y] Submit"
 static void DrawHintChip(
     ID2D1RenderTarget* rt, IDWriteFactory* dwrite,
     float x, float cy, float s, float ease,
@@ -334,9 +330,9 @@ static void DrawHintChip(
     lay->GetMetrics(&tm);
 
     const float padH = 7.0f * s, padV = 4.0f * s;
-    const float cw = tm.width + padH * 2.0f;
-    const float ch = tm.height + padV * 2.0f;
-    const float cy0 = cy - ch * 0.5f;
+    const float cw   = tm.width + padH * 2.0f;
+    const float ch   = tm.height + padV * 2.0f;
+    const float cy0  = cy - ch * 0.5f;
 
     { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
       rt->CreateSolidColorBrush(chipCol, b.GetAddressOf());
@@ -351,9 +347,8 @@ static void DrawHintChip(
 } // anon
 
 // ---------------------------------------------------------------------------
-// Draw  — "Futurist Glamour" v6
-// Glow halo around selected key is now a refined, thin ring instead of a
-// thick blurry blob — much less visual noise, key stays readable.
+// Draw  — Futurist Glamour v6
+// Selection indicator: two thin elegant rings instead of heavy glow blob.
 // ---------------------------------------------------------------------------
 void VirtualKeyboard::Draw(
     void*  renderTargetPtr,
@@ -398,13 +393,12 @@ void VirtualKeyboard::Draw(
                         + static_cast<float>(m_rows.size()) * (kKeyH + kGap) - kGap
                         + kHintH + kPadY;
 
-    // Slide-up animation
     const float targetY = screenH - kPanelH - 20.0f * s;
     const float panelY  = targetY + (1.0f - panelVal) * (screenH - targetY + 20.0f * s);
     const float panelX  = (screenW - kPanelW) * 0.5f;
     const float panelR  = 14.0f * s;
 
-    // ---- Panel fill (deep obsidian) ------------------------------------------
+    // ---- Panel fill ----------------------------------------------------------
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::SurfaceBase(0.96f * ease), b.GetAddressOf());
@@ -412,25 +406,13 @@ void VirtualKeyboard::Draw(
                  rt->FillRoundedRectangle(rr, b.Get()); }
     }
 
-    // ---- Gold accent bar at top of panel -------------------------------------
-    {
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::GoldMid(0.88f * ease), b.GetAddressOf());
-        if (b) {
-            const float bx0 = panelX + panelR;
-            const float bx1 = panelX + kPanelW - panelR;
-            const float by  = panelY;
-            rt->FillRectangle(D2D1::RectF(bx0, by, bx1, by + kAccH), b.Get());
-        }
-    }
-    // Rounded top cap for accent bar
+    // ---- Gold accent bar at top (rounded cap, then re-mask) ------------------
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldMid(0.88f * ease), b.GetAddressOf());
         if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX, panelY, panelX+kPanelW, panelY + kAccH + panelR), panelR, panelR};
                  rt->FillRoundedRectangle(rr, b.Get()); }
     }
-    // Re-fill top portion to mask accent overflow
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::SurfaceBase(0.96f * ease), b.GetAddressOf());
@@ -498,7 +480,7 @@ void VirtualKeyboard::Draw(
             b.Get(), 1.8f * s);
     }
 
-    // ---- Hint bar (button chips) --------------------------------------------
+    // ---- Hint bar ------------------------------------------------------------
     {
         const float hy  = panelY + kPanelH - kHintH - kPadY * 0.55f;
         const float hcy = hy + kHintH * 0.5f;
@@ -545,34 +527,36 @@ void VirtualKeyboard::Draw(
 
     const float cursorGlowX = m_cursorSpringX.value;
     const float cursorGlowY = m_cursorSpringY.value + panelY;
+    const float scl         = m_cursorScaleSpring.value;
 
-    // ---- Refined selection halo (replaces heavy glow blob) ------------------
-    // Two thin rings instead of a thick stroke: subtle presence, no visual noise.
+    // ---- Selection indicator: two thin rings (replaces heavy glow blob) -----
+    // The key's half-extents, scaled by the press spring.
+    const float keyWidthMul = (m_col >= 0 && m_col < RowKeyCount(m_row))
+        ? m_rows[static_cast<size_t>(m_row)][static_cast<size_t>(m_col)].widthMul : 1.0f;
+    const float gW = kKeyW * 0.52f * scl * keyWidthMul;
+    const float gH = kKeyH * 0.52f * scl;
+
+    // Outer breath ring — soft gold, pulses with glowBreathe
     {
-        const float scl = m_cursorScaleSpring.value;
-        const float gR  = kKeyH * 0.52f * scl;
-        const float gW  = kKeyW * 0.52f * scl *
-            (m_col >= 0 && m_col < RowKeyCount(m_row)
-                ? m_rows[static_cast<size_t>(m_row)][static_cast<size_t>(m_col)].widthMul : 1.0f);
-        // Outer thin ring — soft gold breath
-        {
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g;
-            rt->CreateSolidColorBrush(
-                Tok::GoldGlow((0.20f + 0.08f * glowBreathe) * ease), g.GetAddressOf());
-            if (g) rt->DrawEllipse(
-                D2D1::Ellipse(D2D1::Point2F(cursorGlowX, cursorGlowY),
-                              gW * 1.08f, gR * 1.08f), g.Get(), 2.0f * s);
-        }
-        // Inner accent ring — crisper gold
-        {
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g;
-            rt->CreateSolidColorBrush(Tok::GoldGlow(0.10f * ease), g.GetAddressOf());
-            if (g) rt->DrawEllipse(
-                D2D1::Ellipse(D2D1::Point2F(cursorGlowX, cursorGlowY),
-                              gW * 0.72f, gR * 0.72f), g.Get(), 1.0f * s);
-        }
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g;
+        rt->CreateSolidColorBrush(
+            Tok::GoldGlow((0.20f + 0.08f * glowBreathe) * ease), g.GetAddressOf());
+        if (g) rt->DrawEllipse(
+            D2D1::Ellipse(D2D1::Point2F(cursorGlowX, cursorGlowY),
+                          gW * 1.10f, gH * 1.10f),
+            g.Get(), 1.8f * s);
+    }
+    // Inner crisp ring — steady gold, slightly inside key
+    {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g;
+        rt->CreateSolidColorBrush(Tok::GoldGlow(0.09f * ease), g.GetAddressOf());
+        if (g) rt->DrawEllipse(
+            D2D1::Ellipse(D2D1::Point2F(cursorGlowX, cursorGlowY),
+                          gW * 0.70f, gH * 0.70f),
+            g.Get(), 0.9f * s);
     }
 
+    // ---- Per-key rendering --------------------------------------------------
     for (int32_t ri = 0; ri < static_cast<int32_t>(m_rows.size()); ++ri) {
         const auto& row = m_rows[static_cast<size_t>(ri)];
         const float ry  = keysTop + static_cast<float>(ri) * (kKeyH + kGap);
@@ -587,12 +571,12 @@ void VirtualKeyboard::Draw(
             const bool  sel = (ri == m_row && ci == m_col);
             const float kCx = rx + kw * 0.5f;
             const float kCy = ry + kKeyH * 0.5f;
-            const float scl = sel ? m_cursorScaleSpring.value : 1.0f;
-            const float skw = kw    * scl;
-            const float skh = kKeyH * scl;
+            const float sc2 = sel ? m_cursorScaleSpring.value : 1.0f;
+            const float skw = kw    * sc2;
+            const float skh = kKeyH * sc2;
             const float sRx = kCx - skw * 0.5f;
             const float sRy = kCy - skh * 0.5f;
-            const float cr  = kCorner * scl;
+            const float cr  = kCorner * sc2;
 
             { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
               rt->CreateSolidColorBrush(
@@ -611,12 +595,13 @@ void VirtualKeyboard::Draw(
                   std::max(cr-ins, 0.0f), std::max(cr-ins, 0.0f) };
                   rt->FillRoundedRectangle(rr, b.Get()); } }
 
+            // Key border — selected: crisp gold; unselected: dim
             { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
               rt->CreateSolidColorBrush(
-                  sel ? Tok::GoldHi(0.96f * ease) : Tok::InkLine(0.80f * ease),
+                  sel ? Tok::GoldHi(0.88f * ease) : Tok::InkLine(0.80f * ease),
                   b.GetAddressOf());
               if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh), cr, cr};
-                       rt->DrawRoundedRectangle(rr, b.Get(), sel ? 1.6f : 0.75f); } }
+                       rt->DrawRoundedRectangle(rr, b.Get(), sel ? 1.4f : 0.75f); } }
 
             { const float bi = 1.0f;
               Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
@@ -637,7 +622,7 @@ void VirtualKeyboard::Draw(
             if (dwrite) {
                 const std::wstring disp = KeyDisplay(k);
                 if (!disp.empty()) {
-                    const float fs = (k.isSpecial ? kFSpec_base : kFKey_base) * s * scl;
+                    const float fs = (k.isSpecial ? kFSpec_base : kFKey_base) * s * sc2;
                     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
                     dwrite->CreateTextFormat(
                         k.isSpecial ? L"Segoe UI Symbol" : L"Segoe UI", nullptr,
