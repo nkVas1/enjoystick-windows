@@ -3,6 +3,7 @@
 #include <enjoystick/shared/Types.hpp>
 
 #include <functional>
+#include <string>
 #include <vector>
 
 namespace enjoystick::overlay {
@@ -40,7 +41,7 @@ public:
     void SetOnChanged(OnChangedCallback cb) { m_onChange = std::move(cb); }
 
 private:
-    enum class RowType : uint8_t { FloatSlider, BoolToggle };
+    enum class RowType : uint8_t { FloatSlider, BoolToggle, SectionHeader };
     struct Row {
         const wchar_t* label   = nullptr;
         RowType        type    = RowType::FloatSlider;
@@ -58,6 +59,11 @@ private:
     void UpdateAnimation(float deltaSeconds);
     void AdjustSelected(float direction, bool repeat);
     void CommitChange();
+    void ResetToDefaults();
+
+    // Returns index of the next/previous interactive (non-header) row
+    [[nodiscard]] int32_t NextInteractiveRow(int32_t from, int32_t dir) const noexcept;
+    [[nodiscard]] bool    IsInteractiveRow(int32_t idx) const noexcept;
 
     static constexpr float kAnimMs   = 160.0f;
     static constexpr float kRepeatHz = 8.0f;
@@ -72,6 +78,7 @@ private:
 
     bool m_prevSouth  = false;
     bool m_prevEast   = false;
+    bool m_prevNorth  = false;
     bool m_prevDUp    = false;
     bool m_prevDDown  = false;
     bool m_prevDLeft  = false;
