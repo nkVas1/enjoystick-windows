@@ -1,6 +1,7 @@
 #pragma once
 
 #include <enjoystick/shared/Types.hpp>
+#include "../../src/Overlay_SpringAnim.hpp"
 
 #include <functional>
 #include <string>
@@ -25,6 +26,11 @@ namespace enjoystick::overlay {
 // The keyboard calls OnChar for every character typed and OnSubmit when
 // the user confirms. The caller owns the accumulated string and may pass
 // a seed string via Open().
+//
+// Animation model (v4):
+//   Panel slide-in: FloatSpring (stiffness=320, damping=24), 0→1
+//   Cursor glow:    FloatSpring x/y (stiffness=480, damping=26)
+//   Key scale pop:  FloatSpring (stiffness=600, damping=28), 1.18→1
 // ---------------------------------------------------------------------------
 
 class VirtualKeyboard {
@@ -58,10 +64,10 @@ public:
 private:
     // ---- Key grid -----------------------------------------------------------
     struct Key {
-        std::wstring label;       // normal label
-        std::wstring shiftLabel;  // Shift / Caps label
-        std::wstring symLabel;    // symbol layer label
-        float        widthMul = 1.0f; // relative width (1 = one unit)
+        std::wstring label;         // normal label
+        std::wstring shiftLabel;    // Shift / Caps label
+        std::wstring symLabel;      // symbol layer label
+        float        widthMul = 1.0f;
         bool         isSpecial = false;
     };
 
@@ -73,7 +79,7 @@ private:
     // grid
     std::vector<std::vector<Key>> m_rows;
 
-    // cursor
+    // cursor (logical grid)
     int32_t m_row = 0;
     int32_t m_col = 0;
 
@@ -84,12 +90,17 @@ private:
     bool    m_stickActive = false;
 
     // state
-    State   m_state        = State::Hidden;
-    float   m_animProgress = 0.0f;
-    float   m_glowPhase    = 0.0f;
-    Layer   m_layer        = Layer::Alpha;
-    bool    m_shift        = false;
-    bool    m_caps         = false;
+    State   m_state     = State::Hidden;
+    float   m_glowPhase = 0.0f;
+    Layer   m_layer     = Layer::Alpha;
+    bool    m_shift     = false;
+    bool    m_caps      = false;
+
+    // Spring animations (mutable so Draw() can update targets in const context)
+    mutable FloatSpring m_panelSpring;       // 0 = hidden, 1 = fully visible
+    mutable FloatSpring m_cursorSpringX;     // screen-space X of cursor glow
+    mutable FloatSpring m_cursorSpringY;     // panel-relative Y of cursor glow
+    mutable FloatSpring m_cursorScaleSpring; // key scale pop (1.0 → 1.18 → 1.0)
 
     // accumulated text
     std::wstring m_text;
@@ -113,8 +124,9 @@ private:
     void TypeKey(const Key& k);
     void NavigateTo(int32_t row, int32_t col);
     [[nodiscard]] int32_t RowKeyCount(int32_t row) const noexcept;
-
-    static constexpr float kAnimMs = 180.0f;
+    [[nodiscard]] Vec2    KeyCentrePixel(int32_t row, int32_t col,
+                                         float dpiScale,
+                                         float screenW, float screenH) const noexcept;
 };
 
 } // namespace enjoystick::overlay
