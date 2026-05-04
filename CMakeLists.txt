@@ -53,10 +53,6 @@ endif()
 
 # ---------------------------------------------------------------------------
 # Third-party: nlohmann/json  (header-only, fetched at configure time)
-#
-# We download only the single-file amalgam so the source tree stays clean.
-# The file lands in <build>/third_party/nlohmann/json.hpp and is exposed
-# through the NLOHMANN_JSON_INCLUDE_DIR variable used by enjoystick_config.
 # ---------------------------------------------------------------------------
 include(FetchContent)
 
@@ -103,8 +99,19 @@ endforeach()
 
 # ---------------------------------------------------------------------------
 # Executable
+#
+# enjoystick_app_rc is an OBJECT library (WIN32 only) that compiles the .rc
+# file so embedded resources (icon, manifest) end up inside EnjoyStick.exe.
+# STATIC libraries silently drop .res objects, so we use $<TARGET_OBJECTS:...>.
 # ---------------------------------------------------------------------------
-add_executable(enjoystick WIN32 src/main.cpp)
+if (WIN32 AND TARGET enjoystick_app_rc)
+    add_executable(enjoystick WIN32
+        src/main.cpp
+        $<TARGET_OBJECTS:enjoystick_app_rc>
+    )
+else()
+    add_executable(enjoystick WIN32 src/main.cpp)
+endif()
 
 target_link_libraries(enjoystick PRIVATE enjoystick_app)
 target_compile_features(enjoystick PRIVATE cxx_std_20)
