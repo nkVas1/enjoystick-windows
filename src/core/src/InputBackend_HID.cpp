@@ -54,17 +54,28 @@ HidBackend::HidBackend(Config cfg, DeadzoneFilter filter)
 
 HidBackend::~HidBackend() {
     Stop();
-    if (m_device != INVALID_HANDLE_VALUE) {
-        CloseHandle(m_device);
-        m_device = INVALID_HANDLE_VALUE;
-    }
+    CloseDevice();
 }
 
 // ---------------------------------------------------------------------------
-// TryOpen
+// CloseDevice — release the device handle and clear path
 // ---------------------------------------------------------------------------
 
-bool HidBackend::TryOpen() {
+void HidBackend::CloseDevice() noexcept {
+    if (m_device != INVALID_HANDLE_VALUE) {
+        CancelIoEx(m_device, nullptr);
+        CloseHandle(m_device);
+        m_device = INVALID_HANDLE_VALUE;
+    }
+    m_isBt = false;
+    m_devicePath.clear();
+}
+
+// ---------------------------------------------------------------------------
+// OpenDevice — enumerate HID and open first matching DualSense
+// ---------------------------------------------------------------------------
+
+bool HidBackend::OpenDevice() {
     GUID hidGuid;
     HidD_GetHidGuid(&hidGuid);
 
@@ -127,6 +138,14 @@ bool HidBackend::TryOpen() {
 }
 
 // ---------------------------------------------------------------------------
+// TryOpen — public one-shot open (used by InputEngine::Create for auto-select)
+// ---------------------------------------------------------------------------
+
+bool HidBackend::TryOpen() {
+    return OpenDevice();
+}
+
+// ---------------------------------------------------------------------------
 // Start / Stop
 // ---------------------------------------------------------------------------
 
@@ -134,21 +153,61 @@ void HidBackend::Start() {
     if (m_running.exchange(true)) return;
     m_thread = std::thread([this] {
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+        // Initial connection event if device was already opened by TryOpen().
         if (m_device != INVALID_HANDLE_VALUE) {
             { std::unique_lock lk(m_stateMutex); m_connected = true; }
             FireConnection(ControllerId{0}, ConnectionEvent::Connected);
+            PollLoop();
         }
-        PollLoop();
+        // After PollLoop exits (disconnect or first-run no-device), enter reconnect loop.
+        ReconnectLoop();
     });
 }
 
 void HidBackend::Stop() {
     if (!m_running.exchange(false)) return;
+    // CancelIoEx unblocks any pending ReadFile; CloseHandle will be called in
+    // CloseDevice() via the destructor or the next ReconnectLoop iteration.
     if (m_device != INVALID_HANDLE_VALUE) CancelIoEx(m_device, nullptr);
     if (m_thread.joinable()) m_thread.join();
-    if (m_connected) {
-        m_connected = false;
-        FireConnection(ControllerId{0}, ConnectionEvent::Disconnected);
+    // Ensure disconnected event is fired if the thread didn’t manage to do it.
+    {
+        std::unique_lock lk(m_stateMutex);
+        if (m_connected) {
+            m_connected = false;
+            lk.unlock();
+            FireConnection(ControllerId{0}, ConnectionEvent::Disconnected);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ReconnectLoop — re-enumerate every kReconnectIntervalMs until found or Stop()
+// ---------------------------------------------------------------------------
+
+void HidBackend::ReconnectLoop() {
+    while (m_running.load(std::memory_order_relaxed)) {
+        // Sleep in small increments so Stop() wakes us promptly.
+        for (DWORD slept = 0;
+             slept < kReconnectIntervalMs && m_running.load(std::memory_order_relaxed);
+             slept += 100)
+        {
+            Sleep(100);
+        }
+
+        if (!m_running.load(std::memory_order_relaxed)) return;
+
+        CloseDevice();
+        if (!OpenDevice()) continue;  // device still not present, keep waiting
+
+        // Device found — announce and start polling.
+        {
+            std::unique_lock lk(m_stateMutex);
+            m_connected = true;
+        }
+        FireConnection(ControllerId{0}, ConnectionEvent::Connected);
+        PollLoop();
+        // PollLoop() returns on error/disconnect: loop back and wait again.
     }
 }
 
@@ -159,7 +218,7 @@ void HidBackend::Stop() {
 void HidBackend::PollLoop() {
     if (m_device == INVALID_HANDLE_VALUE) return;
 
-    std::vector<uint8_t> buf(kRptSize + 16, 0);
+    std::vector<uint8_t> buf(kRptSizeBt + 16, 0);
     OVERLAPPED ov{};
     ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!ov.hEvent) return;
@@ -174,10 +233,13 @@ void HidBackend::PollLoop() {
             const DWORD err = GetLastError();
             if (err == ERROR_IO_PENDING) {
                 const DWORD w = WaitForSingleObject(ov.hEvent, 100);
-                if (w == WAIT_OBJECT_0)
-                    GetOverlappedResult(m_device, &ov, &bytesRead, FALSE);
-                else
-                    continue;
+                if (w == WAIT_OBJECT_0) {
+                    if (!GetOverlappedResult(m_device, &ov, &bytesRead, FALSE)) {
+                        break;  // I/O error — device disconnected
+                    }
+                } else {
+                    continue;  // timeout, keep polling
+                }
             } else {
                 break;  // device disconnected
             }
@@ -202,6 +264,7 @@ void HidBackend::PollLoop() {
 
     CloseHandle(ov.hEvent);
 
+    // Fire disconnect event; CloseDevice() will be called by ReconnectLoop.
     {
         std::unique_lock lk(m_stateMutex);
         if (m_connected) {
