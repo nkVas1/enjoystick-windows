@@ -1,0 +1,120 @@
+#pragma once
+
+#include <enjoystick/shared/Types.hpp>
+
+#include <functional>
+#include <string>
+#include <vector>
+
+namespace enjoystick::overlay {
+
+// ---------------------------------------------------------------------------
+// VirtualKeyboard
+//
+// Gamepad-driven on-screen QWERTY keyboard.
+//
+// Controls (standard layout):
+//   Left stick  — move cursor (spring-snapping between keys)
+//   South (A)   — type highlighted key
+//   West  (X)   — backspace
+//   East  (B)   — close (cancel)
+//   North (Y)   — confirm / submit text
+//   LB / RB     — switch to symbol layer / back
+//   L3 (click)  — toggle Caps Lock
+//
+// The keyboard calls OnChar for every character typed and OnSubmit when
+// the user confirms. The caller owns the accumulated string and may pass
+// a seed string via Open().
+// ---------------------------------------------------------------------------
+
+class VirtualKeyboard {
+public:
+    using OnCharCallback   = std::function<void(wchar_t ch)>;
+    using OnSubmitCallback = std::function<void(const std::wstring& text)>;
+
+    VirtualKeyboard() = default;
+    ~VirtualKeyboard() = default;
+
+    // ---- Lifecycle ----------------------------------------------------------
+    void Open (const std::wstring& seed = L"");
+    void Close();
+    [[nodiscard]] bool IsOpen() const noexcept;
+
+    // ---- Callbacks ----------------------------------------------------------
+    void SetOnChar  (OnCharCallback   cb) { m_onChar   = std::move(cb); }
+    void SetOnSubmit(OnSubmitCallback cb) { m_onSubmit = std::move(cb); }
+
+    // ---- Frame --------------------------------------------------------------
+    void Update(const ControllerState& state, float deltaSeconds);
+    void Draw  (void* renderTargetPtr,
+                void* dwriteFactoryPtr,
+                float dpiScale,
+                float screenW,
+                float screenH) const;
+
+    // ---- Text state (read-only) --------------------------------------------
+    [[nodiscard]] const std::wstring& GetText() const noexcept { return m_text; }
+
+private:
+    // ---- Key grid -----------------------------------------------------------
+    struct Key {
+        std::wstring label;       // normal label
+        std::wstring shiftLabel;  // Shift / Caps label
+        std::wstring symLabel;    // symbol layer label
+        float        widthMul = 1.0f; // relative width (1 = one unit)
+        bool         isSpecial = false;
+    };
+
+    enum class Layer : uint8_t { Alpha, Sym };
+    enum class State : uint8_t { Hidden, Opening, Visible, Closing };
+
+    void  BuildLayout();
+
+    // grid
+    std::vector<std::vector<Key>> m_rows;
+
+    // cursor
+    int32_t m_row = 0;
+    int32_t m_col = 0;
+
+    // navigation
+    float   m_stickCooldown = 0.0f;
+    static constexpr float kStickRepeatFirst = 0.35f;
+    static constexpr float kStickRepeatNext  = 0.10f;
+    bool    m_stickActive = false;
+
+    // state
+    State   m_state        = State::Hidden;
+    float   m_animProgress = 0.0f;
+    float   m_glowPhase    = 0.0f;
+    Layer   m_layer        = Layer::Alpha;
+    bool    m_shift        = false;
+    bool    m_caps         = false;
+
+    // accumulated text
+    std::wstring m_text;
+
+    // callbacks
+    OnCharCallback   m_onChar;
+    OnSubmitCallback m_onSubmit;
+
+    // button edge detection
+    bool m_prevSouth = false;
+    bool m_prevEast  = false;
+    bool m_prevWest  = false;
+    bool m_prevNorth = false;
+    bool m_prevLB    = false;
+    bool m_prevRB    = false;
+    bool m_prevLS    = false;
+
+    // helpers
+    [[nodiscard]] const Key* CurrentKey() const noexcept;
+    [[nodiscard]] std::wstring KeyDisplay(const Key& k) const;
+    void TypeKey(const Key& k);
+    void NavigateTo(int32_t row, int32_t col);
+    [[nodiscard]] int32_t RowKeyCount(int32_t row) const noexcept;
+
+    static constexpr float kAnimMs = 180.0f;
+};
+
+} // namespace enjoystick::overlay
