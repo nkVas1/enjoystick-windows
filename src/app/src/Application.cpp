@@ -45,7 +45,7 @@ static cursor::VirtualMouse::Config VMConfigFromSettings(
 }
 
 // ---------------------------------------------------------------------------
-// Helper: convert VirtualMouse::Config -> SettingsMenu::Values
+// Helper: convert VirtualMouse::Config + DeadzoneConfig -> SettingsMenu::Values
 // ---------------------------------------------------------------------------
 
 static overlay::SettingsMenu::Values SettingsValuesFromConfig(
@@ -59,8 +59,8 @@ static overlay::SettingsMenu::Values SettingsValuesFromConfig(
     v.scrollSpeed      = c.scrollSpeed;
     v.triggersAsClicks = c.triggersAsClicks;
     v.useRightStick    = c.useRightStick;
-    v.dzInner          = dz.inner;
-    v.dzOuter          = dz.outer;
+    v.dzInner          = dz.innerRadius;   // was dz.inner — field is innerRadius
+    v.dzOuter          = dz.outerRadius;   // was dz.outer — field is outerRadius
     return v;
 }
 
@@ -165,7 +165,6 @@ private:
                 []{ ShellExecuteW(nullptr, L"open", L"explorer.exe",
                                   nullptr, nullptr, SW_SHOW); } },
             RM{ L"Settings", L"\u2699",
-                // Open the in-overlay EnjoyStick settings panel
                 [this]{ OpenSettingsMenu(); } },
             RM{ L"Search",   L"\U0001F50D",
                 []{ keybd_event(VK_LWIN, 0, 0, 0);
@@ -182,9 +181,6 @@ private:
 
     // -----------------------------------------------------------------------
     // SetupSettingsMenu
-    //
-    // Wire the OnChanged callback so every value change is immediately
-    // persisted to config.json and applied to the live subsystems.
     // -----------------------------------------------------------------------
 
     void SetupSettingsMenu() {
@@ -197,11 +193,11 @@ private:
 
                 // Update deadzone config
                 core::DeadzoneConfig dz;
-                dz.inner = v.dzInner;
-                dz.outer = v.dzOuter;
+                dz.innerRadius = v.dzInner;   // was dz.inner
+                dz.outerRadius = v.dzOuter;   // was dz.outer
                 m_config->SetDeadzoneConfig(dz);
 
-                // Short haptic confirmation (non-blocking)
+                // Short haptic confirmation
                 if (m_inputEngine)
                     m_inputEngine->Rumble(ControllerId{0}, {0.0f, 0.20f, 30});
             }
@@ -216,7 +212,6 @@ private:
         const auto& cfg = m_config->Get();
         const auto vals = SettingsValuesFromConfig(cfg.cursor, cfg.deadzone);
         m_overlay->GetSettingsMenu().Open(vals);
-        // Close RadialMenu so it doesn't stay visible underneath
         m_overlay->GetRadialMenu().Close();
     }
 
@@ -289,12 +284,10 @@ private:
             } else if (held(Button::RT_Click)) {
                 SetMode(InputMode::Navigate);
             } else if (held(Button::Select)) {
-                // Guide + Select: open / close Settings
                 auto& sm = m_overlay->GetSettingsMenu();
                 if (sm.IsOpen()) sm.Close();
                 else             OpenSettingsMenu();
             } else {
-                // Guide alone: toggle RadialMenu (only when Settings is closed)
                 if (!m_overlay->GetSettingsMenu().IsOpen()) {
                     auto& rm = m_overlay->GetRadialMenu();
                     if (rm.IsVisible()) rm.Close();
