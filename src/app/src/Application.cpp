@@ -27,6 +27,15 @@ static const wchar_t* InputModeLabel(InputMode m) noexcept {
         : L"\u2B06  Navigate mode";
 }
 
+// Returns a human-readable label for the controller type.
+static const wchar_t* ControllerTypeLabel(ControllerType t) noexcept {
+    switch (t) {
+        case ControllerType::PlayStation: return L"PlayStation";
+        case ControllerType::XInput:      return L"XInput";
+        default:                          return L"Controller";
+    }
+}
+
 namespace {
 
 struct RumbleCtx {
@@ -185,6 +194,8 @@ public:
 
         m_tray = SystemTray::Create(L"EnjoyStick \u2014 gamepad navigation active");
         m_tray->SetMenuItems(BuildTrayMenu());
+        // Double-click on the tray icon opens Settings (same as right-click → Open Settings).
+        m_tray->SetOnDoubleClick([this] { OpenSettingsMenu(); });
 
         m_inputHandle = m_inputEngine->OnInput([this](const ControllerState& s) {
             OnControllerState(s);
@@ -434,9 +445,26 @@ private:
 
     void OnConnectionEvent(ControllerId id, ConnectionEvent ev) {
         const bool connected = (ev == ConnectionEvent::Connected);
+
+        // Determine the controller type label for a richer notification.
+        // GetConnectedControllers() is live; on disconnect the list is already
+        // cleared, so we fall back to ControllerType::XInput as the most common.
+        std::wstring typeLabel;
+        if (m_inputEngine) {
+            const auto list = m_inputEngine->GetConnectedControllers();
+            for (const auto& info : list) {
+                if (info.id == id) {
+                    typeLabel = ControllerTypeLabel(info.type);
+                    break;
+                }
+            }
+        }
+        if (typeLabel.empty()) typeLabel = L"Controller";
+
         const std::wstring msg = connected
-            ? L"\U0001F3AE  Controller connected"
-            : L"\u26A0  Controller disconnected";
+            ? (L"\U0001F3AE  " + typeLabel + L" connected")
+            : (L"\u26A0  "     + typeLabel + L" disconnected");
+
         if (m_overlay) m_overlay->ShowToast(msg);
         if (m_tray)    m_tray->ShowBalloon(L"EnjoyStick", msg);
         if (connected && m_inputEngine)
