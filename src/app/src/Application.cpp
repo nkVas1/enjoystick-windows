@@ -1,5 +1,6 @@
 #include <enjoystick/app/Application.hpp>
 #include <enjoystick/app/SystemTray.hpp>
+#include <enjoystick/config/ConfigStore.hpp>
 #include "AutoStart.hpp"
 
 #include <Windows.h>
@@ -370,9 +371,9 @@ private:
     std::unique_ptr<overlay::OverlayWindow> m_overlay;
     std::unique_ptr<SystemTray>             m_tray;
 
-    CallbackHandle m_inputHandle;
-    CallbackHandle m_connHandle;
-    ConfigCallbackHandle m_configHandle;
+    CallbackHandle              m_inputHandle;
+    CallbackHandle              m_connHandle;
+    config::ConfigCallbackHandle m_configHandle;
 
     InputMode m_mode            = InputMode::Cursor;
     int64_t   m_lastTick        = 0;
