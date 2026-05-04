@@ -10,26 +10,25 @@ namespace enjoystick::cursor {
 /// Configurable parameters for the virtual-mouse acceleration model.
 ///
 /// Default values are tuned for comfortable desktop navigation with a
-/// standard analogue stick.  They can be overridden via the Settings menu
-/// or config.json at any time without restarting.
+/// standard analogue stick on a 1080p display.
 ///
 struct MouseConfig {
     /// Maximum cursor speed at full stick deflection (pixels per millisecond).
-    /// 12 px/ms @ 60 Hz = 720 px per frame max — comfortable for 1080p.
-    float maxSpeedPx       = 12.0f;
+    /// 6 px/ms @ 250 Hz polling = 24 px per tick max — precise on 1080p.
+    float maxSpeedPx       = 6.0f;
 
-    /// Acceleration curve power.  1.0 = linear (raw).  Values < 2.0 give
-    /// a gentler roll-off that keeps the cursor manageable at low deflection.
-    float curveExponent    = 1.6f;
+    /// Acceleration curve power.  1.0 = linear.  1.4 gives a very gentle
+    /// roll-off that keeps the cursor precise at low deflection.
+    float curveExponent    = 1.4f;
 
-    /// Time (ms) to ramp from rest to full speed.  0 = no ramp (instant).
-    /// 60 ms prevents the jarring lurch felt when you first push the stick.
-    float accelerationMs   = 60.0f;
+    /// Ramp duration (ms) from rest to full speed.
+    /// 80 ms prevents the jarring lurch felt when you first push the stick.
+    float accelerationMs   = 80.0f;
 
     /// Dead-zone radius inside which no movement is generated ([0, 1]).
-    float linearZone       = 0.12f;
+    float linearZone       = 0.10f;
 
-    /// Scroll speed multiplier when using the right stick as a scroll wheel.
+    /// Scroll speed multiplier when right stick is used as a scroll wheel.
     float scrollSpeed      = 4.0f;
 
     /// Whether left/right triggers fire mouse button 1 / 2.
@@ -56,8 +55,7 @@ public:
     const MouseConfig& GetConfig() const noexcept;
 
     /// Enable or disable all output.  When disabled, Update() and click
-    /// methods are no-ops — the object retains its config and accumulator
-    /// state so it resumes cleanly when re-enabled.
+    /// methods are no-ops.  Config and accumulator state are preserved.
     void SetEnabled(bool enabled) noexcept;
     [[nodiscard]] bool IsEnabled() const noexcept;
 
@@ -97,8 +95,8 @@ private:
     bool        m_enabled      = true;
 
     // Sub-pixel accumulator
-    float m_accumX    = 0.0f;
-    float m_accumY    = 0.0f;
+    float m_accumX      = 0.0f;
+    float m_accumY      = 0.0f;
     float m_scrollAccum = 0.0f;
 
     // Trigger de-bounce

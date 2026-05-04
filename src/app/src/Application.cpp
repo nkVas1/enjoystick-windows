@@ -32,7 +32,7 @@ static const wchar_t* InputModeLabel(InputMode m) noexcept {
 }
 
 // ---------------------------------------------------------------------------
-// FireAndForgetRumble
+// Helpers
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -71,25 +71,25 @@ static void ScheduleRumble(
     SetThreadpoolTimer(timer, &ft, 0, 0);
 }
 
-// Helper: fire a synthetic scroll-wheel event
+/// Scroll wheel (positive = scroll up, negative = down)
 static void SendScrollLines(int lines) noexcept {
     INPUT inp{};
-    inp.type           = INPUT_MOUSE;
-    inp.mi.dwFlags     = MOUSEEVENTF_WHEEL;
-    inp.mi.mouseData   = static_cast<DWORD>(lines * WHEEL_DELTA);
+    inp.type         = INPUT_MOUSE;
+    inp.mi.dwFlags   = MOUSEEVENTF_WHEEL;
+    inp.mi.mouseData = static_cast<DWORD>(lines * WHEEL_DELTA);
     SendInput(1, &inp, sizeof(INPUT));
 }
 
-// Helper: fire XButton (browser back/forward)
+/// XButton (browser back = XBUTTON1, forward = XBUTTON2)
 static void SendXButton(DWORD which, bool down) noexcept {
     INPUT inp{};
     inp.type         = INPUT_MOUSE;
     inp.mi.dwFlags   = down ? MOUSEEVENTF_XDOWN : MOUSEEVENTF_XUP;
-    inp.mi.mouseData = which; // XBUTTON1 or XBUTTON2
+    inp.mi.mouseData = which;
     SendInput(1, &inp, sizeof(INPUT));
 }
 
-// Helper: fire a keyboard key (extended or not)
+/// Keyboard key (VK code, with optional extended flag)
 static void SendKey(WORD vk, bool down, bool extended = false) noexcept {
     INPUT inp{};
     inp.type       = INPUT_KEYBOARD;
@@ -97,6 +97,16 @@ static void SendKey(WORD vk, bool down, bool extended = false) noexcept {
     inp.ki.dwFlags = (down ? 0u : KEYEVENTF_KEYUP) |
                      (extended ? KEYEVENTF_EXTENDEDKEY : 0u);
     SendInput(1, &inp, sizeof(INPUT));
+}
+
+/// Switch browser tab: forward = Ctrl+Tab, backward = Ctrl+Shift+Tab
+static void SendBrowserTab(bool forward) noexcept {
+    if (!forward) SendKey(VK_SHIFT, true);
+    SendKey(VK_CONTROL, true);
+    SendKey(VK_TAB, true);
+    SendKey(VK_TAB, false);
+    SendKey(VK_CONTROL, false);
+    if (!forward) SendKey(VK_SHIFT, false);
 }
 
 } // anonymous namespace
@@ -190,7 +200,6 @@ public:
             OnConnectionEvent(id, ev);
         });
 
-        // Config hot-reload: propagate ALL mouse fields
         m_configHandle = m_config->OnChanged([this](const config::Config& c) {
             cursor::MouseConfig mc;
             mc.maxSpeedPx       = c.mouse.maxSpeed;
@@ -253,7 +262,7 @@ private:
             RM{ L"Exit",     L"\u23F9",     [this]{ Exit(); } },
         });
 
-        // Freeze / resume cursor around the radial menu lifecycle
+        // Freeze cursor while radial menu is on screen
         m_overlay->GetRadialMenu().SetOnOpen([this] {
             m_virtualMouse->SetEnabled(false);
         });
@@ -311,7 +320,7 @@ private:
     }
 
     // -----------------------------------------------------------------------
-    // OnControllerState — the main per-frame dispatcher
+    // OnControllerState — main per-frame dispatcher
     // -----------------------------------------------------------------------
 
     void OnControllerState(const ControllerState& state) {
@@ -339,6 +348,43 @@ private:
             return (currMask & static_cast<uint32_t>(b)) != 0;
         };
 
+        // ---- Radial / Settings menus consume ALL input when open ----------
+        const bool radialOpen   = m_overlay->GetRadialMenu().IsVisible();
+        const bool settingsOpen = m_overlay->GetSettingsMenu().IsOpen();
+
+        // Guide always toggles radial menu regardless of state
+        if (pressed(Button::Guide)) {
+            if (settingsOpen) {
+                // Guide while settings open → close settings, not open radial
+                m_overlay->GetSettingsMenu().Close();
+                return;
+            }
+            if (held(Button::Select)) {
+                auto& sm = m_overlay->GetSettingsMenu();
+                if (!radialOpen) {
+                    if (sm.IsOpen()) sm.Close();
+                    else             OpenSettingsMenu();
+                }
+            } else {
+                auto& rm = m_overlay->GetRadialMenu();
+                if (rm.IsVisible()) rm.Close();
+                else                rm.Open();
+            }
+            return;
+        }
+
+        // Radial menu is open: route ALL input to it, nothing else fires
+        if (radialOpen) {
+            m_overlay->GetRadialMenu().Update(state, dt * 0.001f);
+            return;
+        }
+
+        // Settings menu is open: route ALL input to it, nothing else fires
+        if (settingsOpen) {
+            m_overlay->GetSettingsMenu().Update(state, dt * 0.001f);
+            return;
+        }
+
         // ---- LB+RB chord: mode toggle (debounced) -------------------------
         if (held(Button::LB) && held(Button::RB)) {
             if (!m_lbRbChordActive) {
@@ -349,32 +395,13 @@ private:
             m_lbRbChordActive = false;
         }
 
-        // ---- Guide combos -------------------------------------------------
-        if (pressed(Button::Guide)) {
-            if (held(Button::LT_Click)) {
-                SetMode(InputMode::Cursor);
-            } else if (held(Button::RT_Click)) {
-                SetMode(InputMode::Navigate);
-            } else if (held(Button::Select)) {
-                auto& sm = m_overlay->GetSettingsMenu();
-                if (sm.IsOpen()) sm.Close();
-                else             OpenSettingsMenu();
-            } else {
-                if (!m_overlay->GetSettingsMenu().IsOpen()) {
-                    auto& rm = m_overlay->GetRadialMenu();
-                    if (rm.IsVisible()) rm.Close();
-                    else                rm.Open();
-                }
-            }
-        }
-
         // ---- Cursor-mode specific button bindings -------------------------
         if (m_mode == InputMode::Cursor) {
 
-            // LB/RB scroll (only when NOT held together as chord)
+            // LB/RB browser tab switching (only when not chord)
             if (!held(Button::LB) || !held(Button::RB)) {
-                if (pressed(Button::LB)) { SendScrollLines(+3); } // scroll up
-                if (pressed(Button::RB)) { SendScrollLines(-3); } // scroll down
+                if (pressed(Button::LB)) { SendBrowserTab(false); } // prev tab
+                if (pressed(Button::RB)) { SendBrowserTab(true);  } // next tab
             }
 
             // North (Y/△) → middle click
@@ -400,9 +427,8 @@ private:
                 SendKey(VK_RIGHT, false, true);
                 SendKey(VK_MENU,  false, true);
             }
-            // DPad Up → scroll up (fine, 1 line)
+            // DPad Up / Down → fine scroll
             if (pressed(Button::DPadUp))   SendScrollLines(+1);
-            // DPad Down → scroll down (fine, 1 line)
             if (pressed(Button::DPadDown)) SendScrollLines(-1);
 
             // Select → Task View (Win+Tab)
@@ -420,7 +446,7 @@ private:
             }
 
             // East (B/○) long-press → drag hold; short tap → right-click
-            if (!m_overlay->GetRadialMenu().IsVisible()) {
+            {
                 if (held(Button::East)) {
                     m_eastHoldMs += dt;
                     if (m_eastHoldMs >= kEastLongPressMs && !m_eastLongActive) {
@@ -437,14 +463,10 @@ private:
                     m_eastHoldMs     = 0.0f;
                     m_eastLongActive = false;
                 }
-            } else {
-                // Menu open: reset accumulator
-                m_eastHoldMs     = 0.0f;
-                m_eastLongActive = false;
             }
         }
 
-        // ---- Mouse + keyboard updates ------------------------------------
+        // ---- Mouse + keyboard frame updates ------------------------------
         m_virtualMouse->Update(state, dt);
         m_keyMapper->Update(state);
         m_overlay->PostState(state);
@@ -503,7 +525,6 @@ private:
     Button         m_prevButtons     = Button::None;
     bool           m_lbRbChordActive = false;
 
-    // East/B long-press state
     static constexpr float kEastLongPressMs = 600.0f;
     float  m_eastHoldMs     = 0.0f;
     bool   m_eastLongActive = false;
