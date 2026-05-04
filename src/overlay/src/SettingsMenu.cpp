@@ -21,7 +21,7 @@ SettingsMenu::SettingsMenu(OnChangedCallback onChange)
 { BuildRows(); }
 
 // ---------------------------------------------------------------------------
-// BuildRows  — interleave SectionHeader sentinels between logical groups
+// BuildRows  - interleave SectionHeader sentinels between logical groups
 // ---------------------------------------------------------------------------
 void SettingsMenu::BuildRows() {
     m_rows.clear();
@@ -51,14 +51,6 @@ void SettingsMenu::BuildRows() {
     m_rows.push_back({ L"Deadzone outer",           RowType::FloatSlider, 0.50f,  1.00f,  0.01f, &m_values.dzOuter,           nullptr,                    L""       });
 }
 
-// ---------------------------------------------------------------------------
-SettingsMenu::Row SettingsMenu::MakeSectionRow(const wchar_t* label) noexcept {
-    Row r{};
-    r.label = label;
-    r.type  = RowType::SectionHeader;
-    return r;
-}
-
 bool SettingsMenu::IsInteractiveRow(int32_t idx) const noexcept {
     if (idx < 0 || idx >= static_cast<int32_t>(m_rows.size())) return false;
     return m_rows[static_cast<size_t>(idx)].type != RowType::SectionHeader;
@@ -72,19 +64,18 @@ int32_t SettingsMenu::NextInteractiveRow(int32_t from, int32_t dir) const noexce
         if (IsInteractiveRow(idx)) return idx;
         idx = (idx + dir + n) % n;
     }
-    return from; // all rows are headers (shouldn't happen)
+    return from;
 }
 
 void SettingsMenu::Open(const Values& current) {
-    m_values       = current;
+    m_values      = current;
     BuildRows();
-    // Start on first interactive row
-    m_selectedRow  = NextInteractiveRow(-1, 1);
-    m_state        = State::Opening;
+    m_selectedRow = NextInteractiveRow(-1, 1);
+    m_state       = State::Opening;
     m_animProgress = 0.0f;
     m_repeatTimer  = 0.0f;
     m_prevSouth = m_prevEast = m_prevNorth =
-    m_prevDUp   = m_prevDDown = m_prevDLeft = m_prevDRight = false;
+    m_prevDUp = m_prevDDown = m_prevDLeft = m_prevDRight = false;
 }
 void SettingsMenu::Close() {
     if (m_state == State::Hidden) return;
@@ -94,7 +85,7 @@ bool SettingsMenu::IsOpen() const noexcept { return m_state != State::Hidden; }
 
 void SettingsMenu::ResetToDefaults() {
     m_values = Values{};
-    BuildRows(); // rebuild so row fTarget/bTarget point into fresh m_values
+    BuildRows();
     m_selectedRow = NextInteractiveRow(-1, 1);
     CommitChange();
 }
@@ -288,7 +279,7 @@ void SettingsMenu::Draw(
     // ---- TV-scale layout constants
     const float kPanelW  = 860.0f * s;
     const float kRowH    =  80.0f * s;
-    const float kSecH    =  44.0f * s;  // section header row height
+    const float kSecH    =  44.0f * s;
     const float kHeaderH = 100.0f * s;
     const float kFooterH =  48.0f * s;
     const float kPadX    =  32.0f * s;
@@ -301,7 +292,7 @@ void SettingsMenu::Draw(
     const float kFTitle  =  22.0f * s;
     const float kFHint   =  13.0f * s;
     const float kFVal    =  17.0f * s;
-    const float kFSec    =  11.0f * s;  // section label font
+    const float kFSec    =  11.0f * s;
 
     // Compute total rows height
     float totalRowsH = 0.0f;
@@ -387,7 +378,10 @@ void SettingsMenu::Draw(
                 fs->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_FAR);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sb;
                 rt->CreateSolidColorBrush(Tok::ChromeMute(0.64f * ease), sb.GetAddressOf());
-                if (sb) rt->DrawText(L"EnjoyStick  \u2022  Controller Settings", 34, fs.Get(),
+                // "EnjoyStick  bullet  Controller Settings"
+                if (sb) rt->DrawText(L"EnjoyStick  \u2022  Controller Settings",
+                    static_cast<UINT32>(std::wcslen(L"EnjoyStick  \u2022  Controller Settings")),
+                    fs.Get(),
                     D2D1::RectF(bx + bw + 16.0f*s, panelY,
                                 panelX + kPanelW * 0.60f, panelY + kHeaderH - 10.0f*s), sb.Get());
             }
@@ -441,13 +435,13 @@ void SettingsMenu::Draw(
     fmtVal->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     fmtSec->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
-    const float rowsTop = panelY + kHeaderH + 1.0f;
     const float rowsBot = panelY + kPanelH - kFooterH - kPadY;
     const float labelR  = panelX + kPanelW * 0.54f;
     const float valueL  = panelX + kPanelW * 0.54f + 5.0f * s;
     const float valueR  = panelX + kPanelW - kPadX;
+    const float labelX  = panelX + kPadX + kAccentW * 2.0f + 12.0f * s;
 
-    float curY = rowsTop;
+    float curY = panelY + kHeaderH + 1.0f;
     const int32_t rowCount = static_cast<int32_t>(m_rows.size());
     for (int32_t i = 0; i < rowCount; ++i) {
         if (curY + 4.0f > rowsBot) break;
@@ -455,51 +449,40 @@ void SettingsMenu::Draw(
 
         // ---- Section Header
         if (row.type == RowType::SectionHeader) {
-            const float ry = curY;
-            // Horizontal rule — left portion
+            const float ry    = curY;
+            const float lineY = ry + kSecH * 0.5f;
+            // Hairline separator
             {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                rt->CreateSolidColorBrush(Tok::GoldDeep(0.40f * ease), b.GetAddressOf());
-                const float lineY = ry + kSecH * 0.5f;
-                const float labelX = panelX + kPadX + kAccentW * 2.0f + 12.0f * s;
-                // Draw text first to know width (approximate: section names are short)
-                if (b && row.label) {
-                    // Separator line spans full row
-                    rt->DrawLine(
-                        D2D1::Point2F(labelX, lineY),
-                        D2D1::Point2F(panelX + kPanelW - kPadX, lineY),
-                        b.Get(), 0.7f);
-                }
+                rt->CreateSolidColorBrush(Tok::GoldDeep(0.38f * ease), b.GetAddressOf());
+                if (b) rt->DrawLine(
+                    D2D1::Point2F(labelX, lineY),
+                    D2D1::Point2F(panelX + kPanelW - kPadX, lineY),
+                    b.Get(), 0.7f);
             }
-            // Section label text
-            {
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                rt->CreateSolidColorBrush(Tok::ChromeMute(0.55f * ease), b.GetAddressOf());
-                const float labelX = panelX + kPadX + kAccentW * 2.0f + 12.0f * s;
-                if (b && row.label) {
-                    // Small pill behind the label
-                    const float textW = static_cast<float>(std::wcslen(row.label)) * kFSec * 0.60f;
-                    const float pillX = labelX - 6.0f * s;
-                    const float pillY = ry + kSecH * 0.5f - kFSec * 0.65f;
-                    {
-                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bg;
-                        rt->CreateSolidColorBrush(Tok::SurfaceBase(0.96f * ease), bg.GetAddressOf());
-                        if (bg) rt->FillRectangle(
-                            D2D1::RectF(pillX, pillY, pillX + textW + 14.0f*s, pillY + kFSec * 1.35f),
-                            bg.Get());
-                    }
-                    rt->DrawText(row.label, static_cast<UINT32>(std::wcslen(row.label)),
-                        fmtSec.Get(),
-                        D2D1::RectF(labelX, ry, labelX + 200.0f*s, ry + kSecH),
-                        b.Get());
-                }
+            // Label pill background
+            if (row.label) {
+                const float textW = static_cast<float>(std::wcslen(row.label)) * kFSec * 0.60f + 14.0f * s;
+                const float pillX = labelX - 4.0f * s;
+                const float pillY = lineY - kFSec * 0.72f;
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bg;
+                rt->CreateSolidColorBrush(Tok::SurfaceBase(0.97f * ease), bg.GetAddressOf());
+                if (bg) rt->FillRectangle(D2D1::RectF(pillX, pillY, pillX + textW, pillY + kFSec * 1.44f), bg.Get());
+                // Label text
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> tb;
+                rt->CreateSolidColorBrush(Tok::ChromeMute(0.58f * ease), tb.GetAddressOf());
+                if (tb) rt->DrawText(row.label,
+                    static_cast<UINT32>(std::wcslen(row.label)),
+                    fmtSec.Get(),
+                    D2D1::RectF(labelX, ry, labelX + 200.0f*s, ry + kSecH),
+                    tb.Get());
             }
             curY += kSecH;
             continue;
         }
 
         // ---- Interactive Row
-        const float ry = curY;
+        const float ry  = curY;
         const bool  sel = (i == m_selectedRow);
 
         if (sel) {
@@ -540,7 +523,6 @@ void SettingsMenu::Draw(
             rt->CreateSolidColorBrush(
                 sel ? Tok::ChromeHi(0.98f * ease) : Tok::ChromeMid(0.70f * ease),
                 lb.GetAddressOf());
-            const float labelX = panelX + kPadX + kAccentW * 2.0f + 12.0f * s;
             if (lb) rt->DrawText(row.label, static_cast<UINT32>(std::wcslen(row.label)),
                 fmtRow.Get(), D2D1::RectF(labelX, ry, labelR, ry + kRowH), lb.Get());
         }
@@ -608,14 +590,14 @@ void SettingsMenu::Draw(
         if (row.type == RowType::FloatSlider && row.fTarget) {
             const float frac = std::clamp(
                 (*row.fTarget - row.min) / (row.max - row.min), 0.0f, 1.0f);
-            const float bx0 = panelX + kPadX + kAccentW * 2.0f + 12.0f * s;
+            const float bx0 = labelX;
             const float bx1 = valueR - 100.0f * s;
             const float by  = ry + kRowH - kBarH - 9.0f * s;
             if (bx1 > bx0 + 24.0f * s)
                 DrawProgressBar(rt, bx0, by, bx1, kBarH, kBarR, frac, sel, ease);
         }
 
-        // Row divider (skip last non-header row in a section, i.e., before next section/end)
+        // Row divider (skip before next section header)
         const bool nextIsHeader = (i + 1 < rowCount &&
             m_rows[static_cast<size_t>(i + 1)].type == RowType::SectionHeader);
         if (i < rowCount - 1 && !nextIsHeader) {
@@ -650,9 +632,11 @@ void SettingsMenu::Draw(
             fh->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hb;
             rt->CreateSolidColorBrush(Tok::ChromeMute(0.58f * ease), hb.GetAddressOf());
-            if (hb) rt->DrawText(
-                L"\u25B2\u25BC Navigate  \u25C4\u25BA Adjust  (A) Toggle  (Y) Reset  (B) Close",
-                44, fh.Get(),
+            // "up/down Navigate  left/right Adjust  (A) Toggle  (Y) Reset  (B) Close"
+            static const wchar_t kHint[] =
+                L"\u25b2\u25bc Navigate  \u25c4\u25ba Adjust  (A) Toggle  (Y) Reset  (B) Close";
+            if (hb) rt->DrawText(kHint, static_cast<UINT32>(std::wcslen(kHint)),
+                fh.Get(),
                 D2D1::RectF(panelX + kPadX, fy, panelX + kPanelW - kPadX, panelY + kPanelH),
                 hb.Get());
         }

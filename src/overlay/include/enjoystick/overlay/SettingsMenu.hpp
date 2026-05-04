@@ -11,7 +11,6 @@ namespace enjoystick::overlay {
 class SettingsMenu {
 public:
     struct Values {
-        // Core cursor
         float cursorSpeed      = 6.0f;
         float curveExponent    = 1.35f;
         float accelerationMs   = 80.0f;
@@ -20,7 +19,6 @@ public:
         float dzOuter          = 0.98f;
         bool  triggersAsClicks = false;
         bool  useRightStick    = true;
-        // Adaptive speed
         bool  adaptiveSpeed      = true;
         float targetTraversalMs  = 900.0f;
         float dpiWeight          = 0.5f;
@@ -61,20 +59,19 @@ private:
     void CommitChange();
     void ResetToDefaults();
 
-    // Returns index of the next/previous interactive (non-header) row
     [[nodiscard]] int32_t NextInteractiveRow(int32_t from, int32_t dir) const noexcept;
     [[nodiscard]] bool    IsInteractiveRow(int32_t idx) const noexcept;
 
     static constexpr float kAnimMs   = 160.0f;
     static constexpr float kRepeatHz = 8.0f;
 
-    OnChangedCallback      m_onChange;
-    std::vector<Row>       m_rows;
-    Values                 m_values;
-    int32_t                m_selectedRow  = 0;
-    State                  m_state        = State::Hidden;
-    float                  m_animProgress = 0.0f;
-    float                  m_repeatTimer  = 0.0f;
+    OnChangedCallback m_onChange;
+    std::vector<Row>  m_rows;
+    Values            m_values;
+    int32_t           m_selectedRow  = 0;
+    State             m_state        = State::Hidden;
+    float             m_animProgress = 0.0f;
+    float             m_repeatTimer  = 0.0f;
 
     bool m_prevSouth  = false;
     bool m_prevEast   = false;

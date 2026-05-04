@@ -1,7 +1,7 @@
 #pragma once
 
 #include <enjoystick/shared/Types.hpp>
-#include "../../src/Overlay_SpringAnim.hpp"
+#include <enjoystick/overlay/Overlay_SpringAnim.hpp>
 
 #include <functional>
 #include <string>
@@ -15,22 +15,22 @@ namespace enjoystick::overlay {
 // Gamepad-driven on-screen QWERTY keyboard.
 //
 // Controls (standard layout):
-//   Left stick  — move cursor (spring-snapping between keys)
-//   South (A)   — type highlighted key
-//   West  (X)   — backspace
-//   East  (B)   — close (cancel)
-//   North (Y)   — confirm / submit text
-//   LB / RB     — switch to symbol layer / back
-//   L3 (click)  — toggle Caps Lock
+//   Left stick  - move cursor (spring-snapping between keys)
+//   South (A)   - type highlighted key
+//   West  (X)   - backspace
+//   East  (B)   - close (cancel)
+//   North (Y)   - confirm / submit text
+//   LB / RB     - switch to symbol layer / back
+//   L3 (click)  - toggle Caps Lock
 //
 // The keyboard calls OnChar for every character typed and OnSubmit when
 // the user confirms. The caller owns the accumulated string and may pass
 // a seed string via Open().
 //
 // Animation model (v4):
-//   Panel slide-in: FloatSpring (stiffness=320, damping=24), 0→1
+//   Panel slide-in: FloatSpring (stiffness=320, damping=24), 0->1
 //   Cursor glow:    FloatSpring x/y (stiffness=480, damping=26)
-//   Key scale pop:  FloatSpring (stiffness=600, damping=28), 1.18→1
+//   Key scale pop:  FloatSpring (stiffness=600, damping=28), 1.18->1
 // ---------------------------------------------------------------------------
 
 class VirtualKeyboard {
@@ -67,14 +67,14 @@ private:
         std::wstring label;         // normal label
         std::wstring shiftLabel;    // Shift / Caps label
         std::wstring symLabel;      // symbol layer label
-        float        widthMul = 1.0f;
+        float        widthMul  = 1.0f;
         bool         isSpecial = false;
     };
 
     enum class Layer : uint8_t { Alpha, Sym };
     enum class State : uint8_t { Hidden, Opening, Visible, Closing };
 
-    void  BuildLayout();
+    void BuildLayout();
 
     // grid
     std::vector<std::vector<Key>> m_rows;
@@ -84,23 +84,23 @@ private:
     int32_t m_col = 0;
 
     // navigation
-    float   m_stickCooldown = 0.0f;
+    float  m_stickCooldown = 0.0f;
     static constexpr float kStickRepeatFirst = 0.35f;
     static constexpr float kStickRepeatNext  = 0.10f;
-    bool    m_stickActive = false;
+    bool   m_stickActive = false;
 
     // state
-    State   m_state     = State::Hidden;
-    float   m_glowPhase = 0.0f;
-    Layer   m_layer     = Layer::Alpha;
-    bool    m_shift     = false;
-    bool    m_caps      = false;
+    State  m_state     = State::Hidden;
+    float  m_glowPhase = 0.0f;
+    Layer  m_layer     = Layer::Alpha;
+    bool   m_shift     = false;
+    bool   m_caps      = false;
 
-    // Spring animations (mutable so Draw() can update targets in const context)
-    mutable FloatSpring m_panelSpring;       // 0 = hidden, 1 = fully visible
-    mutable FloatSpring m_cursorSpringX;     // screen-space X of cursor glow
-    mutable FloatSpring m_cursorSpringY;     // panel-relative Y of cursor glow
-    mutable FloatSpring m_cursorScaleSpring; // key scale pop (1.0 → 1.18 → 1.0)
+    // Spring animations
+    mutable FloatSpring m_panelSpring;
+    mutable FloatSpring m_cursorSpringX;
+    mutable FloatSpring m_cursorSpringY;
+    mutable FloatSpring m_cursorScaleSpring;
 
     // accumulated text
     std::wstring m_text;

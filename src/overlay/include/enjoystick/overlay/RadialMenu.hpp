@@ -12,15 +12,11 @@ namespace enjoystick::overlay {
 // RadialMenuItem
 // ---------------------------------------------------------------------------
 struct RadialMenuItem {
-    std::wstring          label;   // Text shown beneath the item circle
-    std::wstring          icon;    // Emoji / Unicode symbol drawn inside the circle
-    std::function<void()> action;  // Invoked on confirm (South button / Enter)
-    std::wstring          id;      // Optional stable identifier (e.g. L"keyboard")
-                                   // id is at the END so existing 3-field aggregate
-                                   // initialisers {label, icon, action} keep compiling.
+    std::wstring          label;
+    std::wstring          icon;
+    std::function<void()> action;
+    std::wstring          id;
 
-    // Convenience constructor matching the original 3-arg pattern.
-    // Allows:  RadialMenuItem{ L"Desktop", L"\U0001F5A5", []{ ... } }
     RadialMenuItem() = default;
     RadialMenuItem(std::wstring lbl, std::wstring ico, std::function<void()> act,
                    std::wstring identifier = {})
@@ -39,14 +35,14 @@ public:
     enum class State { Hidden, Opening, Visible, Closing };
 
     struct Config {
-        float    radius              = 185.0f; // Distance from centre to item midpoint (logical px)
-        float    selectionDeadzone  = 0.25f;  // Stick magnitude below which no sector is selected
-        float    latchMs            = 800.0f; // Hold-still time before latch resets (ms)
-        float    openAnimMs         = 260.0f;
-        float    closeAnimMs        = 160.0f;
-        int32_t  centreX            = -1;     // -1 = screen centre
-        int32_t  centreY            = -1;
-        bool     showActiveIndicator = true;
+        float   radius              = 185.0f;
+        float   selectionDeadzone  = 0.25f;
+        float   latchMs            = 800.0f;
+        float   openAnimMs         = 260.0f;
+        float   closeAnimMs        = 160.0f;
+        int32_t centreX            = -1;
+        int32_t centreY            = -1;
+        bool    showActiveIndicator = true;
     };
 
     explicit RadialMenu(Config config = {});
@@ -59,9 +55,9 @@ public:
     // ---- Lifecycle ----------------------------------------------------------
     void Open();
     void Close();
-    [[nodiscard]] bool    IsVisible()        const noexcept;
-    [[nodiscard]] State   GetState()          const noexcept;
-    [[nodiscard]] int32_t GetHoveredIndex()   const noexcept;
+    [[nodiscard]] bool    IsVisible()      const noexcept;
+    [[nodiscard]] State   GetState()        const noexcept;
+    [[nodiscard]] int32_t GetHoveredIndex() const noexcept;
 
     // ---- Callbacks ----------------------------------------------------------
     void SetOnOpen (std::function<void()> cb) { m_onOpen  = std::move(cb); }
@@ -92,6 +88,10 @@ private:
     float   m_scrimAlpha    = 0.0f;
     float   m_glowPhase     = 0.0f;
     float   m_latchTimer    = 0.0f;
+
+    // Confirmation flash (brief white burst before close)
+    float   m_flashTimer    = 0.0f;
+    int32_t m_flashIndex    = -1;
 
     int32_t m_hoveredIndex   = -1;
     int32_t m_latchedIndex   = -1;
