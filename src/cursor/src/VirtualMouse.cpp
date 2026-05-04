@@ -22,6 +22,8 @@ namespace {
     inline uintptr_t FromHMONITOR(HMONITOR h) noexcept {
         return reinterpret_cast<uintptr_t>(h);
     }
+    // Suppress unused-function warning if optimiser inlines everything
+    (void)&ToHMONITOR;
 }
 
 VirtualMouse::VirtualMouse(MouseConfig config)
@@ -32,7 +34,7 @@ VirtualMouse::VirtualMouse(MouseConfig config)
 
 void VirtualMouse::SetConfig(MouseConfig config) {
     m_config = config;
-    m_cachedMonitor = 0; // force re-calibration on next Update
+    m_cachedMonitor = 0;
 }
 
 const MouseConfig& VirtualMouse::GetConfig() const noexcept { return m_config; }
@@ -60,7 +62,7 @@ bool VirtualMouse::IsEnabled() const noexcept { return m_enabled; }
 //   speedScale       = (targetPxPerMs / maxSpeedPx) * densityPenalty
 //                      clamped to [adaptiveMinScale, adaptiveMaxScale]
 //
-// Resulting scales at baseSpeed = 6.0, traversal = 900 ms:
+// Resulting scales at baseSpeed=6.0, traversal=900ms:
 //   1280x720  @96  dpi  -> ~0.72
 //   1366x768  @96  dpi  -> ~0.77
 //   1920x1080 @96  dpi  ->  1.00  (reference)
@@ -68,8 +70,11 @@ bool VirtualMouse::IsEnabled() const noexcept { return m_enabled; }
 //   3840x2160 @163 dpi  -> ~1.48
 // ---------------------------------------------------------------------------
 
-VirtualMouse::MonitorProfile
-VirtualMouse::QueryActiveMonitorProfile() const noexcept {
+// NOTE: MonitorProfile is a namespace-scope struct, NOT a nested type of
+// VirtualMouse. The return type must be fully qualified so the compiler can
+// resolve it before entering VirtualMouse's scope (MSVC C2039 fix).
+auto VirtualMouse::QueryActiveMonitorProfile() const noexcept -> MonitorProfile
+{
     MonitorProfile profile;
 
     POINT pt{};
@@ -91,9 +96,9 @@ VirtualMouse::QueryActiveMonitorProfile() const noexcept {
         profile.dpiY = static_cast<float>(dpiY);
     }
 
-    profile.scaleX    = profile.dpiX / kReferenceDpi;
-    profile.scaleY    = profile.dpiY / kReferenceDpi;
-    profile.approxPpi = profile.dpiX;
+    profile.scaleX     = profile.dpiX / kReferenceDpi;
+    profile.scaleY     = profile.dpiY / kReferenceDpi;
+    profile.approxPpi  = profile.dpiX;
     profile.speedScale = ComputeAdaptiveScale(profile);
     return profile;
 }
@@ -108,7 +113,7 @@ float VirtualMouse::ComputeAdaptiveScale(
     const float density = resolutionFactor * (1.0f - w) + dpiFactor * w;
     const float penalty = 1.0f / std::sqrt(std::max(0.30f, density));
 
-    const float traversalMs  = std::max(100.0f, m_config.targetTraversalMs);
+    const float traversalMs   = std::max(100.0f, m_config.targetTraversalMs);
     const float targetPxPerMs = profile.widthPx / traversalMs;
     const float baseSpeed     = std::max(0.25f, m_config.maxSpeedPx);
     const float rawScale      = (targetPxPerMs / baseSpeed) * penalty;
@@ -121,11 +126,11 @@ void VirtualMouse::RefreshMonitorProfileIfNeeded() noexcept {
     POINT pt{};
     if (!GetCursorPos(&pt)) return;
 
-    HMONITOR mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
-    const uintptr_t monKey = FromHMONITOR(mon);
-    if (monKey == m_cachedMonitor && m_monitorProfile.widthPx > 0.0f) return;
+    HMONITOR mon       = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    const uintptr_t key = FromHMONITOR(mon);
+    if (key == m_cachedMonitor && m_monitorProfile.widthPx > 0.0f) return;
 
-    m_cachedMonitor  = monKey;
+    m_cachedMonitor  = key;
     m_monitorProfile = QueryActiveMonitorProfile();
 }
 
