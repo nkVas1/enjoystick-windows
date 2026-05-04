@@ -8,6 +8,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
 
 ### Added
 
+#### Settings Menu
+- Section headers — 11 setting rows are now grouped into four named sections
+  drawn with a gold hairline separator and a small label pill:
+  - **Cursor** — speed, curve exponent, acceleration ramp, right-stick toggle
+  - **Scrolling** — scroll speed, triggers-as-clicks toggle
+  - **Adaptive Speed** — adaptive speed toggle, traversal time, DPI weight
+  - **Advanced** — deadzone inner / outer
+- `[Y] Reset to Defaults` — pressing the North face button while the Settings
+  Menu is open restores all values to `Values{}` defaults and immediately
+  propagates the change via `OnChangedCallback`
+- Footer hint bar updated: `▲▼ Navigate  ◄► Adjust  (A) Toggle  (Y) Reset  (B) Close`
+- Header subtitle changed to `EnjoyStick  •  Controller Settings`
+
 #### Core Engine
 - `InputBackend_HID` — DualSense (Sony VID 0x054C, PID 0x0CE6/0x0DF2) HID backend
   - Enumerates HID devices via `SetupDiGetClassDevs`; matches Sony VID+PID from path string
@@ -45,6 +58,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Ver
   the `cursor::MouseConfig` update passed to `VirtualMouse::SetConfig()`; now propagated correctly
 - `Application.cpp` — `Init()` initial `vmCfg` construction: also propagates all three new
   fields on first boot, consistent with hot-reload path
+- `SettingsMenu::Update()` — DPad Up/Down navigation now skips `SectionHeader` sentinel rows
+  via `NextInteractiveRow()`, so the cursor never lands on a non-interactive separator
 
 ---
 
