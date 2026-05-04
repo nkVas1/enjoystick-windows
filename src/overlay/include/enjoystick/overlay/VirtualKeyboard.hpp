@@ -10,27 +10,24 @@
 namespace enjoystick::overlay {
 
 // ---------------------------------------------------------------------------
-// VirtualKeyboard
+// VirtualKeyboard  (Steam-quality UX target)
 //
-// Gamepad-driven on-screen QWERTY keyboard.
+// Controls:
+//   Left stick       - move cursor; magnetically snaps to keys
+//   South (A/Cross)  - type highlighted key
+//   West  (X/Square) - backspace
+//   East  (B/Circle) - close / cancel
+//   North (Y/Tri)    - confirm / submit text
+//   LB               - toggle symbol layer
+//   RB               - return to alpha layer
+//   L3 (click)       - toggle Caps Lock
 //
-// Controls (standard layout):
-//   Left stick  - move cursor (spring-snapping between keys)
-//   South (A)   - type highlighted key
-//   West  (X)   - backspace
-//   East  (B)   - close (cancel)
-//   North (Y)   - confirm / submit text
-//   LB / RB     - switch to symbol layer / back
-//   L3 (click)  - toggle Caps Lock
-//
-// The keyboard calls OnChar for every character typed and OnSubmit when
-// the user confirms. The caller owns the accumulated string and may pass
-// a seed string via Open().
-//
-// Animation model (v4):
-//   Panel slide-in: FloatSpring (stiffness=320, damping=24), 0->1
-//   Cursor glow:    FloatSpring x/y (stiffness=480, damping=26)
-//   Key scale pop:  FloatSpring (stiffness=600, damping=28), 1.18->1
+// UX goals matching Steam keyboard:
+//   - Large, clear panel at bottom of screen
+//   - Snap-to-key magnetic cursor (spring-interpolated, never drifts)
+//   - Per-key press pop animation (scale bounce via FloatSpring)
+//   - Thin focus ring instead of heavy glow blob
+//   - Characters injected live via OnChar as typed
 // ---------------------------------------------------------------------------
 
 class VirtualKeyboard {
@@ -65,8 +62,6 @@ public:
     [[nodiscard]] Layer               GetLayer() const noexcept { return m_layer; }
     [[nodiscard]] bool                GetCaps()  const noexcept { return m_caps;  }
 
-    /// Returns a short uppercase label for the current layer/modifier state:
-    /// "SYM", "CAPS", or "ALPHA".
     [[nodiscard]] const wchar_t* GetLayerName() const noexcept {
         if (m_layer == Layer::Sym)  return L"SYM";
         if (m_caps)                 return L"CAPS";
@@ -76,9 +71,9 @@ public:
 private:
     // ---- Key grid -----------------------------------------------------------
     struct Key {
-        std::wstring label;         // normal label
-        std::wstring shiftLabel;    // Shift / Caps label
-        std::wstring symLabel;      // symbol layer label
+        std::wstring label;
+        std::wstring shiftLabel;
+        std::wstring symLabel;
         float        widthMul  = 1.0f;
         bool         isSpecial = false;
     };
@@ -94,11 +89,16 @@ private:
     int32_t m_row = 0;
     int32_t m_col = 0;
 
-    // navigation — first repeat delay longer to prevent accidental multi-press;
-    // subsequent interval comfortable for deliberate hold-repeat.
+    // Navigation timing.
+    // kStickRepeatFirst: initial delay before auto-repeat kicks in on held stick.
+    //   Kept deliberately long so a single deliberate push moves exactly 1 key.
+    // kStickRepeatNext:  interval for subsequent repeats (comfortable hold-scroll).
+    // kSnapDeadzone:     stick magnitude threshold. High value (0.50) forces
+    //   intentional pushes and creates a magnetic "rest in deadzone" feel.
     float  m_stickCooldown = 0.0f;
-    static constexpr float kStickRepeatFirst = 0.55f;  // was 0.35
-    static constexpr float kStickRepeatNext  = 0.20f;  // was 0.10
+    static constexpr float kStickRepeatFirst = 0.62f;
+    static constexpr float kStickRepeatNext  = 0.17f;
+    static constexpr float kSnapDeadzone     = 0.50f;
     bool   m_stickActive = false;
 
     // state
@@ -112,7 +112,7 @@ private:
     mutable FloatSpring m_panelSpring;
     mutable FloatSpring m_cursorSpringX;
     mutable FloatSpring m_cursorSpringY;
-    mutable FloatSpring m_cursorScaleSpring;
+    mutable FloatSpring m_cursorScaleSpring; // pressed key scale pop (1.0 -> 1.12 -> 1.0)
 
     // accumulated text
     std::wstring m_text;
