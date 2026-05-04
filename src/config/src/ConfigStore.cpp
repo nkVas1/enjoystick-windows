@@ -1,9 +1,7 @@
 // WIN32_LEAN_AND_MEAN and NOMINMAX are injected by CMake.
-// shlobj.h and objbase.h must be included AFTER windows.h to get
-// FOLDERID_RoamingAppData, SHGetKnownFolderPath and CoTaskMemFree.
 #include <Windows.h>
-#include <shlobj.h>    // SHGetKnownFolderPath, FOLDERID_RoamingAppData
-#include <objbase.h>   // CoTaskMemFree
+#include <shlobj.h>
+#include <objbase.h>
 
 #include "enjoystick/config/ConfigStore.hpp"
 #include "enjoystick/config/ConfigSerializer.hpp"
@@ -26,14 +24,13 @@ static std::filesystem::path DefaultConfigPath() {
         CoTaskMemFree(appData);
         return p / L"Enjoystick" / L"config.json";
     }
-    // Fallback: next to the executable
     wchar_t exePath[MAX_PATH];
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     return std::filesystem::path(exePath).parent_path() / L"config.json";
 }
 
 // ---------------------------------------------------------------------------
-// Open (low-level factory)
+// Open
 // ---------------------------------------------------------------------------
 
 std::unique_ptr<ConfigStore>
@@ -50,7 +47,7 @@ ConfigStore::Open(const std::filesystem::path& configPath) {
             try {
                 initial = ConfigSerializer::FromJson(ss.str());
                 loaded  = true;
-            } catch (...) { /* fallback to defaults */ }
+            } catch (...) {}
         }
     }
 
@@ -63,10 +60,6 @@ ConfigStore::Open(const std::filesystem::path& configPath) {
 
     return std::unique_ptr<ConfigStore>(new ConfigStore(configPath, std::move(initial)));
 }
-
-// ---------------------------------------------------------------------------
-// Create (convenience factory — %APPDATA%\Enjoystick\config.json)
-// ---------------------------------------------------------------------------
 
 std::unique_ptr<ConfigStore> ConfigStore::Create() {
     return Open(DefaultConfigPath());
@@ -85,13 +78,7 @@ ConfigStore::ConfigStore(std::filesystem::path path, Config initial)
                     std::memory_order_release);
 }
 
-ConfigStore::~ConfigStore() {
-    Unwatch();
-}
-
-// ---------------------------------------------------------------------------
-// GetConfig
-// ---------------------------------------------------------------------------
+ConfigStore::~ConfigStore() { Unwatch(); }
 
 const Config& ConfigStore::GetConfig() const noexcept {
     std::shared_lock lock(m_configMutex);
@@ -103,7 +90,6 @@ const Config& ConfigStore::GetConfig() const noexcept {
 // ---------------------------------------------------------------------------
 
 void ConfigStore::Save(Config config) {
-    // Atomic rename: write to .tmp, then rename over the real file.
     const auto tmp = std::filesystem::path(m_path).replace_extension(".json.tmp");
     {
         std::ofstream out(tmp);
@@ -118,7 +104,6 @@ void ConfigStore::Save(Config config) {
         m_currentCopy = config;
         m_current.store(std::make_shared<Config>(config), std::memory_order_release);
     }
-
     {
         std::shared_lock lock(m_cbMutex);
         for (const auto& cb : m_callbacks)
@@ -136,11 +121,14 @@ void ConfigStore::SetCursorConfig(const cursor::MouseConfig& mc) {
         std::shared_lock lock(m_configMutex);
         cfg = m_currentCopy;
     }
-    cfg.mouse.maxSpeed    = mc.maxSpeedPx;
-    cfg.mouse.exponent    = mc.curveExponent;
-    cfg.mouse.linearZone  = mc.linearZone;
-    cfg.mouse.scrollSpeed = mc.scrollSpeed;
-    cfg.mouse.wrapEdges   = mc.wrapEdges;
+    cfg.mouse.maxSpeed         = mc.maxSpeedPx;
+    cfg.mouse.exponent         = mc.curveExponent;
+    cfg.mouse.linearZone       = mc.linearZone;
+    cfg.mouse.scrollSpeed      = mc.scrollSpeed;
+    cfg.mouse.wrapEdges        = mc.wrapEdges;
+    cfg.mouse.triggersAsClicks = mc.triggersAsClicks;
+    cfg.mouse.useRightStick    = mc.useRightStick;
+    cfg.mouse.accelerationMs   = mc.accelerationMs;
     Save(std::move(cfg));
 }
 
@@ -188,8 +176,6 @@ void ConfigStore::Unwatch() {
 
 // ---------------------------------------------------------------------------
 // WatchThread
-//
-// Uses overlapped I/O so CancelIoEx() reliably wakes the blocking call.
 // ---------------------------------------------------------------------------
 
 void ConfigStore::WatchThread() {
@@ -205,10 +191,7 @@ void ConfigStore::WatchThread() {
         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
         nullptr);
 
-    if (m_dirHandle == INVALID_HANDLE_VALUE) {
-        m_watching = false;
-        return;
-    }
+    if (m_dirHandle == INVALID_HANDLE_VALUE) { m_watching = false; return; }
 
     static constexpr DWORD kBufSize = 8 * 1024;
     alignas(DWORD) uint8_t buf[kBufSize];
@@ -219,11 +202,8 @@ void ConfigStore::WatchThread() {
     while (m_watching.load(std::memory_order_relaxed)) {
         ResetEvent(ov.hEvent);
         const BOOL ok = ReadDirectoryChangesW(
-            m_dirHandle, buf, kBufSize,
-            FALSE,
-            FILE_NOTIFY_CHANGE_LAST_WRITE,
-            nullptr, &ov, nullptr);
-
+            m_dirHandle, buf, kBufSize, FALSE,
+            FILE_NOTIFY_CHANGE_LAST_WRITE, nullptr, &ov, nullptr);
         if (!ok) break;
 
         if (WaitForSingleObject(ov.hEvent, INFINITE) != WAIT_OBJECT_0) break;
@@ -235,18 +215,14 @@ void ConfigStore::WatchThread() {
         const uint8_t* ptr = buf;
         for (;;) {
             const auto* fni = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(ptr);
-
             if (fni->Action == FILE_ACTION_MODIFIED) {
                 const std::wstring changed(
-                    fni->FileName,
-                    fni->FileNameLength / sizeof(wchar_t));
+                    fni->FileName, fni->FileNameLength / sizeof(wchar_t));
                 if (_wcsicmp(changed.c_str(), file.c_str()) == 0) {
-                    // Small delay: text editors flush in two writes.
                     Sleep(80);
                     ReloadFromDisk();
                 }
             }
-
             if (fni->NextEntryOffset == 0) break;
             ptr += fni->NextEntryOffset;
         }
@@ -265,17 +241,13 @@ void ConfigStore::WatchThread() {
 bool ConfigStore::ReloadFromDisk() {
     std::ifstream f(m_path);
     if (!f.is_open()) return false;
-
     std::ostringstream ss;
     ss << f.rdbuf();
     f.close();
 
     Config parsed;
-    try {
-        parsed = ConfigSerializer::FromJson(ss.str());
-    } catch (...) {
-        return false;
-    }
+    try { parsed = ConfigSerializer::FromJson(ss.str()); }
+    catch (...) { return false; }
 
     {
         std::unique_lock lock(m_configMutex);
