@@ -31,7 +31,8 @@ static const wchar_t* InputModeLabel(InputMode m) noexcept {
 static const wchar_t* ControllerTypeLabel(ControllerType t) noexcept {
     switch (t) {
         case ControllerType::PlayStation: return L"PlayStation";
-        case ControllerType::XInput:      return L"XInput";
+        case ControllerType::Xbox:        return L"Xbox";
+        case ControllerType::Generic:     return L"Gamepad";
         default:                          return L"Controller";
     }
 }
@@ -447,8 +448,8 @@ private:
         const bool connected = (ev == ConnectionEvent::Connected);
 
         // Determine the controller type label for a richer notification.
-        // GetConnectedControllers() is live; on disconnect the list is already
-        // cleared, so we fall back to ControllerType::XInput as the most common.
+        // GetConnectedControllers() is live; on disconnect the list may already
+        // be cleared, so we default to a generic label.
         std::wstring typeLabel;
         if (m_inputEngine) {
             const auto list = m_inputEngine->GetConnectedControllers();
