@@ -4,6 +4,50 @@ All notable changes to Enjoystick Windows will be documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — Phase 2 in progress
+
+### Added
+
+#### Core Engine
+- `InputBackend_HID` — DualSense (Sony VID 0x054C, PID 0x0CE6/0x0DF2) HID backend
+  - Enumerates HID devices via `SetupDiGetClassDevs`; matches Sony VID+PID from path string
+  - Opens device with `GENERIC_READ|GENERIC_WRITE` (falls back to read-only if Access Denied)
+  - Overlapped `ReadFile` on a dedicated high-priority thread with 100 ms WaitForSingleObject
+  - Parses USB Input Report 0x01 (65 bytes): both sticks, both triggers, all 16 buttons, d-pad
+  - D-pad decoded from nibble (8 directions → 4 cardinal `Button` flags)
+  - Touchpad button mapped to `Button::Touchpad`
+  - Rumble: Output Report 0x02 (64 bytes, flags byte 0xFF, left/right motors at bytes 3–4)
+  - Bluetooth detection via `HIDP_CAPS.InputReportByteLength >= 78` (graceful skip for now)
+  - `GetConnectedControllers()` reports `ControllerType::PlayStation`
+- `InputEngine::Create()` — backend auto-selection strategy
+  - `Auto` (default): try `HidBackend::TryOpen()` first; fall back to `XInputBackend`
+  - `XInputOnly`: always use XInputBackend
+  - `HIDOnly`: use HidBackend; throw `std::runtime_error` if no DualSense found
+- `core/CMakeLists.txt`: added `InputBackend_HID.cpp`; linked `hid` and `setupapi` system libs
+
+#### Tests
+- `tests/test_config.cpp` — GoogleTest suite for config subsystem
+  - `ConfigSerializer_RoundTrip`: full Config → JSON → Config round-trip including all three
+    new MouseCfg fields (`triggersAsClicks`, `useRightStick`, `accelerationMs`)
+  - `ConfigSerializer_DefaultsOnMissingFields`: empty JSON object produces `Config::Defaults()`
+  - `ConfigSerializer_BadJsonThrows`: invalid/empty/truncated JSON throws `std::runtime_error`
+  - `ConfigSerializer_KeyMappingRoundTrip`: `KeyMappingEntry` with VKey sequence survives round-trip
+  - `SettingsValues_AllFieldsReadFromConfig`: regression guard for the hardcoded-fields bug
+  - `SettingsValues_DefaultUseRightStickIsTrue`: sanity check on default config value
+- `tests/CMakeLists.txt`: added `test_config.cpp` to sources; linked `enjoystick_config`
+
+### Fixed
+
+#### App
+- `Application.cpp` — `SettingsValuesFromConfig()`: `triggersAsClicks`, `useRightStick`,
+  `accelerationMs` were hardcoded to `false`, `true`, `0.0f`; now read from `cfg.mouse`
+- `Application.cpp` — config-watcher hot-reload lambda: same three fields were missing from
+  the `cursor::MouseConfig` update passed to `VirtualMouse::SetConfig()`; now propagated correctly
+- `Application.cpp` — `Init()` initial `vmCfg` construction: also propagates all three new
+  fields on first boot, consistent with hot-reload path
+
+---
+
 ## [Unreleased] — Phase 1 Core Systems
 
 ### Added
