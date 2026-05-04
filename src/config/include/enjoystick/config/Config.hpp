@@ -6,23 +6,21 @@
 
 namespace enjoystick::config {
 
-// ---------------------------------------------------------------------------
-// Sub-configuration structs
-// ---------------------------------------------------------------------------
-
 struct MouseCfg {
-    /// px/ms at full deflection.  6.0 is comfortable for 1080p desktop use.
-    float maxSpeed         = 6.0f;
-    /// Curve exponent: 1.4 gives a very gentle roll-off at low deflection.
-    float exponent         = 1.4f;
-    float linearZone       = 0.10f;
+    float maxSpeed         = 4.2f;
+    float exponent         = 1.30f;
+    float linearZone       = 0.09f;
     bool  wrapEdges        = false;
     float scrollSpeed      = 4.0f;
 
-    bool  triggersAsClicks = false;  ///< map LT/RT analogue to mouse buttons
-    bool  useRightStick    = true;   ///< false → use left stick for cursor
-    /// Ramp duration in ms.  80 ms prevents the jarring lurch on first push.
-    float accelerationMs   = 80.0f;
+    bool  triggersAsClicks = false;
+    bool  useRightStick    = true;
+    float accelerationMs   = 95.0f;
+
+    bool  adaptiveSpeed    = true;
+    float targetScreenFracPerSec = 0.26f;
+    float adaptiveMinScale = 0.38f;
+    float adaptiveMaxScale = 0.92f;
 };
 
 struct InputCfg {
@@ -56,10 +54,6 @@ struct KeyMappingEntry {
     std::vector<VKeyEntry> sequence;
     std::string            name;
 };
-
-// ---------------------------------------------------------------------------
-// Root config
-// ---------------------------------------------------------------------------
 
 struct Config {
     MouseCfg  mouse;
