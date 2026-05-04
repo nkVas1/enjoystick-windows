@@ -12,11 +12,10 @@
 namespace enjoystick::cursor {
 
 namespace {
-static constexpr float kReferenceWidthPx   = 1920.0f;
-static constexpr float kReferenceHeightPx  = 1080.0f;
-static constexpr float kReferenceDpi       = 96.0f;
-static constexpr float kReferencePpi       = 96.0f;
-static constexpr float kMinMovementPixels  = 1.0f;
+    static constexpr float kReferenceWidthPx  = 1920.0f;
+    static constexpr float kReferenceHeightPx = 1080.0f;
+    static constexpr float kReferenceDpi      = 96.0f;
+    static constexpr float kMinMovementPixels = 1.0f;
 }
 
 VirtualMouse::VirtualMouse(MouseConfig config)
@@ -27,61 +26,54 @@ VirtualMouse::VirtualMouse(MouseConfig config)
 
 void VirtualMouse::SetConfig(MouseConfig config) {
     m_config = config;
-    RefreshMonitorProfileIfNeeded();
+    // Force re-calibration on next Update call
+    m_cachedMonitor = nullptr;
 }
+
 const MouseConfig& VirtualMouse::GetConfig() const noexcept { return m_config; }
 
 void VirtualMouse::SetEnabled(bool enabled) noexcept {
     m_enabled = enabled;
     if (!enabled) {
-        m_accumX = 0.0f;
-        m_accumY = 0.0f;
-        m_scrollAccum = 0.0f;
-        m_ltWasDown = false;
-        m_rtWasDown = false;
+        m_accumX = m_accumY = m_scrollAccum = 0.0f;
+        m_ltWasDown = m_rtWasDown = false;
     }
 }
 
 bool VirtualMouse::IsEnabled() const noexcept { return m_enabled; }
 
-void VirtualMouse::Update(const ControllerState& state, float deltaMs) {
-    if (!m_enabled) return;
+// ---------------------------------------------------------------------------
+// Per-monitor adaptive calibration  (v2)
+//
+// Design goal: crossing the full screen width at maximum stick deflection
+// should take exactly targetTraversalMs milliseconds — regardless of
+// resolution, DPI or physical display size.
+//
+// Algorithm:
+//   1. Measure screen width in physical pixels (widthPx)
+//   2. Measure effective DPI from the OS (dpiX)
+//   3. Compute two normalised density factors:
+//        resolutionFactor = widthPx / kReferenceWidthPx
+//        dpiFactor        = dpiX    / kReferenceDpi
+//   4. Blend them: density = lerp(resolutionFactor, dpiFactor, dpiWeight)
+//      dpiWeight=0.5 gives equal voice to both metrics.
+//   5. Density penalty = 1.0 / sqrt(density)
+//      — lower-res displays get proportionally less speed
+//      — sqrt instead of linear avoids over-correction on HiDPI
+//   6. Target speed = widthPx / targetTraversalMs   (px/ms)
+//   7. speedScale   = (targetSpeed / baseMaxSpeed) * densityPenalty
+//   8. Clamp to [adaptiveMinScale, adaptiveMaxScale]
+//
+// Examples at baseMaxSpeed = 6.0, targetTraversalMs = 900:
+//   1280×720  @96  dpi  → speedScale ≈ 0.72
+//   1366×768  @96  dpi  → speedScale ≈ 0.77
+//   1920×1080 @96  dpi  → speedScale ≈ 1.00
+//   2560×1440 @96  dpi  → speedScale ≈ 1.30
+//   3840×2160 @163 dpi  → speedScale ≈ 1.48
+// ---------------------------------------------------------------------------
 
-    const Vec2 stick = m_config.useRightStick ? state.rightStick : state.leftStick;
-    Update(stick.x, stick.y, deltaMs);
-
-    const float scrollY = m_config.useRightStick ? state.leftStick.y : state.rightStick.y;
-    ScrollStick(scrollY, deltaMs);
-
-    if (m_config.triggersAsClicks) {
-        const bool ltDown = state.leftTrigger  > 0.5f;
-        const bool rtDown = state.rightTrigger > 0.5f;
-
-        if (ltDown && !m_ltWasDown)  LeftDown();
-        if (!ltDown && m_ltWasDown)  LeftUp();
-        if (rtDown && !m_rtWasDown)  RightClick();
-
-        m_ltWasDown = ltDown;
-        m_rtWasDown = rtDown;
-    }
-}
-
-float VirtualMouse::Accelerate(float magnitude) const noexcept {
-    if (magnitude <= 0.0f) return 0.0f;
-    const float maxSpeed = EffectiveMaxSpeedPx();
-    if (magnitude <= m_config.linearZone)
-        return magnitude * maxSpeed;
-    return std::pow(magnitude, m_config.curveExponent) * maxSpeed;
-}
-
-float VirtualMouse::EffectiveMaxSpeedPx() const noexcept {
-    const float baseSpeed = std::max(0.25f, m_config.maxSpeedPx);
-    if (!m_config.adaptiveSpeed) return baseSpeed;
-    return baseSpeed * std::max(m_config.adaptiveMinScale,
-        std::min(m_monitorProfile.speedScale, m_config.adaptiveMaxScale));
-}
-
-VirtualMouse::MonitorProfile VirtualMouse::QueryActiveMonitorProfile() const noexcept {
+VirtualMouse::MonitorProfile
+VirtualMouse::QueryActiveMonitorProfile() const noexcept {
     MonitorProfile profile;
 
     POINT pt{};
@@ -103,47 +95,75 @@ VirtualMouse::MonitorProfile VirtualMouse::QueryActiveMonitorProfile() const noe
         profile.dpiY = static_cast<float>(dpiY);
     }
 
-    profile.scaleX = profile.dpiX / kReferenceDpi;
-    profile.scaleY = profile.dpiY / kReferenceDpi;
+    profile.scaleX  = profile.dpiX / kReferenceDpi;
+    profile.scaleY  = profile.dpiY / kReferenceDpi;
+    profile.approxPpi = profile.dpiX; // effective DPI = logical PPI
 
-    const float diagPx = std::sqrt(profile.widthPx * profile.widthPx +
-                                   profile.heightPx * profile.heightPx);
-    const float refDiagPx = std::sqrt(kReferenceWidthPx * kReferenceWidthPx +
-                                      kReferenceHeightPx * kReferenceHeightPx);
-    const float densityFromResolution = std::max(0.55f, diagPx / refDiagPx);
-    const float densityFromDpi = std::max(0.55f,
-        ((profile.dpiX + profile.dpiY) * 0.5f) / kReferenceDpi);
-    profile.approxPpi = kReferencePpi * densityFromDpi;
-
-    const float targetPixelsPerSec = profile.widthPx *
-        std::max(0.12f, std::min(m_config.targetScreenFracPerSec, 0.40f));
-    const float targetPixelsPerMs = targetPixelsPerSec / 1000.0f;
-
-    const float densityPenalty = 1.0f /
-        std::sqrt(std::max(0.60f, densityFromResolution * 0.55f + densityFromDpi * 0.45f));
-    const float rawScale = (targetPixelsPerMs / std::max(0.25f, m_config.maxSpeedPx)) * densityPenalty;
-
-    profile.speedScale = std::max(m_config.adaptiveMinScale,
-        std::min(rawScale, m_config.adaptiveMaxScale));
+    profile.speedScale = ComputeAdaptiveScale(profile);
     return profile;
 }
 
-float VirtualMouse::ComputeAdaptiveScale(const MonitorProfile& profile) const noexcept {
+float VirtualMouse::ComputeAdaptiveScale(
+    const MonitorProfile& profile) const noexcept
+{
+    const float resolutionFactor = profile.widthPx / kReferenceWidthPx;
+    const float dpiFactor        = profile.dpiX    / kReferenceDpi;
+
+    const float w = std::max(0.0f, std::min(1.0f, m_config.dpiWeight));
+    const float density = resolutionFactor * (1.0f - w) + dpiFactor * w;
+    const float densityPenalty = 1.0f / std::sqrt(std::max(0.30f, density));
+
+    const float traversalMs = std::max(100.0f, m_config.targetTraversalMs);
+    const float targetPxPerMs = profile.widthPx / traversalMs;
+    const float baseSpeed     = std::max(0.25f, m_config.maxSpeedPx);
+    const float rawScale      = (targetPxPerMs / baseSpeed) * densityPenalty;
+
     return std::max(m_config.adaptiveMinScale,
-        std::min(profile.speedScale, m_config.adaptiveMaxScale));
+           std::min(rawScale, m_config.adaptiveMaxScale));
 }
 
 void VirtualMouse::RefreshMonitorProfileIfNeeded() noexcept {
     POINT pt{};
     if (!GetCursorPos(&pt)) return;
+
     HMONITOR mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
-    if (mon != m_cachedMonitor) {
-        m_cachedMonitor = mon;
-        m_monitorProfile = QueryActiveMonitorProfile();
-        m_monitorProfile.speedScale = ComputeAdaptiveScale(m_monitorProfile);
-    } else if (m_monitorProfile.widthPx <= 0.0f || m_monitorProfile.heightPx <= 0.0f) {
-        m_monitorProfile = QueryActiveMonitorProfile();
-        m_monitorProfile.speedScale = ComputeAdaptiveScale(m_monitorProfile);
+    if (mon == m_cachedMonitor && m_monitorProfile.widthPx > 0.0f) return;
+
+    m_cachedMonitor  = mon;
+    m_monitorProfile = QueryActiveMonitorProfile();
+}
+
+float VirtualMouse::EffectiveMaxSpeedPx() const noexcept {
+    const float base = std::max(0.25f, m_config.maxSpeedPx);
+    if (!m_config.adaptiveSpeed) return base;
+    return base * m_monitorProfile.speedScale;
+}
+
+float VirtualMouse::Accelerate(float magnitude) const noexcept {
+    if (magnitude <= 0.0f) return 0.0f;
+    const float maxSpeed = EffectiveMaxSpeedPx();
+    if (magnitude <= m_config.linearZone)
+        return (magnitude / m_config.linearZone) * maxSpeed * 0.18f;
+    return std::pow(magnitude, m_config.curveExponent) * maxSpeed;
+}
+
+void VirtualMouse::Update(const ControllerState& state, float deltaMs) {
+    if (!m_enabled) return;
+
+    const Vec2 stick = m_config.useRightStick ? state.rightStick : state.leftStick;
+    Update(stick.x, stick.y, deltaMs);
+
+    const float scrollY = m_config.useRightStick ? state.leftStick.y : state.rightStick.y;
+    ScrollStick(scrollY, deltaMs);
+
+    if (m_config.triggersAsClicks) {
+        const bool ltDown = state.leftTrigger  > 0.5f;
+        const bool rtDown = state.rightTrigger > 0.5f;
+        if (ltDown && !m_ltWasDown) LeftDown();
+        if (!ltDown && m_ltWasDown) LeftUp();
+        if (rtDown && !m_rtWasDown) RightClick();
+        m_ltWasDown = ltDown;
+        m_rtWasDown = rtDown;
     }
 }
 
@@ -153,24 +173,22 @@ void VirtualMouse::Update(float dx, float dy, float deltaMs) {
     RefreshMonitorProfileIfNeeded();
 
     const float mag = std::sqrt(dx * dx + dy * dy);
-    if (mag < 1e-6f) {
-        m_accumX = m_accumY = 0.0f;
-        return;
-    }
+    if (mag < 1e-6f) { m_accumX = m_accumY = 0.0f; return; }
 
     const float speed = Accelerate(std::min(mag, 1.0f));
-    const float nx    = dx / mag;
+    const float nx    =  dx / mag;
     const float ny    = -dy / mag;
 
+    // Soft ramp: blend from 35% to 100% of target speed over accelerationMs
     const float ramp = std::min(1.0f, deltaMs / std::max(1.0f, m_config.accelerationMs));
-    const float movement = std::max(kMinMovementPixels, speed * deltaMs * (0.35f + 0.65f * ramp));
+    const float movement = std::max(kMinMovementPixels,
+        speed * deltaMs * (0.35f + 0.65f * ramp));
 
     m_accumX += nx * movement;
     m_accumY += ny * movement;
 
     const long ix = static_cast<long>(m_accumX);
     const long iy = static_cast<long>(m_accumY);
-
     m_accumX -= static_cast<float>(ix);
     m_accumY -= static_cast<float>(iy);
 
@@ -179,11 +197,11 @@ void VirtualMouse::Update(float dx, float dy, float deltaMs) {
     if (m_config.wrapEdges) {
         POINT pt;
         GetCursorPos(&pt);
-        const int screenW = GetSystemMetrics(SM_CXSCREEN);
-        const int screenH = GetSystemMetrics(SM_CYSCREEN);
+        const int sw = GetSystemMetrics(SM_CXSCREEN);
+        const int sh = GetSystemMetrics(SM_CYSCREEN);
         SetCursorPos(
-            (static_cast<int>(pt.x) + ix + screenW) % screenW,
-            (static_cast<int>(pt.y) + iy + screenH) % screenH);
+            (static_cast<int>(pt.x) + ix + sw) % sw,
+            (static_cast<int>(pt.y) + iy + sh) % sh);
     } else {
         PostMouseInput(ix, iy, MOUSEEVENTF_MOVE);
     }
@@ -192,39 +210,18 @@ void VirtualMouse::Update(float dx, float dy, float deltaMs) {
 void VirtualMouse::ScrollStick(float dy, float deltaMs) {
     if (!m_enabled) return;
     if (std::abs(dy) < 1e-6f) { m_scrollAccum = 0.0f; return; }
-
     m_scrollAccum += dy * m_config.scrollSpeed * deltaMs;
-
     const long ticks = static_cast<long>(m_scrollAccum / WHEEL_DELTA);
     if (ticks == 0) return;
-
     m_scrollAccum -= static_cast<float>(ticks * WHEEL_DELTA);
     PostMouseInput(0, 0, MOUSEEVENTF_WHEEL, static_cast<int>(ticks * WHEEL_DELTA));
 }
 
-void VirtualMouse::LeftClick()  {
-    if (!m_enabled) return;
-    PostMouseInput(0, 0, MOUSEEVENTF_LEFTDOWN);
-    PostMouseInput(0, 0, MOUSEEVENTF_LEFTUP);
-}
-void VirtualMouse::RightClick() {
-    if (!m_enabled) return;
-    PostMouseInput(0, 0, MOUSEEVENTF_RIGHTDOWN);
-    PostMouseInput(0, 0, MOUSEEVENTF_RIGHTUP);
-}
-void VirtualMouse::MiddleClick() {
-    if (!m_enabled) return;
-    PostMouseInput(0, 0, MOUSEEVENTF_MIDDLEDOWN);
-    PostMouseInput(0, 0, MOUSEEVENTF_MIDDLEUP);
-}
-void VirtualMouse::LeftDown() {
-    if (!m_enabled) return;
-    PostMouseInput(0, 0, MOUSEEVENTF_LEFTDOWN);
-}
-void VirtualMouse::LeftUp()   {
-    if (!m_enabled) return;
-    PostMouseInput(0, 0, MOUSEEVENTF_LEFTUP);
-}
+void VirtualMouse::LeftClick()   { if (!m_enabled) return; PostMouseInput(0,0,MOUSEEVENTF_LEFTDOWN);   PostMouseInput(0,0,MOUSEEVENTF_LEFTUP); }
+void VirtualMouse::RightClick()  { if (!m_enabled) return; PostMouseInput(0,0,MOUSEEVENTF_RIGHTDOWN);  PostMouseInput(0,0,MOUSEEVENTF_RIGHTUP); }
+void VirtualMouse::MiddleClick() { if (!m_enabled) return; PostMouseInput(0,0,MOUSEEVENTF_MIDDLEDOWN); PostMouseInput(0,0,MOUSEEVENTF_MIDDLEUP); }
+void VirtualMouse::LeftDown()    { if (!m_enabled) return; PostMouseInput(0,0,MOUSEEVENTF_LEFTDOWN); }
+void VirtualMouse::LeftUp()      { if (!m_enabled) return; PostMouseInput(0,0,MOUSEEVENTF_LEFTUP); }
 
 void VirtualMouse::PostMouseInput(
     long dx, long dy, unsigned long flags, int wheelDelta) const
