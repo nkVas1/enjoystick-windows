@@ -20,6 +20,9 @@ static constexpr float k2Pi = static_cast<float>(2.0 * M_PI);
 
 namespace enjoystick::overlay {
 
+// Flash duration for confirmation burst (ms)
+static constexpr float kFlashMs = 130.0f;
+
 // ---------------------------------------------------------------------------
 // Easing
 // ---------------------------------------------------------------------------
@@ -30,7 +33,7 @@ static float BounceEaseOut(float t) noexcept {
 static float EaseInQuad(float t) noexcept { return t * t; }
 
 // ---------------------------------------------------------------------------
-// Top-edge arc stroke specular (no fill blob)
+// Top-edge arc stroke specular
 // ---------------------------------------------------------------------------
 static void DrawArcSpecular(
     ID2D1RenderTarget* rt,
@@ -91,6 +94,8 @@ void RadialMenu::Open() {
     m_hoveredIndex = m_latchedIndex = m_confirmedIndex = -1;
     m_latchTimer   = 0.0f;
     m_glowPhase    = 0.0f;
+    m_flashTimer   = 0.0f;
+    m_flashIndex   = -1;
     for (auto& sc : m_itemScales) sc = 0.0f;
     m_itemDelayTimers.assign(m_items.size(), 0.0f);
 }
@@ -101,6 +106,21 @@ void RadialMenu::Close() {
 }
 
 void RadialMenu::Update(const ControllerState& state, float deltaSeconds) {
+    // Advance flash timer if active; close after flash completes
+    if (m_flashIndex >= 0) {
+        m_flashTimer += deltaSeconds * 1000.0f;
+        if (m_flashTimer >= kFlashMs) {
+            m_flashIndex = -1;
+            m_flashTimer = 0.0f;
+            // Now actually close
+            if (m_state != State::Closing && m_state != State::Hidden)
+                Close();
+        }
+        // While flashing, don't process input
+        UpdateAnimation(deltaSeconds);
+        return;
+    }
+
     UpdateAnimation(deltaSeconds);
     if (m_state == State::Hidden) {
         m_prevSouth = m_prevEast = false;
@@ -183,8 +203,12 @@ void RadialMenu::ConfirmSelection() {
     const int32_t target = (m_hoveredIndex >= 0) ? m_hoveredIndex : m_latchedIndex;
     if (target < 0 || target >= static_cast<int32_t>(m_items.size())) return;
     m_confirmedIndex = target;
+    // Trigger action immediately
     if (const auto& a = m_items[static_cast<size_t>(m_confirmedIndex)].action) a();
-    Close();
+    // Start flash — close deferred until flash completes
+    m_flashIndex = m_confirmedIndex;
+    m_flashTimer = 0.0f;
+    // (Close called after flash in Update)
 }
 
 float RadialMenu::AngleForIndex(int32_t index) const noexcept {
@@ -197,16 +221,7 @@ Vec2 RadialMenu::PositionForIndex(int32_t index, float cx, float cy, float radiu
 }
 
 // ---------------------------------------------------------------------------
-// Draw — Futurist Glamour v3, TV-scale
-//
-// Key sizing changes vs previous:
-//   itemR:        32 → 52 px  (+62%)
-//   orbit radius: config-driven, default 160 → 220 px
-//   icon font:    18 → 26 px
-//   label font:   11 → 15 px
-//   centre label: 13.5 → 18 px
-//   disc radius:  itemR*0.40 → itemR*0.46
-// All ring/stroke widths scaled proportionally.
+// Draw — Futurist Glamour v3, TV-scale + confirmation flash
 // ---------------------------------------------------------------------------
 void RadialMenu::Draw(
     void*  renderTargetPtr,
@@ -215,7 +230,8 @@ void RadialMenu::Draw(
     float  screenW,
     float  screenH) const
 {
-    if (m_state == State::Hidden || m_animProgress <= 0.0f || !renderTargetPtr) return;
+    if (m_state == State::Hidden && m_flashIndex < 0 && m_animProgress <= 0.0f) return;
+    if (!renderTargetPtr) return;
 
     auto* rt     = static_cast<ID2D1RenderTarget*>(renderTargetPtr);
     auto* dwrite = static_cast<IDWriteFactory*>(dwriteFactoryPtr);
@@ -225,30 +241,24 @@ void RadialMenu::Draw(
     const float cx    = (m_config.centreX < 0) ? screenW * 0.5f : static_cast<float>(m_config.centreX);
     const float cy    = (m_config.centreY < 0) ? screenH * 0.5f : static_cast<float>(m_config.centreY);
 
-    // TV-scale orbit radius: use configured radius (default 220px) instead of 160
     const float configRadius = (m_config.radius > 0) ? m_config.radius : 220.0f;
     const float radius  = configRadius * std::min(sc, 1.0f) * dpiScale;
-
-    // Item circle radius: 52px base (was 32px)
     const float itemR   = 52.0f * std::min(sc, 1.0f) * dpiScale;
-
-    // Centre disc: ratio of orbit radius
     const float discR   = radius * 0.44f;
-
     const float s       = dpiScale;
     const int32_t displayHovered = m_hoveredIndex;
 
     Microsoft::WRL::ComPtr<ID2D1Factory> factory;
     rt->GetFactory(factory.GetAddressOf());
 
-    // ---- Full-screen scrim --------------------------------------------------
+    // ---- Scrim
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::DeepVoid(0.55f * alpha), b.GetAddressOf());
         if (b) rt->FillRectangle(D2D1::RectF(0.0f, 0.0f, screenW, screenH), b.Get());
     }
 
-    // ---- Outer ornamental gold ring -----------------------------------------
+    // ---- Outer rings
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldShadow(0.38f * alpha), b.GetAddressOf());
@@ -256,7 +266,6 @@ void RadialMenu::Draw(
             D2D1::Ellipse(D2D1::Point2F(cx,cy), radius + itemR*0.84f, radius + itemR*0.84f),
             b.Get(), 1.6f * s);
     }
-    // Inner concentric ring
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldShadow(0.20f * alpha), b.GetAddressOf());
@@ -265,7 +274,7 @@ void RadialMenu::Draw(
             b.Get(), 0.8f * s);
     }
 
-    // ---- Sector divider rays ------------------------------------------------
+    // ---- Dividers
     if (factory && m_items.size() > 1) {
         const int32_t n      = static_cast<int32_t>(m_items.size());
         const float   outerR = radius + itemR * 0.54f;
@@ -280,7 +289,7 @@ void RadialMenu::Draw(
         }
     }
 
-    // ---- Sector highlight (selected wedge) ----------------------------------
+    // ---- Sector highlight
     if (displayHovered >= 0 && m_items.size() > 1 && factory) {
         const float latchFrac = (m_config.latchMs > 0.0f)
             ? std::min(1.0f, m_latchTimer / m_config.latchMs) : 0.0f;
@@ -300,9 +309,7 @@ void RadialMenu::Draw(
             Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
             geom->Open(sink.GetAddressOf());
             if (sink) {
-                sink->BeginFigure(
-                    D2D1::Point2F(cx + discR*cosS, cy + discR*sinS),
-                    D2D1_FIGURE_BEGIN_FILLED);
+                sink->BeginFigure(D2D1::Point2F(cx + discR*cosS, cy + discR*sinS), D2D1_FIGURE_BEGIN_FILLED);
                 D2D1_ARC_SEGMENT ia{};
                 ia.point = D2D1::Point2F(cx + discR*cosE, cy + discR*sinE);
                 ia.size  = D2D1::SizeF(discR,discR);
@@ -318,22 +325,17 @@ void RadialMenu::Draw(
                 sink->AddArc(oa);
                 sink->EndFigure(D2D1_FIGURE_END_CLOSED);
                 sink->Close();
-
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fill;
-                rt->CreateSolidColorBrush(
-                    Tok::SurfaceRaised(latchPulse * 0.58f * alpha), fill.GetAddressOf());
+                rt->CreateSolidColorBrush(Tok::SurfaceRaised(latchPulse * 0.58f * alpha), fill.GetAddressOf());
                 if (fill) rt->FillGeometry(geom.Get(), fill.Get());
 
-                // Gold outer arc border
-                Microsoft::WRL::ComPtr<ID2D1PathGeometry> borderGeom;
-                factory->CreatePathGeometry(borderGeom.GetAddressOf());
-                if (borderGeom) {
+                Microsoft::WRL::ComPtr<ID2D1PathGeometry> bg;
+                factory->CreatePathGeometry(bg.GetAddressOf());
+                if (bg) {
                     Microsoft::WRL::ComPtr<ID2D1GeometrySink> bs;
-                    borderGeom->Open(bs.GetAddressOf());
+                    bg->Open(bs.GetAddressOf());
                     if (bs) {
-                        bs->BeginFigure(
-                            D2D1::Point2F(cx + outerR*cosS, cy + outerR*sinS),
-                            D2D1_FIGURE_BEGIN_HOLLOW);
+                        bs->BeginFigure(D2D1::Point2F(cx + outerR*cosS, cy + outerR*sinS), D2D1_FIGURE_BEGIN_HOLLOW);
                         D2D1_ARC_SEGMENT ba{};
                         ba.point = D2D1::Point2F(cx + outerR*cosE, cy + outerR*sinE);
                         ba.size  = D2D1::SizeF(outerR, outerR);
@@ -344,14 +346,14 @@ void RadialMenu::Draw(
                         bs->Close();
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> gb;
                         rt->CreateSolidColorBrush(Tok::GoldMid(0.90f * alpha), gb.GetAddressOf());
-                        if (gb) rt->DrawGeometry(borderGeom.Get(), gb.Get(), 2.2f * s);
+                        if (gb) rt->DrawGeometry(bg.Get(), gb.Get(), 2.2f * s);
                     }
                 }
             }
         }
     }
 
-    // ---- Background disc ----------------------------------------------------
+    // ---- Centre disc
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::SurfaceBase(0.90f * alpha), b.GetAddressOf());
@@ -362,20 +364,18 @@ void RadialMenu::Draw(
         rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.94f * alpha), b.GetAddressOf());
         if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx,cy), discR * 0.66f, discR * 0.66f), b.Get());
     }
-    // Gold ring around disc
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldMid(0.64f * alpha), b.GetAddressOf());
-        if (b) rt->DrawEllipse(
-            D2D1::Ellipse(D2D1::Point2F(cx,cy), discR, discR), b.Get(), 1.8f * s);
+        if (b) rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx,cy), discR, discR), b.Get(), 1.8f * s);
     }
     if (factory) DrawArcSpecular(rt, factory.Get(), cx, cy, discR, 0.08f * alpha);
 
     if (m_items.empty()) return;
 
-    // ---- Item circles + icons + labels --------------------------------------
     const float glowBreathe = 0.5f + 0.5f * std::sin(m_glowPhase);
 
+    // ---- Item circles
     for (int32_t i = 0; i < static_cast<int32_t>(m_items.size()); ++i) {
         const float itemSc = (i < static_cast<int32_t>(m_itemScales.size()))
                              ? std::min(1.2f, m_itemScales[static_cast<size_t>(i)]) : sc;
@@ -383,154 +383,123 @@ void RadialMenu::Draw(
         const bool   hovered = (i == displayHovered);
         const float  px = pos.x, py = pos.y;
         const float  iR = itemR * itemSc;
-
         if (iR <= 0.0f) continue;
 
-        // Animated glow for hovered item — two stroke rings (NO fill)
+        // Glow rings for hovered
         if (hovered) {
-            const float g1R = iR * (1.50f + 0.12f * glowBreathe);
-            const float g2R = iR * 1.22f;
             {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g;
-                rt->CreateSolidColorBrush(
-                    Tok::GoldGlow((0.32f + 0.15f * glowBreathe) * alpha), g.GetAddressOf());
-                if (g) rt->DrawEllipse(
-                    D2D1::Ellipse(D2D1::Point2F(px,py), g1R, g1R),
-                    g.Get(), 4.5f * s);
+                rt->CreateSolidColorBrush(Tok::GoldGlow((0.32f + 0.15f * glowBreathe) * alpha), g.GetAddressOf());
+                if (g) rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(px,py),
+                    iR*(1.50f + 0.12f*glowBreathe), iR*(1.50f + 0.12f*glowBreathe)), g.Get(), 4.5f*s);
             }
             {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g2;
                 rt->CreateSolidColorBrush(Tok::GoldGlow(0.22f * alpha), g2.GetAddressOf());
-                if (g2) rt->DrawEllipse(
-                    D2D1::Ellipse(D2D1::Point2F(px,py), g2R, g2R),
-                    g2.Get(), 2.0f * s);
+                if (g2) rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(px,py),
+                    iR*1.22f, iR*1.22f), g2.Get(), 2.0f*s);
             }
         }
-
-        // Circle fill
-        {
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-            rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.92f * alpha), b.GetAddressOf());
-            if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(px,py), iR, iR), b.Get());
-        }
-        // Inner face
-        {
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-            rt->CreateSolidColorBrush(
-                hovered ? Tok::SurfaceRaised(0.74f * alpha) : Tok::SurfaceBase(0.60f * alpha),
-                b.GetAddressOf());
-            if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(px,py), iR * 0.82f, iR * 0.82f), b.Get());
-        }
-        // Border
-        {
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-            rt->CreateSolidColorBrush(
-                hovered ? Tok::GoldHi(0.96f * alpha) : Tok::GoldMid(0.48f * alpha),
-                b.GetAddressOf());
-            if (b) rt->DrawEllipse(
-                D2D1::Ellipse(D2D1::Point2F(px,py), iR, iR), b.Get(),
-                hovered ? 2.2f * s : 1.1f * s);
-        }
-        // Inner bevel ring (hovered)
+        { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+          rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.92f*alpha), b.GetAddressOf());
+          if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(px,py),iR,iR),b.Get()); }
+        { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+          rt->CreateSolidColorBrush(hovered?Tok::SurfaceRaised(0.74f*alpha):Tok::SurfaceBase(0.60f*alpha),b.GetAddressOf());
+          if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(px,py),iR*0.82f,iR*0.82f),b.Get()); }
+        { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+          rt->CreateSolidColorBrush(hovered?Tok::GoldHi(0.96f*alpha):Tok::GoldMid(0.48f*alpha),b.GetAddressOf());
+          if (b) rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(px,py),iR,iR),b.Get(),hovered?2.2f*s:1.1f*s); }
         if (hovered) {
-            const float bevelR = iR - 2.5f * s;
+            const float bevelR = iR - 2.5f*s;
             if (bevelR > 0.0f) {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bv;
-                rt->CreateSolidColorBrush(Tok::GoldWarm(0.32f * alpha), bv.GetAddressOf());
-                if (bv) rt->DrawEllipse(
-                    D2D1::Ellipse(D2D1::Point2F(px,py), bevelR, bevelR), bv.Get(), 1.0f * s);
+                rt->CreateSolidColorBrush(Tok::GoldWarm(0.32f*alpha),bv.GetAddressOf());
+                if (bv) rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(px,py),bevelR,bevelR),bv.Get(),1.0f*s);
             }
         }
-        // Top specular arc stroke
-        if (factory) {
-            DrawArcSpecular(rt, factory.Get(), px, py, iR,
-                (hovered ? 0.10f : 0.05f) * alpha);
-        }
+        if (factory) DrawArcSpecular(rt,factory.Get(),px,py,iR,(hovered?0.10f:0.05f)*alpha);
 
         if (!dwrite) continue;
-
-        // Icon — 26px base (was 18px)
         const std::wstring& iconStr = m_items[static_cast<size_t>(i)].icon;
         if (!iconStr.empty()) {
             Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
-            dwrite->CreateTextFormat(
-                L"Segoe UI Emoji", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                26.0f * itemSc * s, L"en-us", fmt.GetAddressOf());
+            dwrite->CreateTextFormat(L"Segoe UI Emoji",nullptr,DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,26.0f*itemSc*s,L"en-us",fmt.GetAddressOf());
             if (fmt) {
                 fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
                 fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> tb;
-                rt->CreateSolidColorBrush(
-                    hovered ? Tok::GoldHi(alpha) : Tok::ChromeMid(0.90f * alpha),
-                    tb.GetAddressOf());
-                if (tb) rt->DrawText(iconStr.c_str(), static_cast<UINT32>(iconStr.size()),
-                    fmt.Get(), D2D1::RectF(px-iR, py-iR, px+iR, py+iR), tb.Get());
+                rt->CreateSolidColorBrush(hovered?Tok::GoldHi(alpha):Tok::ChromeMid(0.90f*alpha),tb.GetAddressOf());
+                if (tb) rt->DrawText(iconStr.c_str(),static_cast<UINT32>(iconStr.size()),
+                    fmt.Get(),D2D1::RectF(px-iR,py-iR,px+iR,py+iR),tb.Get());
             }
         }
-
-        // Label — 15px base (was 11px)
         const std::wstring& labelStr = m_items[static_cast<size_t>(i)].label;
         if (!labelStr.empty()) {
             Microsoft::WRL::ComPtr<IDWriteTextFormat> lf;
-            dwrite->CreateTextFormat(
-                L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
-                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                15.0f * itemSc * s, L"en-us", lf.GetAddressOf());
+            dwrite->CreateTextFormat(L"Segoe UI",nullptr,DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,15.0f*itemSc*s,L"en-us",lf.GetAddressOf());
             if (lf) {
                 lf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
                 lf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> lb;
-                rt->CreateSolidColorBrush(
-                    hovered ? Tok::GoldHi(alpha) : Tok::ChromeMute(0.82f * alpha),
-                    lb.GetAddressOf());
+                rt->CreateSolidColorBrush(hovered?Tok::GoldHi(alpha):Tok::ChromeMute(0.82f*alpha),lb.GetAddressOf());
                 if (lb) {
-                    const float lw = 100.0f * itemSc * s;
-                    rt->DrawText(labelStr.c_str(), static_cast<UINT32>(labelStr.size()),
-                        lf.Get(),
-                        D2D1::RectF(px - lw*0.5f, py + iR + 5.0f*itemSc*s,
-                                    px + lw*0.5f, py + iR + 26.0f*itemSc*s),
-                        lb.Get());
+                    const float lw = 100.0f*itemSc*s;
+                    rt->DrawText(labelStr.c_str(),static_cast<UINT32>(labelStr.size()),lf.Get(),
+                        D2D1::RectF(px-lw*0.5f,py+iR+5.0f*itemSc*s,px+lw*0.5f,py+iR+26.0f*itemSc*s),lb.Get());
                 }
+            }
+        }
+
+        // ---- Confirmation flash overlay ------------------------------------
+        if (i == m_flashIndex && m_flashTimer > 0.0f) {
+            const float ft  = std::min(1.0f, m_flashTimer / kFlashMs);
+            // Triangle wave: rise 0->0.5, fall 0.5->1
+            const float env = (ft < 0.5f) ? ft * 2.0f : 1.0f - (ft - 0.5f) * 2.0f;
+            const float flashAlpha = env * 0.85f;
+            {
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fb;
+                rt->CreateSolidColorBrush(Tok::White(flashAlpha), fb.GetAddressOf());
+                if (fb) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(px,py),
+                    iR * 1.10f, iR * 1.10f), fb.Get());
+            }
+            {
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fb2;
+                rt->CreateSolidColorBrush(Tok::GoldBright(flashAlpha * 0.55f), fb2.GetAddressOf());
+                if (fb2) rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(px,py),
+                    iR * 1.28f, iR * 1.28f), fb2.Get(), 3.0f * s);
             }
         }
     }
 
-    // ---- Centre disc: active label + button hint ----------------------------
+    // ---- Centre label
     if (dwrite && displayHovered >= 0) {
         const wchar_t* hint = m_items[static_cast<size_t>(displayHovered)].label.c_str();
         if (hint && hint[0] != L'\0') {
             Microsoft::WRL::ComPtr<IDWriteTextFormat> hf;
-            dwrite->CreateTextFormat(
-                L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_BOLD,
-                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                18.0f * sc * s, L"en-us", hf.GetAddressOf());
+            dwrite->CreateTextFormat(L"Segoe UI",nullptr,DWRITE_FONT_WEIGHT_BOLD,
+                DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,18.0f*sc*s,L"en-us",hf.GetAddressOf());
             if (hf) {
                 hf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
                 hf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> hb;
                 rt->CreateSolidColorBrush(Tok::GoldHi(alpha), hb.GetAddressOf());
-                if (hb) rt->DrawText(hint, static_cast<UINT32>(std::wcslen(hint)),
-                    hf.Get(),
-                    D2D1::RectF(cx-discR, cy-discR*0.6f, cx+discR, cy+discR*0.2f),
-                    hb.Get());
+                if (hb) rt->DrawText(hint,static_cast<UINT32>(std::wcslen(hint)),hf.Get(),
+                    D2D1::RectF(cx-discR,cy-discR*0.6f,cx+discR,cy+discR*0.2f),hb.Get());
             }
         }
         const wchar_t* hintLine = L"\u25CF Confirm  \u25C6 Cancel";
         Microsoft::WRL::ComPtr<IDWriteTextFormat> sf;
-        dwrite->CreateTextFormat(
-            L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
-            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-            12.0f * sc * s, L"en-us", sf.GetAddressOf());
+        dwrite->CreateTextFormat(L"Segoe UI",nullptr,DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,12.0f*sc*s,L"en-us",sf.GetAddressOf());
         if (sf) {
             sf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
             sf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sb;
-            rt->CreateSolidColorBrush(Tok::ChromeMute(0.55f * alpha), sb.GetAddressOf());
-            if (sb) rt->DrawText(hintLine, static_cast<UINT32>(std::wcslen(hintLine)),
-                sf.Get(),
-                D2D1::RectF(cx-discR, cy+discR*0.22f, cx+discR, cy+discR*0.80f),
-                sb.Get());
+            rt->CreateSolidColorBrush(Tok::ChromeMute(0.55f*alpha),sb.GetAddressOf());
+            if (sb) rt->DrawText(hintLine,static_cast<UINT32>(std::wcslen(hintLine)),sf.Get(),
+                D2D1::RectF(cx-discR,cy+discR*0.22f,cx+discR,cy+discR*0.80f),sb.Get());
         }
     }
 }
