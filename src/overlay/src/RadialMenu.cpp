@@ -298,10 +298,10 @@ void RadialMenu::Draw(
     Microsoft::WRL::ComPtr<ID2D1Factory> factory;
     rt->GetFactory(factory.GetAddressOf());
 
-    // ---- Scrim
+    // ---- Scrim  (canonical token: Tok::Scrim — deep violet-black modal dim)
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::DeepVoid(0.55f * alpha), b.GetAddressOf());
+        rt->CreateSolidColorBrush(Tok::Scrim(0.55f * alpha), b.GetAddressOf());
         if (b) rt->FillRectangle(D2D1::RectF(0.0f, 0.0f, screenW, screenH), b.Get());
     }
 
