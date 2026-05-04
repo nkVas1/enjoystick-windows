@@ -82,8 +82,9 @@ void OverlayWindowImpl::ShowToast(std::wstring message, uint32_t durationMs) {
 
 // static
 ToastCategory OverlayWindowImpl::DecodeCategory(const std::wstring& msg) noexcept {
-    if (msg.size() >= 4 && msg.substr(0, 4) == L"[OK]")   return ToastCategory::Success;
-    if (msg.size() >= 6 && msg.substr(0, 6) == L"[WARN]") return ToastCategory::Warning;
+    if (msg.size() >= 4  && msg.substr(0, 4)  == L"[OK]")  return ToastCategory::Success;
+    if (msg.size() >= 5  && msg.substr(0, 5)  == L"[ERR]") return ToastCategory::Error;
+    if (msg.size() >= 6  && msg.substr(0, 6)  == L"[WARN]")return ToastCategory::Warning;
     return ToastCategory::Info;
 }
 
@@ -453,10 +454,10 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
     const float chipY = bot - chipH;
     const float r     = chipH * 0.38f;
 
-    // Fill
+    // Fill  (canonical token: Tok::SurfaceSunken — deepest surface tier)
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::DeepVoid(0.88f), b.GetAddressOf());
+        rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.88f), b.GetAddressOf());
         if (b) {
             D2D1_ROUNDED_RECT rr{};
             rr.rect    = D2D1::RectF(chipX, chipY, chipX + chipW, chipY + chipH);
@@ -490,10 +491,10 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
             rt->DrawRoundedRectangle(rr, b.Get(), 0.8f);
         }
     }
-    // Label text
+    // Label text  (canonical token: Tok::ChromeHi — primary text on dark)
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::SilverLt(0.92f), b.GetAddressOf());
+        rt->CreateSolidColorBrush(Tok::ChromeHi(0.92f), b.GetAddressOf());
         if (b)
             rt->DrawTextLayout(
                 D2D1::Point2F(chipX + accentW + padX, chipY + padY),
@@ -514,7 +515,7 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
         const D2D1_COLOR_F fillCol =
             (layer == VirtualKeyboard::Layer::Sym) ? Tok::GoldDeep(0.82f)
             : isCaps                               ? Tok::AmberWarm(0.72f)
-            :                                        Tok::DeepVoid(0.60f);
+            :                                        Tok::SurfaceSunken(0.60f);
 
         {
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
@@ -541,6 +542,7 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
 
 // ---------------------------------------------------------------------------
 // DrawToasts  — stacked (up to 4), slide-in from right, category icon
+// Categories: [OK] success/gold, [WARN] warning/amber, [ERR] error/red, default info/chrome
 // ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
@@ -587,17 +589,19 @@ void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
         // Panel fill
         {
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-            rt->CreateSolidColorBrush(Tok::DeepVoid(0.93f * opacity), b.GetAddressOf());
+            rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.93f * opacity), b.GetAddressOf());
             if (b) { D2D1_ROUNDED_RECT pill{D2D1::RectF(px,py,px+pw,py+ph),rr,rr};
                      rt->FillRoundedRectangle(pill, b.Get()); }
         }
-        // Top highlight line
+        // Top highlight line (category-tinted)
         {
-            const D2D1_COLOR_F lineCol = (t.category == ToastCategory::Success)
-                ? Tok::GoldHi(0.65f * opacity)
-                : (t.category == ToastCategory::Warning)
-                    ? Tok::AmberWarm(0.65f * opacity)
-                    : Tok::GoldMid(0.65f * opacity);
+            D2D1_COLOR_F lineCol;
+            switch (t.category) {
+                case ToastCategory::Success: lineCol = Tok::GoldHi(0.65f * opacity);    break;
+                case ToastCategory::Warning: lineCol = Tok::AmberWarm(0.65f * opacity); break;
+                case ToastCategory::Error:   lineCol = D2D1::ColorF(0.85f, 0.22f, 0.18f, 0.70f * opacity); break;
+                default:                     lineCol = Tok::GoldMid(0.65f * opacity);   break;
+            }
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
             rt->CreateSolidColorBrush(lineCol, b.GetAddressOf());
             if (b) rt->DrawLine(
@@ -613,14 +617,26 @@ void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
                      rt->DrawRoundedRectangle(pill, b.Get(), 0.8f); }
         }
         // Category icon
-        const wchar_t* icon = (t.category == ToastCategory::Success) ? L"\u2713"
-                            : (t.category == ToastCategory::Warning)  ? L"\u26A0"
-                            :                                            L"\u2139";
-        const D2D1_COLOR_F iconCol = (t.category == ToastCategory::Success)
-            ? Tok::GoldHi(0.90f * opacity)
-            : (t.category == ToastCategory::Warning)
-                ? Tok::AmberWarm(0.90f * opacity)
-                : Tok::ChromeMid(0.70f * opacity);
+        const wchar_t* icon;
+        D2D1_COLOR_F   iconCol;
+        switch (t.category) {
+            case ToastCategory::Success:
+                icon    = L"\u2713";
+                iconCol = Tok::GoldHi(0.90f * opacity);
+                break;
+            case ToastCategory::Warning:
+                icon    = L"\u26A0";
+                iconCol = Tok::AmberWarm(0.90f * opacity);
+                break;
+            case ToastCategory::Error:
+                icon    = L"\u2715";
+                iconCol = D2D1::ColorF(0.92f, 0.30f, 0.26f, 0.95f * opacity);
+                break;
+            default:
+                icon    = L"\u2139";
+                iconCol = Tok::ChromeMid(0.70f * opacity);
+                break;
+        }
         if (m_dwriteFactory) {
             const float iconW = 32.0f * s;
             Microsoft::WRL::ComPtr<IDWriteTextFormat> iconf;
@@ -653,7 +669,7 @@ void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
                 tf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
                 tf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> tb;
-                rt->CreateSolidColorBrush(Tok::SilverLt(0.95f * opacity), tb.GetAddressOf());
+                rt->CreateSolidColorBrush(Tok::ChromeHi(0.95f * opacity), tb.GetAddressOf());
                 const float iconW = 32.0f * s;
                 if (tb) rt->DrawText(
                     msg.c_str(), static_cast<UINT32>(msg.size()),
