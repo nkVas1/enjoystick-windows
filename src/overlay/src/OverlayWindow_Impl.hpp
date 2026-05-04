@@ -22,7 +22,8 @@
 namespace enjoystick::overlay {
 
 // Toast category decoded from message prefix tag.
-enum class ToastCategory : uint8_t { Info, Success, Warning };
+// Prefix tags: [OK] = Success, [WARN] = Warning, [ERR] = Error, default = Info
+enum class ToastCategory : uint8_t { Info, Success, Warning, Error };
 
 struct ToastNotification {
     std::wstring   message;
@@ -79,7 +80,7 @@ private:
     void DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds);
     void DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds);
 
-    // Decode category from message prefix [OK], [WARN] etc.
+    // Decode category from message prefix [OK], [WARN], [ERR] etc.
     static ToastCategory DecodeCategory(const std::wstring& msg) noexcept;
 
     Config   m_config;
