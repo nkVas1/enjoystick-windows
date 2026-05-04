@@ -59,8 +59,8 @@ static overlay::SettingsMenu::Values SettingsValuesFromConfig(
     v.scrollSpeed      = c.scrollSpeed;
     v.triggersAsClicks = c.triggersAsClicks;
     v.useRightStick    = c.useRightStick;
-    v.dzInner          = dz.innerRadius;   // was dz.inner — field is innerRadius
-    v.dzOuter          = dz.outerRadius;   // was dz.outer — field is outerRadius
+    v.dzInner          = dz.innerRadius;
+    v.dzOuter          = dz.outerRadius;
     return v;
 }
 
@@ -181,10 +181,14 @@ private:
 
     // -----------------------------------------------------------------------
     // SetupSettingsMenu
+    //
+    // Use SetOnChanged() instead of copy-assigning a new SettingsMenu object.
+    // SettingsMenu::operator=(const SettingsMenu&) is deleted because Row
+    // structs hold raw pointers into m_values.
     // -----------------------------------------------------------------------
 
     void SetupSettingsMenu() {
-        m_overlay->GetSettingsMenu() = overlay::SettingsMenu(
+        m_overlay->GetSettingsMenu().SetOnChanged(
             [this](const overlay::SettingsMenu::Values& v) {
                 // Update cursor config
                 const auto vmCfg = VMConfigFromSettings(v);
@@ -193,11 +197,11 @@ private:
 
                 // Update deadzone config
                 core::DeadzoneConfig dz;
-                dz.innerRadius = v.dzInner;   // was dz.inner
-                dz.outerRadius = v.dzOuter;   // was dz.outer
+                dz.innerRadius = v.dzInner;
+                dz.outerRadius = v.dzOuter;
                 m_config->SetDeadzoneConfig(dz);
 
-                // Short haptic confirmation
+                // Short haptic confirmation (non-blocking)
                 if (m_inputEngine)
                     m_inputEngine->Rumble(ControllerId{0}, {0.0f, 0.20f, 30});
             }
