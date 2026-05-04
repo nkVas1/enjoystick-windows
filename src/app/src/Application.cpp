@@ -109,7 +109,9 @@ static void SendBrowserTab(bool forward) noexcept {
 // Synthesise a proper OS double-click: two down/up pairs spaced within
 // GetDoubleClickTime() so the window manager counts them as one event.
 static void SendDoubleClick(DWORD flags_down, DWORD flags_up) noexcept {
-    const DWORD gap = std::min(GetDoubleClickTime() / 3, static_cast<DWORD>(80));
+    // FIX C2782: explicit cast to DWORD so std::min deduces a single _Ty.
+    const DWORD gap = std::min(static_cast<DWORD>(GetDoubleClickTime()) / 3u,
+                               static_cast<DWORD>(80));
     INPUT inp[2]{};
     inp[0].type = inp[1].type = INPUT_MOUSE;
     inp[0].mi.dwFlags = flags_down;
@@ -311,13 +313,10 @@ private:
     void SetupKeyboard() {
         auto& kb = m_overlay->GetVirtualKeyboard();
         kb.SetOnSubmit([this](const std::wstring& text) {
-            // Restore focus to the previously active window before typing
             if (m_prevForeground && m_prevForeground != GetConsoleWindow()) {
                 SetForegroundWindow(m_prevForeground);
-                Sleep(30); // brief yield so focus settles
+                Sleep(30);
             }
-            // Type each character as a Unicode keyboard event directly into
-            // the active focus target (text field, search bar, etc.)
             for (wchar_t ch : text) {
                 INPUT inp{};
                 inp.type       = INPUT_KEYBOARD;
@@ -328,7 +327,6 @@ private:
                 inp.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
                 SendInput(1, &inp, sizeof(INPUT));
             }
-            // Re-enable mouse once keyboard closes
             if (m_mode == InputMode::Cursor)
                 m_virtualMouse->SetEnabled(true);
         });
@@ -342,9 +340,7 @@ private:
     }
 
     void OpenKeyboard() {
-        // Capture the foreground window so we can restore focus on submit
         m_prevForeground = GetForegroundWindow();
-        // Suspend mouse while keyboard is open
         m_virtualMouse->SetEnabled(false);
         m_overlay->GetVirtualKeyboard().Open();
         m_overlay->GetRadialMenu().Close();
@@ -406,10 +402,6 @@ private:
         const bool settingsOpen = m_overlay->GetSettingsMenu().IsOpen();
         const bool kbOpen       = m_overlay->GetVirtualKeyboard().IsOpen();
 
-        // -----------------------------------------------------------------
-        // Virtual keyboard — highest priority; it consumes all input.
-        // Mouse and all other actions are fully suspended.
-        // -----------------------------------------------------------------
         if (kbOpen) {
             m_overlay->GetVirtualKeyboard().Update(state, dt * 0.001f);
             if (!m_overlay->GetVirtualKeyboard().IsOpen() && m_mode == InputMode::Cursor)
@@ -418,12 +410,6 @@ private:
             return;
         }
 
-        // -----------------------------------------------------------------
-        // Guide-chord combos:
-        //   Guide alone (release)  → Radial menu toggle
-        //   Guide + Start          → Settings
-        //   Guide + LB             → Virtual keyboard  (alternative binding)
-        // -----------------------------------------------------------------
         if (pressed(Button::Guide)) {
             m_guideChordUsed = false;
         }
@@ -445,7 +431,6 @@ private:
             }
         }
 
-        // Guide release (no chord used) → toggle radial menu
         if (released(Button::Guide) && !m_guideChordUsed) {
             if (settingsOpen) {
                 m_overlay->GetSettingsMenu().Close();
@@ -457,10 +442,6 @@ private:
             return;
         }
 
-        // -----------------------------------------------------------------
-        // Start (Options) — single press → virtual keyboard
-        // Must not be combined with Guide (handled above)
-        // -----------------------------------------------------------------
         if (pressed(Button::Start) && !held(Button::Guide)) {
             if (radialOpen) {
                 m_overlay->GetRadialMenu().Close();
@@ -481,7 +462,6 @@ private:
             return;
         }
 
-        // LB + RB chord → toggle input mode
         if (held(Button::LB) && held(Button::RB)) {
             if (!m_lbRbChordActive) {
                 m_lbRbChordActive = true;
@@ -497,7 +477,6 @@ private:
                 if (pressed(Button::RB)) { SendBrowserTab(true);  }
             }
 
-            // LS press → proper OS double-click (respects system double-click time)
             if (pressed(Button::LS)) {
                 SendDoubleClick(MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP);
             }
@@ -509,8 +488,6 @@ private:
                 SendXButton(XBUTTON1, false);
             }
 
-            // Select (Back) held + DPad → fast scroll (5× multiplier)
-            // This lets users rapidly scroll long pages without moving the stick.
             const bool selectHeld = held(Button::Select);
             const int scrollMult = selectHeld ? 5 : 1;
 
@@ -529,7 +506,6 @@ private:
             if (pressed(Button::DPadUp))   SendScrollLines(+scrollMult);
             if (pressed(Button::DPadDown)) SendScrollLines(-scrollMult);
 
-            // Select alone (no DPad) → Win+Tab (task view)
             if (!selectHeld && pressed(Button::Select)) {
                 SendKey(VK_LWIN, true);
                 SendKey(VK_TAB,  true,  true);
@@ -537,7 +513,6 @@ private:
                 SendKey(VK_LWIN, false);
             }
 
-            // RS press → open keyboard (alternative binding)
             if (pressed(Button::RS)) {
                 OpenKeyboard();
                 return;
@@ -631,7 +606,6 @@ private:
     bool           m_lbRbChordActive = false;
     bool           m_guideChordUsed  = false;
 
-    // Previous foreground window handle — restored on keyboard submit
     HWND           m_prevForeground   = nullptr;
 
     static constexpr float kEastLongPressMs = 600.0f;
