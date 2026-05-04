@@ -1,126 +1,140 @@
-// WIN32_LEAN_AND_MEAN and NOMINMAX are injected by CMake for this module.
-#include <enjoystick/input/KeyboardMapper.hpp>
-
+// WIN32_LEAN_AND_MEAN and NOMINMAX injected by CMake.
 #include <Windows.h>
 
+#include "enjoystick/input/KeyboardMapper.hpp"
+
 #include <algorithm>
-#include <vector>
+#include <bit>
+#include <stdexcept>
 
 namespace enjoystick::input {
 
 // ---------------------------------------------------------------------------
-// Default bindings
-//
-// Intentionally omitted:
-//   Button::Select  — reserved for Application-level mode toggle
-//   Button::Guide   — reserved for Application-level radial menu
-//   Button::LB      — part of LB+RB chord for mode toggle
-//   Button::RB      — part of LB+RB chord for mode toggle
+// Binding management
 // ---------------------------------------------------------------------------
 
-static constexpr struct { Button btn; KeyBinding binding; } kDefaults[] = {
-    { Button::DPadUp,    { VK_UP,     false, false, false, true  } },
-    { Button::DPadDown,  { VK_DOWN,   false, false, false, true  } },
-    { Button::DPadLeft,  { VK_LEFT,   false, false, false, true  } },
-    { Button::DPadRight, { VK_RIGHT,  false, false, false, true  } },
-    { Button::South,     { VK_RETURN, false, false, false, false } },
-    { Button::East,      { VK_ESCAPE, false, false, false, false } },
-    { Button::North,     { VK_F5,     false, false, false, false } },
-    { Button::West,      { VK_SPACE,  false, false, false, false } },
-    { Button::Start,     { VK_ESCAPE, false, false, false, false } },
-    { Button::LS,        { VK_F2,     false, false, false, false } },
-    { Button::RS,        { VK_APPS,   false, false, false, false } },
-};
-
-// ---------------------------------------------------------------------------
-// Construction
-// ---------------------------------------------------------------------------
-
-KeyboardMapper::KeyboardMapper() {
-    ResetToDefaults();
+void KeyboardMapper::SetBindings(std::vector<KeyBinding> bindings) {
+    m_bindings = std::move(bindings);
+    SortBySpecificity();
+    m_prevButtons = 0;
+    m_activeChord = 0;
 }
 
-void KeyboardMapper::ResetToDefaults() {
+void KeyboardMapper::AddBinding(KeyBinding binding) {
+    m_bindings.push_back(std::move(binding));
+    SortBySpecificity();
+}
+
+void KeyboardMapper::ClearBindings() {
     m_bindings.clear();
-    for (const auto& d : kDefaults) {
-        m_bindings[static_cast<uint32_t>(d.btn)] = d.binding;
+    m_prevButtons = 0;
+    m_activeChord = 0;
+}
+
+const std::vector<KeyBinding>& KeyboardMapper::GetBindings() const noexcept {
+    return m_bindings;
+}
+
+void KeyboardMapper::SortBySpecificity() {
+    std::stable_sort(m_bindings.begin(), m_bindings.end(),
+        [](const KeyBinding& a, const KeyBinding& b) {
+            return Popcount(a.mask) > Popcount(b.mask);  // most bits first
+        });
+}
+
+int KeyboardMapper::Popcount(uint32_t v) noexcept {
+    return static_cast<int>(std::popcount(v));
+}
+
+// ---------------------------------------------------------------------------
+// Press — called on each input event
+//
+// Strategy:
+//   1. Compute rising edges (buttons that just went down).
+//   2. current = all currently-held buttons.
+//   3. Walk bindings most-specific-first.
+//   4. If binding.mask is a subset of current AND all bits in mask rose this
+//      frame — fire it. Record m_activeChord so Release knows what to lift.
+//   5. Only fire the FIRST (most-specific) match.
+// ---------------------------------------------------------------------------
+
+void KeyboardMapper::Press(const core::ControllerState& state) {
+    const uint32_t curr    = static_cast<uint32_t>(state.buttons);
+    const uint32_t rising  = static_cast<uint32_t>(state.buttonsDown);
+    m_prevButtons          = curr;
+
+    if (rising == 0) return;  // nothing new pressed
+
+    for (const auto& b : m_bindings) {
+        // All mask bits must be currently held
+        if ((curr & b.mask) != b.mask) continue;
+        // At least one bit of mask must have just risen this frame
+        if ((rising & b.mask) == 0) continue;
+
+        // Match! Consume and send.
+        m_activeChord = b.mask;
+        SendKeys(b.sequence);
+        return;  // most-specific-first: done
     }
-    m_prevButtons = Button::None;
 }
 
-void KeyboardMapper::Bind(Button button, KeyBinding binding) {
-    m_bindings[static_cast<uint32_t>(button)] = binding;
-}
+void KeyboardMapper::Release(const core::ControllerState& state) {
+    if (m_activeChord == 0) return;
 
-void KeyboardMapper::Unbind(Button button) {
-    m_bindings.erase(static_cast<uint32_t>(button));
-}
+    const uint32_t curr    = static_cast<uint32_t>(state.buttons);
+    const uint32_t falling = static_cast<uint32_t>(state.buttonsUp);
 
-void KeyboardMapper::SetEnabled(bool enabled) noexcept {
-    m_enabled = enabled;
-    if (!enabled) {
-        // Release any currently held keys to avoid stuck keys
-        const uint32_t held = static_cast<uint32_t>(m_prevButtons);
-        for (const auto& [mask, binding] : m_bindings) {
-            if (held & mask) InjectKey(binding, false);
+    // Release when any bit of the active chord has fallen
+    if ((falling & m_activeChord) == 0) return;
+
+    // Find the binding and send key-up in reverse order
+    for (const auto& b : m_bindings) {
+        if (b.mask == m_activeChord) {
+            SendKeysUp(b.sequence);
+            break;
         }
-        m_prevButtons = Button::None;
     }
-}
-
-bool KeyboardMapper::IsEnabled() const noexcept { return m_enabled; }
-
-// ---------------------------------------------------------------------------
-// Update
-// ---------------------------------------------------------------------------
-
-void KeyboardMapper::Update(const ControllerState& state) {
-    if (!m_enabled) return;
-
-    for (const auto& [mask, binding] : m_bindings) {
-        if (binding.vkCode == 0) continue;
-
-        const Button btn     = static_cast<Button>(mask);
-        const bool   wasDown = HasButton(m_prevButtons, btn);
-        const bool   isDown  = HasButton(state.buttons,  btn);
-
-        if (isDown  && !wasDown) InjectKey(binding, true);
-        if (!isDown && wasDown)  InjectKey(binding, false);
-    }
-
-    m_prevButtons = state.buttons;
+    m_activeChord = 0;
 }
 
 // ---------------------------------------------------------------------------
-// Private key injection
+// SendKeys / SendKeysUp
+//
+// We batch all KEYDOWNs in one SendInput call for atomicity (prevents the
+// OS from inserting other events between them at the driver level).
 // ---------------------------------------------------------------------------
 
-void KeyboardMapper::InjectKey(const KeyBinding& binding, bool down) {
-    SendModifiers(binding, down);
+void KeyboardMapper::SendKeys(const std::vector<VKey>& seq) {
+    if (seq.empty()) return;
 
-    INPUT inp{};
-    inp.type       = INPUT_KEYBOARD;
-    inp.ki.wVk     = binding.vkCode;
-    inp.ki.dwFlags = (binding.extended ? KEYEVENTF_EXTENDEDKEY : 0) |
-                     (down             ? 0                      : KEYEVENTF_KEYUP);
-    SendInput(1, &inp, sizeof(INPUT));
+    std::vector<INPUT> inputs;
+    inputs.reserve(seq.size());
 
-    // Release modifiers after key-up
-    if (!down) SendModifiers(binding, false);
-}
-
-void KeyboardMapper::SendModifiers(const KeyBinding& binding, bool down) {
-    const DWORD flags = down ? 0 : KEYEVENTF_KEYUP;
-    auto send = [&](WORD vk) {
+    for (const auto& vk : seq) {
         INPUT inp{};
         inp.type       = INPUT_KEYBOARD;
-        inp.ki.wVk     = vk;
-        inp.ki.dwFlags = flags;
-        SendInput(1, &inp, sizeof(INPUT));
-    };
-    if (binding.withCtrl)  send(VK_CONTROL);
-    if (binding.withShift) send(VK_SHIFT);
-    if (binding.withAlt)   send(VK_MENU);
+        inp.ki.wVk     = vk.vk;
+        inp.ki.dwFlags = vk.extended ? KEYEVENTF_EXTENDEDKEY : 0;
+        inputs.push_back(inp);
+    }
+    SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
+}
+
+void KeyboardMapper::SendKeysUp(const std::vector<VKey>& seq) {
+    if (seq.empty()) return;
+
+    std::vector<INPUT> inputs;
+    inputs.reserve(seq.size());
+
+    // Release in reverse order (e.g., Shift+Alt+T: up T, up Alt, up Shift)
+    for (auto it = seq.rbegin(); it != seq.rend(); ++it) {
+        INPUT inp{};
+        inp.type       = INPUT_KEYBOARD;
+        inp.ki.wVk     = it->vk;
+        inp.ki.dwFlags = KEYEVENTF_KEYUP | (it->extended ? KEYEVENTF_EXTENDEDKEY : 0);
+        inputs.push_back(inp);
+    }
+    SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
 }
 
 } // namespace enjoystick::input

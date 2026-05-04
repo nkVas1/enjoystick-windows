@@ -1,220 +1,134 @@
-// NOTE: WIN32_LEAN_AND_MEAN and NOMINMAX are injected by CMake.
-#include <enjoystick/cursor/VirtualMouse.hpp>
-
+// WIN32_LEAN_AND_MEAN and NOMINMAX injected by CMake.
 #include <Windows.h>
+
+#include "enjoystick/cursor/VirtualMouse.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 namespace enjoystick::cursor {
 
 // ---------------------------------------------------------------------------
-// Construction / Destruction
+// Construction
 // ---------------------------------------------------------------------------
 
-VirtualMouse::VirtualMouse(Config config)
-    : m_config(std::move(config))
+VirtualMouse::VirtualMouse(MouseConfig config)
+    : m_config(config)
 {}
 
-VirtualMouse::~VirtualMouse() {
-    auto release = [](DWORD flag) {
-        INPUT inp{};
-        inp.type       = INPUT_MOUSE;
-        inp.mi.dwFlags = flag;
-        SendInput(1, &inp, sizeof(INPUT));
-    };
-    if (m_leftButtonDown)  release(MOUSEEVENTF_LEFTUP);
-    if (m_rightButtonDown) release(MOUSEEVENTF_RIGHTUP);
+void VirtualMouse::SetConfig(MouseConfig config) { m_config = config; }
+const MouseConfig& VirtualMouse::GetConfig() const noexcept { return m_config; }
+
+// ---------------------------------------------------------------------------
+// Acceleration model
+//
+//  |axis| in [0, linearZone]   → speed = |axis| * maxSpeed           (linear)
+//  |axis| in (linearZone, 1]   → speed = pow(|axis|, exp) * maxSpeed (accelerated)
+//
+// The linear zone prevents micro-jitter when the stick rests near centre.
+// ---------------------------------------------------------------------------
+
+float VirtualMouse::Accelerate(float magnitude) const noexcept {
+    if (magnitude <= 0.0f) return 0.0f;
+    if (magnitude <= m_config.linearZone)
+        return magnitude * m_config.maxSpeed;
+    return std::pow(magnitude, m_config.exponent) * m_config.maxSpeed;
 }
 
 // ---------------------------------------------------------------------------
-// Public interface
+// Update — called per-frame with normalised stick axes and delta time
 // ---------------------------------------------------------------------------
 
-void VirtualMouse::SetConfig(Config config) noexcept {
-    m_config            = std::move(config);
-    m_currentVelocity   = {};
-    m_subPixelRemainder = {};
-    m_scrollV           = 0.0f;
-    m_scrollH           = 0.0f;
-}
+void VirtualMouse::Update(float dx, float dy, float deltaMs) {
+    if (deltaMs <= 0.0f) return;
 
-const VirtualMouse::Config& VirtualMouse::GetConfig() const noexcept {
-    return m_config;
-}
-
-void VirtualMouse::SetEnabled(bool enabled) noexcept {
-    if (m_enabled == enabled) return;
-    m_enabled = enabled;
-    if (!enabled) {
-        m_currentVelocity   = {};
-        m_subPixelRemainder = {};
-        m_scrollV           = 0.0f;
-        m_scrollH           = 0.0f;
-        auto release = [](DWORD flag) {
-            INPUT inp{};
-            inp.type       = INPUT_MOUSE;
-            inp.mi.dwFlags = flag;
-            SendInput(1, &inp, sizeof(INPUT));
-        };
-        if (m_leftButtonDown)  { release(MOUSEEVENTF_LEFTUP);  m_leftButtonDown  = false; }
-        if (m_rightButtonDown) { release(MOUSEEVENTF_RIGHTUP); m_rightButtonDown = false; }
+    // Magnitude-preserve the direction vector
+    const float mag = std::sqrt(dx * dx + dy * dy);
+    if (mag < 1e-6f) {
+        m_accumX = m_accumY = 0.0f;
+        return;
     }
-}
 
-bool VirtualMouse::IsEnabled() const noexcept { return m_enabled; }
+    const float speed = Accelerate(std::min(mag, 1.0f));
+    const float nx    = dx / mag;
+    const float ny    = -dy / mag;  // Y is inverted on screen
 
-// ---------------------------------------------------------------------------
-// Update  — 250 Hz polling thread
-// ---------------------------------------------------------------------------
+    m_accumX += nx * speed * deltaMs;
+    m_accumY += ny * speed * deltaMs;
 
-void VirtualMouse::Update(const ControllerState& state, float deltaSeconds) {
-    if (!m_enabled) return;
+    const long ix = static_cast<long>(m_accumX);
+    const long iy = static_cast<long>(m_accumY);
 
-    // LB held while in trigger-click mode = scroll wheel modifier:
-    //   right stick Y → vertical scroll
-    //   right stick X → horizontal scroll
-    const bool lbHeld = HasButton(state.buttons, Button::LB);
-    const bool scrollModActive = (m_config.triggersAsClicks && lbHeld);
+    m_accumX -= static_cast<float>(ix);
+    m_accumY -= static_cast<float>(iy);
 
-    if (scrollModActive) {
-        // Don't move cursor while scroll modifier is active
-        m_currentVelocity   = {};
-        m_subPixelRemainder = {};
-        HandleScrollStick(state, deltaSeconds);
+    if (ix == 0 && iy == 0) return;
+
+    if (m_config.wrapEdges) {
+        // Retrieve cursor then clamp + wrap
+        POINT pt;
+        GetCursorPos(&pt);
+        const int screenW = GetSystemMetrics(SM_CXSCREEN);
+        const int screenH = GetSystemMetrics(SM_CYSCREEN);
+
+        const int nx2 = (static_cast<int>(pt.x) + ix + screenW) % screenW;
+        const int ny2 = (static_cast<int>(pt.y) + iy + screenH) % screenH;
+        SetCursorPos(nx2, ny2);
     } else {
-        const Vec2 stick = m_config.useRightStick ? state.rightStick : state.leftStick;
-        const Vec2 targetVelocity = ApplyCurve(stick);
-
-        const float alpha = (m_config.accelerationMs > 0.0f)
-            ? std::min(1.0f, deltaSeconds * 1000.0f / m_config.accelerationMs)
-            : 1.0f;
-
-        m_currentVelocity.x += (targetVelocity.x - m_currentVelocity.x) * alpha;
-        m_currentVelocity.y += (targetVelocity.y - m_currentVelocity.y) * alpha;
-
-        MoveCursor(m_currentVelocity, deltaSeconds);
-        HandleScrollTrigger(state, deltaSeconds);
-    }
-
-    if (m_config.triggersAsClicks && !lbHeld) {
-        HandleClicks(state);
+        PostMouseInput(ix, iy, MOUSEEVENTF_MOVE);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Private helpers
+// Scroll
 // ---------------------------------------------------------------------------
 
-Vec2 VirtualMouse::ApplyCurve(Vec2 raw) const noexcept {
-    const float mag = std::sqrt(raw.x * raw.x + raw.y * raw.y);
-    if (mag < 1e-5f) return {0.0f, 0.0f};
-    const float speed = m_config.maxSpeedPx * std::pow(mag, m_config.curveExponent);
-    return { (raw.x / mag) * speed, (raw.y / mag) * speed };
+void VirtualMouse::ScrollStick(float dy, float deltaMs) {
+    if (std::abs(dy) < 1e-6f) { m_scrollAccum = 0.0f; return; }
+
+    m_scrollAccum += dy * m_config.scrollSpeed * deltaMs;
+
+    const long ticks = static_cast<long>(m_scrollAccum / WHEEL_DELTA);
+    if (ticks == 0) return;
+
+    m_scrollAccum -= static_cast<float>(ticks * WHEEL_DELTA);
+    PostMouseInput(0, 0, MOUSEEVENTF_WHEEL, static_cast<int>(ticks * WHEEL_DELTA));
 }
 
-void VirtualMouse::MoveCursor(Vec2 velocity, float deltaSeconds) {
-    m_subPixelRemainder.x += velocity.x * deltaSeconds;
-    m_subPixelRemainder.y += velocity.y * deltaSeconds;
+// ---------------------------------------------------------------------------
+// Clicks
+// ---------------------------------------------------------------------------
 
-    const int dx = static_cast<int>(m_subPixelRemainder.x);
-    const int dy = static_cast<int>(m_subPixelRemainder.y);
-    if (dx == 0 && dy == 0) return;
+void VirtualMouse::LeftClick()  {
+    PostMouseInput(0, 0, MOUSEEVENTF_LEFTDOWN);
+    PostMouseInput(0, 0, MOUSEEVENTF_LEFTUP);
+}
+void VirtualMouse::RightClick() {
+    PostMouseInput(0, 0, MOUSEEVENTF_RIGHTDOWN);
+    PostMouseInput(0, 0, MOUSEEVENTF_RIGHTUP);
+}
+void VirtualMouse::MiddleClick() {
+    PostMouseInput(0, 0, MOUSEEVENTF_MIDDLEDOWN);
+    PostMouseInput(0, 0, MOUSEEVENTF_MIDDLEUP);
+}
+void VirtualMouse::LeftDown() { PostMouseInput(0, 0, MOUSEEVENTF_LEFTDOWN); }
+void VirtualMouse::LeftUp()   { PostMouseInput(0, 0, MOUSEEVENTF_LEFTUP); }
 
-    m_subPixelRemainder.x -= static_cast<float>(dx);
-    m_subPixelRemainder.y -= static_cast<float>(dy);
+// ---------------------------------------------------------------------------
+// PostMouseInput — single SendInput call
+// ---------------------------------------------------------------------------
 
+void VirtualMouse::PostMouseInput(
+    long dx, long dy, unsigned long flags, int wheelDelta) const
+{
     INPUT inp{};
-    inp.type       = INPUT_MOUSE;
-    inp.mi.dwFlags = MOUSEEVENTF_MOVE;
-    inp.mi.dx      =  dx;
-    inp.mi.dy      = -dy; // invert: stick up → cursor up
+    inp.type         = INPUT_MOUSE;
+    inp.mi.dx        = dx;
+    inp.mi.dy        = dy;
+    inp.mi.mouseData = static_cast<DWORD>(wheelDelta);
+    inp.mi.dwFlags   = static_cast<DWORD>(flags);
     SendInput(1, &inp, sizeof(INPUT));
-}
-
-void VirtualMouse::HandleClicks(const ControllerState& state) {
-    constexpr float kThreshold = 0.5f;
-    const bool wantLeft  = (state.rightTrigger >= kThreshold);
-    const bool wantRight = (state.leftTrigger  >= kThreshold);
-
-    auto sendMouse = [](DWORD flag) {
-        INPUT inp{};
-        inp.type       = INPUT_MOUSE;
-        inp.mi.dwFlags = flag;
-        SendInput(1, &inp, sizeof(INPUT));
-    };
-
-    if ( wantLeft  && !m_leftButtonDown)  { sendMouse(MOUSEEVENTF_LEFTDOWN);  m_leftButtonDown  = true;  }
-    if (!wantLeft  &&  m_leftButtonDown)  { sendMouse(MOUSEEVENTF_LEFTUP);    m_leftButtonDown  = false; }
-    if ( wantRight && !m_rightButtonDown) { sendMouse(MOUSEEVENTF_RIGHTDOWN); m_rightButtonDown = true;  }
-    if (!wantRight &&  m_rightButtonDown) { sendMouse(MOUSEEVENTF_RIGHTUP);   m_rightButtonDown = false; }
-}
-
-void VirtualMouse::HandleScrollTrigger(const ControllerState& state, float deltaSeconds) {
-    // Only used when triggersAsClicks = false
-    if (m_config.triggersAsClicks) return;
-
-    const bool lbHeld = HasButton(state.buttons, Button::LB);
-    const float rawV = (state.leftTrigger - state.rightTrigger)
-                     * m_config.scrollSpeed
-                     * (m_config.invertScroll ? -1.0f : 1.0f);
-
-    if (!lbHeld) {
-        // Vertical scroll
-        m_scrollV += rawV * deltaSeconds;
-        const int ticksV = static_cast<int>(m_scrollV);
-        if (ticksV != 0) {
-            m_scrollV -= static_cast<float>(ticksV);
-            INPUT inp{};
-            inp.type         = INPUT_MOUSE;
-            inp.mi.dwFlags   = MOUSEEVENTF_WHEEL;
-            inp.mi.mouseData = static_cast<DWORD>(ticksV * WHEEL_DELTA);
-            SendInput(1, &inp, sizeof(INPUT));
-        }
-    } else {
-        // Horizontal scroll (LB held)
-        m_scrollH += rawV * deltaSeconds;
-        const int ticksH = static_cast<int>(m_scrollH);
-        if (ticksH != 0) {
-            m_scrollH -= static_cast<float>(ticksH);
-            INPUT inp{};
-            inp.type         = INPUT_MOUSE;
-            inp.mi.dwFlags   = MOUSEEVENTF_HWHEEL;
-            inp.mi.mouseData = static_cast<DWORD>(ticksH * WHEEL_DELTA);
-            SendInput(1, &inp, sizeof(INPUT));
-        }
-    }
-}
-
-void VirtualMouse::HandleScrollStick(const ControllerState& state, float deltaSeconds) {
-    // Called when triggersAsClicks=true AND LB is held
-    // Right stick Y -> vertical scroll; right stick X -> horizontal scroll
-    const Vec2& stick = state.rightStick;
-    const float invMul = m_config.invertScroll ? -1.0f : 1.0f;
-
-    // Vertical
-    m_scrollV += stick.y * m_config.scrollSpeed * invMul * deltaSeconds;
-    const int ticksV = static_cast<int>(m_scrollV);
-    if (ticksV != 0) {
-        m_scrollV -= static_cast<float>(ticksV);
-        INPUT inp{};
-        inp.type         = INPUT_MOUSE;
-        inp.mi.dwFlags   = MOUSEEVENTF_WHEEL;
-        inp.mi.mouseData = static_cast<DWORD>(ticksV * WHEEL_DELTA);
-        SendInput(1, &inp, sizeof(INPUT));
-    }
-
-    // Horizontal
-    m_scrollH += stick.x * m_config.scrollSpeed * invMul * deltaSeconds;
-    const int ticksH = static_cast<int>(m_scrollH);
-    if (ticksH != 0) {
-        m_scrollH -= static_cast<float>(ticksH);
-        INPUT inp{};
-        inp.type         = INPUT_MOUSE;
-        inp.mi.dwFlags   = MOUSEEVENTF_HWHEEL;
-        inp.mi.mouseData = static_cast<DWORD>(ticksH * WHEEL_DELTA);
-        SendInput(1, &inp, sizeof(INPUT));
-    }
 }
 
 } // namespace enjoystick::cursor

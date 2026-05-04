@@ -1,68 +1,66 @@
 #pragma once
 
-#include <enjoystick/shared/Types.hpp>
+#include <enjoystick/core/InputTypes.hpp>
+
 #include <cstdint>
-#include <unordered_map>
+#include <functional>
+#include <memory>
+#include <string>
 #include <vector>
 
 namespace enjoystick::input {
 
-///
-/// KeyboardMapper — translates controller button events into keyboard
-/// and mouse-button SendInput calls so that *any* Windows application
-/// receives standard keyboard messages without special controller support.
-///
-/// Default bindings (Steam-Deck-inspired UI navigation layer):
-///   D-pad Up/Down/Left/Right  →  Arrow keys
-///   South (A/Cross)           →  Enter
-///   East  (B/Circle)          →  Escape
-///   North (Y/Triangle)        →  F5  (refresh / context action)
-///   West  (X/Square)          →  Space
-///   LB                        →  Tab
-///   RB                        →  Shift+Tab  (reverse focus)
-///   Start                     →  Escape
-///   Select                    →  Windows key
-///   LS click                  →  F2  (rename)
-///   RS click                  →  Application key (context menu)
-///
-/// All bindings are runtime-configurable; custom profiles can be
-/// loaded from ConfigStore.
-///
-
-struct KeyBinding {
-    uint16_t vkCode    = 0;      ///< Virtual key code (VK_*)
-    bool     withShift = false;  ///< Inject Shift modifier
-    bool     withCtrl  = false;  ///< Inject Ctrl modifier
-    bool     withAlt   = false;  ///< Inject Alt modifier
-    bool     extended  = false;  ///< KEYEVENTF_EXTENDEDKEY flag
+/// One key/modifier in a chord output sequence.
+struct VKey {
+    uint16_t vk   = 0;   ///< Windows virtual key code
+    bool  extended = false;
 };
 
+/// A complete binding: when all buttons in `mask` are held AND rise together,
+/// fire the `sequence` of VKeys.
+struct KeyBinding {
+    uint32_t         mask;      ///< OR of Button enum values
+    std::vector<VKey> sequence; ///< keys to inject (pressed in order, released in reverse)
+    std::string       name;     ///< human-readable label (for UI / logging)
+};
+
+///
+/// KeyboardMapper — translates gamepad Button chords to keyboard INPUT events.
+///
+/// Chord disambiguation: bindings are evaluated most-specific-first
+/// (by popcount of mask). A 3-button chord consumes the event and
+/// prevents any 2-button or 1-button subset from also firing.
+///
 class KeyboardMapper {
 public:
-    KeyboardMapper();
+    KeyboardMapper() = default;
 
-    /// Bind a button to a key sequence. Pass an empty binding to unbind.
-    void Bind(Button button, KeyBinding binding);
-    void Unbind(Button button);
+    /// Replace the entire binding table. Automatically sorts by specificity.
+    void SetBindings(std::vector<KeyBinding> bindings);
 
-    /// Clear all bindings and restore defaults.
-    void ResetToDefaults();
+    /// Add a single binding (re-sorts the table).
+    void AddBinding(KeyBinding binding);
 
-    /// Call every frame with the latest controller state.
-    /// Synthesises key-down on button press, key-up on release.
-    void Update(const ControllerState& state);
+    /// Clear all bindings.
+    void ClearBindings();
 
-    /// Temporarily disable all key injection (e.g. while in cursor mode).
-    void SetEnabled(bool enabled) noexcept;
-    [[nodiscard]] bool IsEnabled() const noexcept;
+    /// Call once per input event. Detects rising edges, resolves chords,
+    /// and fires SendInput for matched bindings.
+    /// @param state  Current controller state (buttons bitmask used).
+    void Press  (const core::ControllerState& state);
+    void Release(const core::ControllerState& state);
+
+    [[nodiscard]] const std::vector<KeyBinding>& GetBindings() const noexcept;
 
 private:
-    void InjectKey(const KeyBinding& binding, bool down);
-    void SendModifiers(const KeyBinding& binding, bool down);
+    void SortBySpecificity();
+    static void SendKeys  (const std::vector<VKey>& seq);
+    static void SendKeysUp(const std::vector<VKey>& seq);
+    static int  Popcount  (uint32_t v) noexcept;
 
-    std::unordered_map<uint32_t, KeyBinding> m_bindings;  ///< Button mask → binding
-    Button  m_prevButtons = Button::None;
-    bool    m_enabled     = true;
+    std::vector<KeyBinding> m_bindings;
+    uint32_t                m_prevButtons = 0;
+    uint32_t                m_activeChord = 0;  ///< mask of currently held chord, 0 if none
 };
 
 } // namespace enjoystick::input

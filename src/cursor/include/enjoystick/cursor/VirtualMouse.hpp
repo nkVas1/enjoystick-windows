@@ -1,54 +1,61 @@
 #pragma once
-#include <enjoystick/shared/Types.hpp>
+
+#include <enjoystick/core/InputTypes.hpp>
+
+#include <cstdint>
 
 namespace enjoystick::cursor {
 
-using namespace enjoystick;
+///
+/// Configurable parameters for the virtual-mouse acceleration model.
+///
+struct MouseConfig {
+    float maxSpeed     = 25.0f;  ///< pixels / ms at full deflection
+    float exponent     = 2.0f;   ///< acceleration curve power (1.0 = linear)
+    float linearZone   = 0.15f;  ///< [0,linearZone] → no acceleration
+    bool  wrapEdges    = false;  ///< wrap cursor at screen edges
+    float scrollSpeed  = 6.0f;   ///< scroll lines / ms at full deflection
+};
 
-class VirtualMouse final {
+///
+/// VirtualMouse — drives the system cursor via SendInput.
+///
+/// Threading: NOT thread-safe. Call Update/Click from a single thread
+/// (typically the input event handler).
+///
+class VirtualMouse {
 public:
-    struct Config {
-        float maxSpeedPx      = 1800.0f; ///< px/s at full deflection
-        float curveExponent   = 1.8f;    ///< <1 = linear-ish; >1 = exponential
-        float accelerationMs  = 120.0f;  ///< velocity ramp-up time (0 = instant)
-        bool  triggersAsClicks = true;   ///< RT=LMB, LT=RMB; false = trigger scroll
-        float scrollSpeed     = 8.0f;    ///< scroll ticks/s at full stick deflection
-        bool  invertScroll    = false;
-        bool  useRightStick   = true;    ///< false = use left stick for cursor
-    };
+    explicit VirtualMouse(MouseConfig config = {});
 
-    explicit VirtualMouse(Config config = {});
-    ~VirtualMouse();
+    void SetConfig(MouseConfig config);
+    const MouseConfig& GetConfig() const noexcept;
 
-    VirtualMouse(const VirtualMouse&)            = delete;
-    VirtualMouse& operator=(const VirtualMouse&) = delete;
+    /// Move cursor by (dx, dy) in normalised [-1,1] space, scaled by deltaMs.
+    /// Call once per input event with the stick axes.
+    void Update(float dx, float dy, float deltaMs);
 
-    void SetConfig(Config config) noexcept;
-    const Config& GetConfig() const noexcept;
+    /// Scroll wheel. dy in normalised [-1,1]; positive = scroll down.
+    void ScrollStick(float dy, float deltaMs);
 
-    void SetEnabled(bool enabled) noexcept;
-    bool IsEnabled() const noexcept;
+    /// Mouse button clicks.
+    void LeftClick();
+    void RightClick();
+    void MiddleClick();
 
-    /// Must be called at the polling rate (e.g. 250 Hz).
-    /// @param state        Latest controller snapshot
-    /// @param deltaSeconds Time since last call in seconds
-    void Update(const ControllerState& state, float deltaSeconds);
+    /// Hold / release for drag operations.
+    void LeftDown();
+    void LeftUp();
 
 private:
-    Vec2  ApplyCurve(Vec2 raw) const noexcept;
-    void  MoveCursor(Vec2 velocity, float deltaSeconds);
-    void  HandleClicks(const ControllerState& state);
-    void  HandleScrollTrigger(const ControllerState& state, float deltaSeconds);
-    void  HandleScrollStick(const ControllerState& state, float deltaSeconds);
+    [[nodiscard]] float Accelerate(float magnitude) const noexcept;
+    void PostMouseInput(long dx, long dy, unsigned long flags, int wheelDelta = 0) const;
 
-    Config m_config;
-    Vec2   m_currentVelocity   {};
-    Vec2   m_subPixelRemainder {};
-    float  m_scrollV           = 0.0f; ///< vertical scroll accumulator
-    float  m_scrollH           = 0.0f; ///< horizontal scroll accumulator
-    bool   m_enabled           = true;
-    bool   m_leftButtonDown    = false;
-    bool   m_rightButtonDown   = false;
+    MouseConfig m_config;
+
+    // Sub-pixel accumulator to avoid dithering at slow speeds.
+    float m_accumX = 0.0f;
+    float m_accumY = 0.0f;
+    float m_scrollAccum = 0.0f;
 };
 
 } // namespace enjoystick::cursor
