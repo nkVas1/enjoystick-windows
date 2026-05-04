@@ -298,7 +298,13 @@ private:
     void SetupKeyboard() {
         auto& kb = m_overlay->GetVirtualKeyboard();
         kb.SetOnSubmit([this](const std::wstring& text) {
-            // Type the submitted text as keyboard events
+            // Restore focus to the previously active window before typing
+            if (m_prevForeground && m_prevForeground != GetConsoleWindow()) {
+                SetForegroundWindow(m_prevForeground);
+                Sleep(30); // brief yield so focus settles
+            }
+            // Type each character as a Unicode keyboard event directly into
+            // the active focus target (text field, search bar, etc.)
             for (wchar_t ch : text) {
                 INPUT inp{};
                 inp.type       = INPUT_KEYBOARD;
@@ -323,11 +329,13 @@ private:
     }
 
     void OpenKeyboard() {
+        // Capture the foreground window so we can restore focus on submit
+        m_prevForeground = GetForegroundWindow();
         // Suspend mouse while keyboard is open
         m_virtualMouse->SetEnabled(false);
         m_overlay->GetVirtualKeyboard().Open();
         m_overlay->GetRadialMenu().Close();
-        m_overlay->ShowToast(L"\u2328  Virtual keyboard — [Y] submit  [B] cancel", 3000);
+        m_overlay->ShowToast(L"\u2328  Virtual keyboard \u2014 [\u25B2] submit  [\u25C6] cancel", 3000);
     }
 
     void SetMode(InputMode newMode) {
@@ -388,25 +396,22 @@ private:
         // -----------------------------------------------------------------
         // Virtual keyboard — highest priority; it consumes all input.
         // Mouse and all other actions are fully suspended.
-        // The keyboard itself handles East=cancel, North=submit, West=backspace.
         // -----------------------------------------------------------------
         if (kbOpen) {
             m_overlay->GetVirtualKeyboard().Update(state, dt * 0.001f);
-            // Re-enable mouse when keyboard finishes closing
             if (!m_overlay->GetVirtualKeyboard().IsOpen() && m_mode == InputMode::Cursor)
                 m_virtualMouse->SetEnabled(true);
             m_prevButtons = state.buttons;
-            return;  // nothing else runs while keyboard is open
+            return;
         }
 
         // -----------------------------------------------------------------
         // Guide-chord combos:
-        //   Guide alone (release)          → Radial menu toggle
-        //   Guide + Start (Options)        → Settings
-        //   Guide + Select (Share/Create)  → Virtual keyboard
+        //   Guide alone (release) → Radial menu toggle
+        //   Guide + Start         → Settings
         // -----------------------------------------------------------------
         if (pressed(Button::Guide)) {
-            m_guideChordUsed = false;  // reset chord flag on press
+            m_guideChordUsed = false;
         }
 
         if (held(Button::Guide)) {
@@ -419,11 +424,6 @@ private:
                 }
                 return;
             }
-            if (pressed(Button::Select)) {
-                m_guideChordUsed = true;
-                OpenKeyboard();
-                return;
-            }
         }
 
         // Guide release (no chord used) → toggle radial menu
@@ -434,6 +434,23 @@ private:
                 auto& rm = m_overlay->GetRadialMenu();
                 if (rm.IsVisible()) rm.Close();
                 else                rm.Open();
+            }
+            return;
+        }
+
+        // -----------------------------------------------------------------
+        // Start (Options) — single press → virtual keyboard
+        // Must not be combined with Guide (handled above)
+        // -----------------------------------------------------------------
+        if (pressed(Button::Start) && !held(Button::Guide)) {
+            if (kbOpen) {
+                // already handled above, but guard anyway
+            } else if (radialOpen) {
+                // Options inside radial: open keyboard directly
+                m_overlay->GetRadialMenu().Close();
+                OpenKeyboard();
+            } else {
+                OpenKeyboard();
             }
             return;
         }
@@ -498,6 +515,12 @@ private:
                 m_virtualMouse->LeftClick();
             }
 
+            // RS press → open keyboard (alternative binding)
+            if (pressed(Button::RS)) {
+                OpenKeyboard();
+                return;
+            }
+
             if (held(Button::East)) {
                 m_eastHoldMs += dt;
                 if (m_eastHoldMs >= kEastLongPressMs && !m_eastLongActive) {
@@ -516,8 +539,6 @@ private:
             }
         }
 
-        // Mouse update only runs when keyboard is NOT open (keyboard consumes
-        // left stick entirely — the early-return above guarantees this).
         m_virtualMouse->Update(state, dt);
         m_keyMapper->Update(state);
         m_overlay->PostState(state);
@@ -586,7 +607,10 @@ private:
     LARGE_INTEGER  m_qpcFreq         = {};
     Button         m_prevButtons     = Button::None;
     bool           m_lbRbChordActive = false;
-    bool           m_guideChordUsed  = false;   ///< true if Guide+ chord fired this press
+    bool           m_guideChordUsed  = false;
+
+    // Previous foreground window handle — restored on keyboard submit
+    HWND           m_prevForeground   = nullptr;
 
     static constexpr float kEastLongPressMs = 600.0f;
     float  m_eastHoldMs     = 0.0f;
