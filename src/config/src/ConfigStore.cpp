@@ -1,6 +1,10 @@
 #include <enjoystick/config/ConfigStore.hpp>
 
-#define WIN32_LEAN_AND_MEAN
+// WIN32_LEAN_AND_MEAN is injected by CMake via target_compile_definitions;
+// guard the manual define so we never trigger C4005 (macro redefinition).
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+#endif
 #include <Windows.h>
 
 #include <fstream>
@@ -13,19 +17,8 @@
 #include <algorithm>
 
 // Minimal JSON serialisation — no third-party dependency.
-// Only handles the flat numeric/bool values we need.
+// Only handles the flat numeric/bool values stored in AppConfig.
 namespace enjoystick::config::json {
-
-    static std::string EscapeString(const std::string& s) {
-        std::string out;
-        out.reserve(s.size() + 2);
-        for (char c : s) {
-            if (c == '"') out += "\\\"";
-            else if (c == '\\') out += "\\\\";
-            else out += c;
-        }
-        return out;
-    }
 
     // Tiny key-value parser: returns value string for a given key.
     static std::string GetValue(const std::string& json, const std::string& key) {
@@ -45,7 +38,6 @@ namespace enjoystick::config::json {
         while (end < json.size() && json[end] != ',' && json[end] != '}' &&
                json[end] != '\n') ++end;
         std::string val = json.substr(pos, end - pos);
-        // trim
         val.erase(0, val.find_first_not_of(" \t"));
         val.erase(val.find_last_not_of(" \t\r\n") + 1);
         return val;
@@ -149,16 +141,16 @@ private:
         const auto& c = m_config.cursor;
         const auto& d = m_config.deadzone;
         o << "{\n";
-        o << "  \"cursor_maxSpeedPx\": "      << c.maxSpeedPx      << ",\n";
-        o << "  \"cursor_curveExponent\": "   << c.curveExponent   << ",\n";
-        o << "  \"cursor_accelerationMs\": " << c.accelerationMs  << ",\n";
-        o << "  \"cursor_useRightStick\": "  << (c.useRightStick   ? "true" : "false") << ",\n";
-        o << "  \"cursor_triggersAsClicks\": " << (c.triggersAsClicks ? "true" : "false") << ",\n";
-        o << "  \"cursor_scrollSpeed\": "    << c.scrollSpeed     << ",\n";
-        o << "  \"cursor_invertScroll\": "   << (c.invertScroll    ? "true" : "false") << ",\n";
-        o << "  \"dz_innerRadius\": "        << d.innerRadius     << ",\n";
-        o << "  \"dz_outerRadius\": "        << d.outerRadius     << ",\n";
-        o << "  \"dz_mode\": "               << static_cast<int>(d.mode) << "\n";
+        o << "  \"cursor_maxSpeedPx\": "        << c.maxSpeedPx      << ",\n";
+        o << "  \"cursor_curveExponent\": "     << c.curveExponent   << ",\n";
+        o << "  \"cursor_accelerationMs\": "    << c.accelerationMs  << ",\n";
+        o << "  \"cursor_useRightStick\": "     << (c.useRightStick    ? "true" : "false") << ",\n";
+        o << "  \"cursor_triggersAsClicks\": "  << (c.triggersAsClicks ? "true" : "false") << ",\n";
+        o << "  \"cursor_scrollSpeed\": "       << c.scrollSpeed     << ",\n";
+        o << "  \"cursor_invertScroll\": "      << (c.invertScroll    ? "true" : "false") << ",\n";
+        o << "  \"dz_innerRadius\": "           << d.innerRadius     << ",\n";
+        o << "  \"dz_outerRadius\": "           << d.outerRadius     << ",\n";
+        o << "  \"dz_mode\": "                  << static_cast<int>(d.mode) << "\n";
         o << "}\n";
         return o.str();
     }
@@ -167,23 +159,23 @@ private:
         using namespace json;
         auto& c = m_config.cursor;
         auto& d = m_config.deadzone;
-        c.maxSpeedPx       = GetFloat(j, "cursor_maxSpeedPx",      c.maxSpeedPx);
-        c.curveExponent    = GetFloat(j, "cursor_curveExponent",   c.curveExponent);
-        c.accelerationMs   = GetFloat(j, "cursor_accelerationMs",  c.accelerationMs);
-        c.useRightStick    = GetBool (j, "cursor_useRightStick",   c.useRightStick);
-        c.triggersAsClicks = GetBool (j, "cursor_triggersAsClicks",c.triggersAsClicks);
-        c.scrollSpeed      = GetFloat(j, "cursor_scrollSpeed",     c.scrollSpeed);
-        c.invertScroll     = GetBool (j, "cursor_invertScroll",    c.invertScroll);
-        d.innerRadius      = GetFloat(j, "dz_innerRadius",         d.innerRadius);
-        d.outerRadius      = GetFloat(j, "dz_outerRadius",         d.outerRadius);
+        c.maxSpeedPx       = GetFloat(j, "cursor_maxSpeedPx",       c.maxSpeedPx);
+        c.curveExponent    = GetFloat(j, "cursor_curveExponent",    c.curveExponent);
+        c.accelerationMs   = GetFloat(j, "cursor_accelerationMs",   c.accelerationMs);
+        c.useRightStick    = GetBool (j, "cursor_useRightStick",    c.useRightStick);
+        c.triggersAsClicks = GetBool (j, "cursor_triggersAsClicks", c.triggersAsClicks);
+        c.scrollSpeed      = GetFloat(j, "cursor_scrollSpeed",      c.scrollSpeed);
+        c.invertScroll     = GetBool (j, "cursor_invertScroll",     c.invertScroll);
+        d.innerRadius      = GetFloat(j, "dz_innerRadius",          d.innerRadius);
+        d.outerRadius      = GetFloat(j, "dz_outerRadius",          d.outerRadius);
         d.mode = static_cast<core::DeadzoneConfig::Mode>(
                      GetUint(j, "dz_mode", static_cast<uint32_t>(d.mode)));
         // Clamp to sane ranges
-        c.maxSpeedPx     = std::clamp(c.maxSpeedPx,     100.0f, 10000.0f);
-        c.curveExponent  = std::clamp(c.curveExponent,  0.3f,   1.0f);
-        c.accelerationMs = std::clamp(c.accelerationMs, 0.0f,   500.0f);
-        c.scrollSpeed    = std::clamp(c.scrollSpeed,    1.0f,   50.0f);
-        d.innerRadius    = std::clamp(d.innerRadius,    0.0f,   0.5f);
+        c.maxSpeedPx     = std::clamp(c.maxSpeedPx,     100.0f,  10000.0f);
+        c.curveExponent  = std::clamp(c.curveExponent,  0.3f,    3.0f);
+        c.accelerationMs = std::clamp(c.accelerationMs, 0.0f,    500.0f);
+        c.scrollSpeed    = std::clamp(c.scrollSpeed,    1.0f,    50.0f);
+        d.innerRadius    = std::clamp(d.innerRadius,    0.0f,    0.5f);
         d.outerRadius    = std::clamp(d.outerRadius,    d.innerRadius + 0.01f, 1.0f);
     }
 
@@ -218,10 +210,9 @@ private:
                 FILE_NOTIFY_CHANGE_LAST_WRITE,
                 &bytesReturned, &ov, nullptr);
 
-            const DWORD wait = WaitForSingleObject(ov.hEvent, 300 /*ms timeout*/);
+            const DWORD wait = WaitForSingleObject(ov.hEvent, 300);
             if (wait == WAIT_OBJECT_0) {
-                // Small debounce: the editor may write in two passes
-                Sleep(150);
+                Sleep(150); // debounce: editor may write in two passes
                 Load();
             }
         }

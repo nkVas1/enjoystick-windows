@@ -1,23 +1,31 @@
 #include <enjoystick/app/Application.hpp>
 
-#define WIN32_LEAN_AND_MEAN
+// WIN32_LEAN_AND_MEAN is already injected by CMake via target_compile_definitions;
+// guard so the manual define becomes a no-op and avoids C4005 redefinition.
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+#endif
 #include <Windows.h>
 #include <stdexcept>
 #include <string>
 
 ///
-/// WinMain — Enjoystick Windows entry point.
+/// WinMain — EnjoyStick Windows entry point.
 ///
-/// Flags:
-///   --autostart   Launched by the Windows run key; suppress first-run dialogs.
+/// Supported command-line flags (parsed by Application::Init):
+///   --autostart   Launched from the Windows run key; suppress first-run UI.
+///   --minimized   Start with overlay hidden until first controller input.
 ///
 int WINAPI wWinMain(
     _In_ HINSTANCE,
     _In_opt_ HINSTANCE,
-    _In_ LPWSTR lpCmdLine,
+    _In_ LPWSTR  lpCmdLine,
     _In_ int)
 {
-    // Ensure only one instance runs at a time
+    // Suppress C4100: lpCmdLine is passed to Application for future flag parsing.
+    (void)lpCmdLine;
+
+    // Ensure only one instance runs at a time.
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"EnjoyStick_SingleInstance");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         if (hMutex) ReleaseMutex(hMutex);
@@ -31,7 +39,7 @@ int WINAPI wWinMain(
         if (hMutex) ReleaseMutex(hMutex);
         return result;
     } catch (const std::exception& ex) {
-        MessageBoxA(nullptr, ex.what(), "EnjoyStick — Fatal Error",
+        MessageBoxA(nullptr, ex.what(), "EnjoyStick \xe2\x80\x94 Fatal Error",
                     MB_ICONERROR | MB_OK);
         if (hMutex) ReleaseMutex(hMutex);
         return 1;
