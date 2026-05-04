@@ -1,197 +1,227 @@
-# 🎮 Enjoystick Windows
+# EnjoyStick Windows
 
-> **Seamless. Stylish. Controller-native.**  
-> A polished UX/UI extension that transforms Windows 10/11 into a fully
-> gamepad-navigable environment — from gaming to deep productivity.
+> Seamless gamepad navigation for Windows 10/11 — cursor, keyboard, overlay and radial menu, all in one.
 
-[![Build](https://github.com/nkVas1/enjoystick-windows/actions/workflows/build.yml/badge.svg)](https://github.com/nkVas1/enjoystick-windows/actions/workflows/build.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-
----
-
-## ✨ What It Does
-
-EnjoyStick Windows is a **non-intrusive system overlay** that augments Windows
-with a controller-first experience — designed with the elegance of Steam Deck’s
-Big Picture Mode, the fluency of PlayStation’s system UI, and the power of
-Xbox’s Game Bar, then taken further.
-
-Install it once. It works *out of the box*. No config files. No friction.
+[![Build](https://img.shields.io/badge/build-passing-brightgreen)](#building)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)](#requirements)
+[![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
 ---
 
-## 🎯 Key Features
+## What it does
 
-| Feature | Description |
-|---|---|
-| **Virtual Cursor** | Right-stick → smooth power-curve mouse; triggers → clicks |
-| **Keyboard Nav** | D-pad / buttons → keyboard events for any Windows app |
-| **Radial Quick Menu** | Guide button → instant radial overlay (Direct2D, 60 fps) |
-| **System Tray** | Right-click tray icon for mode toggle, settings, auto-start |
-| **Hot-reload Config** | Edit `%APPDATA%\Enjoystick\config.json`, changes apply live |
-| **Auto-start** | Registers in `HKCU\...\Run` on first launch (no elevation) |
-| **Toast Notifications** | Controller connected/disconnected, mode changes |
-| **Multi-controller** | Up to 4 simultaneous XInput controllers |
-
----
-
-## 🛠️ Tech Stack
-
-| Layer | Technology |
-|---|---|
-| Input engine | C++20, XInput 1.4 |
-| Cursor / keyboard | Win32 `SendInput` |
-| Overlay rendering | Direct2D, DirectWrite, DirectComposition |
-| System tray | `Shell_NotifyIcon` (Win32) |
-| Config | Hand-rolled JSON, `ReadDirectoryChangesW` hot-reload |
-| Build system | CMake 3.20+ · MSVC (VS 2019 / VS 2022) · Ninja or MSBuild |
-| CI | GitHub Actions · MSVC x64 Debug + Release matrix |
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-| Tool | Minimum version | Notes |
+| Feature | Status | Notes |
 |---|---|---|
-| Windows | 10 21H2 or 11 | Target OS |
-| Visual Studio / Build Tools | **2019** (16.x) or 2022 | Include *Desktop C++* workload |
-| CMake | **3.20** | Bundled with VS; or install separately |
-| Git | any | |
-| vcpkg *(optional)* | latest | Only needed for future third-party deps |
-
-> ⚠️ **VS 2019 users:** Use the `vs2019-debug` / `vs2019-release` CMake presets
-> (see below). The default `windows-release` preset uses Ninja which may not
-> be in your PATH.
-
-### 1. Clone
-
-```powershell
-git clone https://github.com/nkVas1/enjoystick-windows.git
-cd enjoystick-windows
-```
-
-### 2. Configure
-
-**Option A — VS 2019 Build Tools (recommended for your setup)**
-```powershell
-# Open a "x64 Native Tools Command Prompt for VS 2019", then:
-cmake -B build/vs2019-release -G "Visual Studio 16 2019" -A x64 -DCMAKE_BUILD_TYPE=Release
-```
-
-**Option B — VS Code CMake Tools with preset**  
-Select the preset **"VS 2019 x64 Release (no Ninja required)"** from the
-CMake Tools preset picker in VS Code.
-
-**Option C — Ninja + VS 2019 (if Ninja is installed)**
-```powershell
-# Set VCPKG_ROOT if you use vcpkg, otherwise skip
-$env:VCPKG_ROOT = "C:\vcpkg"   # optional
-
-cmake --preset windows-release
-```
-
-### 3. Build
-
-```powershell
-# MSBuild (Option A / B)
-cmake --build build/vs2019-release --config Release --parallel
-
-# Ninja (Option C)
-cmake --build build/windows-release
-```
-
-The executable lands at `build/<preset>/Release/EnjoyStick.exe`.
-
-### 4. Run
-
-```powershell
-.\build\vs2019-release\Release\EnjoyStick.exe
-```
-
-A tray icon appears. Connect any Xbox or PlayStation controller and go.
+| Right-stick → mouse cursor | ✅ Working | Acceleration curve, sub-pixel precision |
+| Triggers → left/right click | ✅ Working | Threshold 50%, configurable |
+| Trigger scroll (no-click mode) | ✅ Working | LT=up, RT=down |
+| D-pad / buttons → keyboard | ✅ Working | Navigate mode |
+| Transparent overlay (HUD) | ✅ Working | Per-pixel alpha, Direct2D |
+| Active indicator dot | ✅ Working | Bottom-right corner |
+| Toast notifications | ✅ Working | Controller connect/disconnect, mode change |
+| Radial quick-action menu | ✅ Working | Guide button, 7 items, animated |
+| Radial menu item icons + text | ✅ Working | Segoe UI Emoji via DWrite |
+| System tray icon + menu | ✅ Working | Right-click for options |
+| Auto-start on login | ✅ Working | HKCU Run key, silent |
+| Config JSON + hot-reload | ✅ Working | %APPDATA%\\Enjoystick\\config.json |
+| Haptic feedback | ✅ Working | Mode switch double-pulse |
+| LB+RB chord mode toggle | ✅ Working | Instant, no menu needed |
+| Select (Back) mode toggle | ✅ Working | Single-press shortcut |
+| NSIS installer | 🔧 Planned | Phase 2 |
+| Settings UI | 🔧 Planned | Phase 2 |
+| On-screen keyboard (OSK) | 🔧 Planned | Phase 2 |
+| Multi-monitor support | 🔧 Planned | Phase 2 |
 
 ---
 
-## ⚙️ Configuration
+## Requirements
 
-Settings are stored in `%APPDATA%\Enjoystick\config.json` (created automatically
-on first run). Edit with any text editor — changes apply **live** without
-restarting.
+- Windows 10 20H2+ or Windows 11
+- Visual Studio 2019 or 2022 with **Desktop development with C++** workload
+  (Build Tools edition works too)
+- CMake 3.21+ (bundled with VS, no separate install needed)
+- Xbox or PlayStation controller (XInput-compatible)
 
-```jsonc
+---
+
+## Building
+
+### Quick build (recommended)
+
+Double-click **`EnjoyStick.bat`** in the repo root, press **Y** when prompted.
+
+Or run from PowerShell:
+
+```powershell
+.\scripts\build.ps1
+```
+
+Output: `build\Release\Release\EnjoyStick.exe`
+
+### Rebuild after pulling changes
+
+The fastest way to rebuild after a `git pull`:
+
+```powershell
+# Pull latest changes
+git pull
+
+# Rebuild (incremental — only changed files recompile)
+.\scripts\build.ps1
+```
+
+CMake's incremental build will only recompile changed `.cpp` files. A full
+rebuild from scratch usually takes ~30 seconds; incremental rebuilds take 3–8s.
+
+### Build options
+
+```powershell
+# Release build (default)
+.\scripts\build.ps1
+
+# Debug build (symbols, no optimisation)
+.\scripts\build.ps1 -Config Debug
+
+# Build AND immediately launch
+.\scripts\build.ps1 -Run
+
+# Wipe build directory and rebuild from scratch
+.\scripts\build.ps1 -Clean
+
+# Combined: clean Debug build + run
+.\scripts\build.ps1 -Config Debug -Clean -Run
+```
+
+### Manual CMake (advanced)
+
+```powershell
+cmake -S . -B build\Release -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+cmake --build build\Release --config Release --parallel
+```
+
+---
+
+## Controls
+
+### Cursor mode (default)
+
+| Input | Action |
+|---|---|
+| Right stick | Mouse cursor |
+| Right trigger (RT) | Left click |
+| Left trigger (LT) | Right click |
+| Guide button | Open radial quick-action menu |
+| LB + RB (held) | Switch to Navigate mode |
+| Select / Back | Switch to Navigate mode |
+
+### Navigate mode
+
+| Input | Action |
+|---|---|
+| D-pad | Arrow keys |
+| South (A/Cross) | Enter |
+| East (B/Circle) | Escape |
+| North (Y/Triangle) | F5 |
+| West (X/Square) | Space |
+| LB | Tab |
+| RB | Shift+Tab |
+| Start | Escape |
+| Select / Back | Switch to Cursor mode |
+| LB + RB (held) | Switch to Cursor mode |
+
+### Radial menu (Guide button)
+
+| Stick direction | Action |
+|---|---|
+| Up | Desktop |
+| Right | Files (Explorer) |
+| Down-right | Settings |
+| Down | Search (Win+S) |
+| Down-left | Media Play/Pause |
+| Left | Toggle Mode |
+| Up-left | Exit EnjoyStick |
+
+Confirm selection: **South (A/Cross)**  
+Cancel / close menu: **East (B/Circle)**
+
+### Power-user shortcuts
+
+| Input | Action |
+|---|---|
+| Guide + LT | Force Cursor mode |
+| Guide + RT | Force Navigate mode |
+
+---
+
+## Config file
+
+Location: `%APPDATA%\Enjoystick\config.json`
+
+The file is created automatically on first launch with sensible defaults.
+Edit and save — changes apply instantly (hot-reload via ReadDirectoryChangesW).
+
+```json
 {
-  "cursor_maxSpeedPx":       2000.0,   // max cursor speed px/s
-  "cursor_curveExponent":    0.55,     // 0.3 = very smooth, 1.0 = linear
-  "cursor_accelerationMs":   80.0,     // ramp-up time in ms
-  "cursor_useRightStick":    true,     // false = left stick
-  "cursor_triggersAsClicks": true,     // LT/RT -> left/right click
-  "cursor_scrollSpeed":      8.0,      // scroll lines/s at full D-pad
-  "cursor_invertScroll":     false,
-  "dz_innerRadius":          0.08,     // inner deadzone [0, 0.5]
-  "dz_outerRadius":          0.98,     // outer edge clamp
-  "dz_mode":                 3         // 0=None 1=Axial 2=Radial 3=ScaledRadial
+  "cursor": {
+    "maxSpeedPx": 1800.0,
+    "curveExponent": 1.8,
+    "accelerationMs": 120.0,
+    "triggersAsClicks": true,
+    "scrollSpeed": 8.0,
+    "invertScroll": false
+  },
+  "deadzone": {
+    "type": "ScaledRadial",
+    "inner": 0.12,
+    "outer": 0.98
+  }
 }
 ```
 
 ---
 
-## 🎮 Default Controller Bindings
-
-| Button | Action |
-|---|---|
-| Right stick | Mouse cursor |
-| Left trigger | Left click |
-| Right trigger | Right click |
-| D-pad Up / Down | Scroll |
-| D-pad arrows (Navigate mode) | Arrow keys |
-| **A / Cross** | Enter |
-| **B / Circle** | Escape |
-| **Y / Triangle** | F5 |
-| **X / Square** | Space |
-| LB | Tab |
-| RB | Shift + Tab |
-| Select / Share | Win key |
-| RS click | Context menu |
-| LS click | F2 (rename) |
-| **Guide / PS button** | Open radial menu |
-
----
-
-## 📁 Project Structure
+## Project structure
 
 ```
-enjystick-windows/
+enjoystick-windows/
 ├── src/
-│   ├── core/       InputEngine, XInputBackend, DeadzoneFilter, HapticsEngine
-│   ├── cursor/     VirtualMouse (SendInput, power curve, sub-pixel)
-│   ├── input/      KeyboardMapper (button → key bindings)
-│   ├── overlay/    OverlayWindow (D2D), RadialMenu, Toast notifications
-│   ├── config/     ConfigStore (JSON + hot-reload)
-│   ├── app/        Application, SystemTray, AutoStart
-│   └── main.cpp    WinMain entry point
-├── .github/workflows/  CI build + lint
-├── CMakeLists.txt
-├── CMakePresets.json
-├── vcpkg.json
-└── CHANGELOG.md
+│   ├── app/          Application entry, SystemTray, AutoStart
+│   ├── config/       ConfigStore (JSON + hot-reload)
+│   ├── core/         InputEngine, XInput backend, DeadzoneFilter
+│   ├── cursor/       VirtualMouse (SendInput)
+│   ├── input/        KeyboardMapper (SendInput)
+│   └── overlay/      OverlayWindow (Direct2D), RadialMenu
+├── scripts/
+│   ├── build.ps1     Main build script
+│   ├── run.ps1       Launch existing build
+│   └── clean.ps1     Wipe build directory
+├── EnjoyStick.bat  Double-click launcher (prompts to build if needed)
+└── CMakeLists.txt  Root CMake configuration
 ```
 
 ---
 
-## 🧑‍💻 Contributing
+## Architecture highlights
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md). Code quality bar is senior-level.
-All PRs require tests for new logic, design review for UI changes, and
-performance profiling for input-path changes.
-
----
-
-## 📜 License
-
-MIT — see [LICENSE](./LICENSE)
+- **Lock-free state pipeline**: XInput polling thread → atomic double-buffer → render thread. Zero mutex contention on the hot path.
+- **Per-pixel alpha overlay**: `UpdateLayeredWindow(ULW_ALPHA)` + DIB surface. Genuine transparency — only drawn pixels are visible.
+- **Sub-pixel mouse precision**: Accumulator pattern avoids integer truncation at slow stick speeds.
+- **Configurable deadzone**: ScaledRadial mode scales the usable range to [0,1] after the inner deadzone, eliminating the dead band at slow movement.
+- **Hot-reload config**: `ReadDirectoryChangesW` watcher; changes propagate to subsystems on the watcher thread without restart.
 
 ---
 
-<p align="center"><sub>Built with obsessive attention to craft. 🎮</sub></p>
+## Roadmap
+
+### Phase 2
+- NSIS installer with Start Menu shortcut and uninstall entry
+- Settings overlay (accessible from radial menu) for live config editing
+- On-screen radial keyboard for text entry
+- Multi-monitor: overlay follows active window’s monitor
+- Steam / full-screen game detection: auto-suspend when a full-screen DX app is active
+
+### Phase 3
+- Profile system: per-app control schemes
+- HID/RawInput backend for non-XInput controllers (PS4/PS5 via USB)
+- Macro recorder: record button sequences and replay them
+- Community profile sharing
