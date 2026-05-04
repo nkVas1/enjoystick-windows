@@ -13,9 +13,15 @@ namespace enjoystick::cursor {
 
 namespace {
     static constexpr float kReferenceWidthPx  = 1920.0f;
-    static constexpr float kReferenceHeightPx = 1080.0f;
     static constexpr float kReferenceDpi      = 96.0f;
     static constexpr float kMinMovementPixels = 1.0f;
+
+    inline HMONITOR ToHMONITOR(uintptr_t v) noexcept {
+        return reinterpret_cast<HMONITOR>(v);
+    }
+    inline uintptr_t FromHMONITOR(HMONITOR h) noexcept {
+        return reinterpret_cast<uintptr_t>(h);
+    }
 }
 
 VirtualMouse::VirtualMouse(MouseConfig config)
@@ -26,8 +32,7 @@ VirtualMouse::VirtualMouse(MouseConfig config)
 
 void VirtualMouse::SetConfig(MouseConfig config) {
     m_config = config;
-    // Force re-calibration on next Update call
-    m_cachedMonitor = nullptr;
+    m_cachedMonitor = 0; // force re-calibration on next Update
 }
 
 const MouseConfig& VirtualMouse::GetConfig() const noexcept { return m_config; }
@@ -43,33 +48,24 @@ void VirtualMouse::SetEnabled(bool enabled) noexcept {
 bool VirtualMouse::IsEnabled() const noexcept { return m_enabled; }
 
 // ---------------------------------------------------------------------------
-// Per-monitor adaptive calibration  (v2)
+// Adaptive per-monitor speed calibration  (v2)
 //
-// Design goal: crossing the full screen width at maximum stick deflection
-// should take exactly targetTraversalMs milliseconds — regardless of
-// resolution, DPI or physical display size.
+// Target: crossing screen width at full stick deflection = targetTraversalMs.
+// Formula:
+//   resolutionFactor = widthPx / kReferenceWidthPx
+//   dpiFactor        = dpiX    / kReferenceDpi
+//   density          = lerp(resolutionFactor, dpiFactor, dpiWeight)
+//   densityPenalty   = 1.0 / sqrt(density)
+//   targetPxPerMs    = widthPx / targetTraversalMs
+//   speedScale       = (targetPxPerMs / maxSpeedPx) * densityPenalty
+//                      clamped to [adaptiveMinScale, adaptiveMaxScale]
 //
-// Algorithm:
-//   1. Measure screen width in physical pixels (widthPx)
-//   2. Measure effective DPI from the OS (dpiX)
-//   3. Compute two normalised density factors:
-//        resolutionFactor = widthPx / kReferenceWidthPx
-//        dpiFactor        = dpiX    / kReferenceDpi
-//   4. Blend them: density = lerp(resolutionFactor, dpiFactor, dpiWeight)
-//      dpiWeight=0.5 gives equal voice to both metrics.
-//   5. Density penalty = 1.0 / sqrt(density)
-//      — lower-res displays get proportionally less speed
-//      — sqrt instead of linear avoids over-correction on HiDPI
-//   6. Target speed = widthPx / targetTraversalMs   (px/ms)
-//   7. speedScale   = (targetSpeed / baseMaxSpeed) * densityPenalty
-//   8. Clamp to [adaptiveMinScale, adaptiveMaxScale]
-//
-// Examples at baseMaxSpeed = 6.0, targetTraversalMs = 900:
-//   1280×720  @96  dpi  → speedScale ≈ 0.72
-//   1366×768  @96  dpi  → speedScale ≈ 0.77
-//   1920×1080 @96  dpi  → speedScale ≈ 1.00
-//   2560×1440 @96  dpi  → speedScale ≈ 1.30
-//   3840×2160 @163 dpi  → speedScale ≈ 1.48
+// Resulting scales at baseSpeed = 6.0, traversal = 900 ms:
+//   1280x720  @96  dpi  -> ~0.72
+//   1366x768  @96  dpi  -> ~0.77
+//   1920x1080 @96  dpi  ->  1.00  (reference)
+//   2560x1440 @96  dpi  -> ~1.30
+//   3840x2160 @163 dpi  -> ~1.48
 // ---------------------------------------------------------------------------
 
 VirtualMouse::MonitorProfile
@@ -95,10 +91,9 @@ VirtualMouse::QueryActiveMonitorProfile() const noexcept {
         profile.dpiY = static_cast<float>(dpiY);
     }
 
-    profile.scaleX  = profile.dpiX / kReferenceDpi;
-    profile.scaleY  = profile.dpiY / kReferenceDpi;
-    profile.approxPpi = profile.dpiX; // effective DPI = logical PPI
-
+    profile.scaleX    = profile.dpiX / kReferenceDpi;
+    profile.scaleY    = profile.dpiY / kReferenceDpi;
+    profile.approxPpi = profile.dpiX;
     profile.speedScale = ComputeAdaptiveScale(profile);
     return profile;
 }
@@ -109,14 +104,14 @@ float VirtualMouse::ComputeAdaptiveScale(
     const float resolutionFactor = profile.widthPx / kReferenceWidthPx;
     const float dpiFactor        = profile.dpiX    / kReferenceDpi;
 
-    const float w = std::max(0.0f, std::min(1.0f, m_config.dpiWeight));
+    const float w       = std::max(0.0f, std::min(1.0f, m_config.dpiWeight));
     const float density = resolutionFactor * (1.0f - w) + dpiFactor * w;
-    const float densityPenalty = 1.0f / std::sqrt(std::max(0.30f, density));
+    const float penalty = 1.0f / std::sqrt(std::max(0.30f, density));
 
-    const float traversalMs = std::max(100.0f, m_config.targetTraversalMs);
+    const float traversalMs  = std::max(100.0f, m_config.targetTraversalMs);
     const float targetPxPerMs = profile.widthPx / traversalMs;
     const float baseSpeed     = std::max(0.25f, m_config.maxSpeedPx);
-    const float rawScale      = (targetPxPerMs / baseSpeed) * densityPenalty;
+    const float rawScale      = (targetPxPerMs / baseSpeed) * penalty;
 
     return std::max(m_config.adaptiveMinScale,
            std::min(rawScale, m_config.adaptiveMaxScale));
@@ -127,9 +122,10 @@ void VirtualMouse::RefreshMonitorProfileIfNeeded() noexcept {
     if (!GetCursorPos(&pt)) return;
 
     HMONITOR mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
-    if (mon == m_cachedMonitor && m_monitorProfile.widthPx > 0.0f) return;
+    const uintptr_t monKey = FromHMONITOR(mon);
+    if (monKey == m_cachedMonitor && m_monitorProfile.widthPx > 0.0f) return;
 
-    m_cachedMonitor  = mon;
+    m_cachedMonitor  = monKey;
     m_monitorProfile = QueryActiveMonitorProfile();
 }
 
@@ -179,8 +175,7 @@ void VirtualMouse::Update(float dx, float dy, float deltaMs) {
     const float nx    =  dx / mag;
     const float ny    = -dy / mag;
 
-    // Soft ramp: blend from 35% to 100% of target speed over accelerationMs
-    const float ramp = std::min(1.0f, deltaMs / std::max(1.0f, m_config.accelerationMs));
+    const float ramp     = std::min(1.0f, deltaMs / std::max(1.0f, m_config.accelerationMs));
     const float movement = std::max(kMinMovementPixels,
         speed * deltaMs * (0.35f + 0.65f * ramp));
 
