@@ -12,10 +12,23 @@ namespace enjoystick::overlay {
 // RadialMenuItem
 // ---------------------------------------------------------------------------
 struct RadialMenuItem {
-    std::wstring id;          // Stable identifier, e.g. L"keyboard", L"settings"
-    std::wstring label;       // Text shown beneath the item circle and in centre disc
-    std::wstring icon;        // Emoji / Unicode symbol drawn inside the circle
-    std::function<void()> action; // Invoked on confirm (South button)
+    std::wstring          label;   // Text shown beneath the item circle
+    std::wstring          icon;    // Emoji / Unicode symbol drawn inside the circle
+    std::function<void()> action;  // Invoked on confirm (South button / Enter)
+    std::wstring          id;      // Optional stable identifier (e.g. L"keyboard")
+                                   // id is at the END so existing 3-field aggregate
+                                   // initialisers {label, icon, action} keep compiling.
+
+    // Convenience constructor matching the original 3-arg pattern.
+    // Allows:  RadialMenuItem{ L"Desktop", L"\U0001F5A5", []{ ... } }
+    RadialMenuItem() = default;
+    RadialMenuItem(std::wstring lbl, std::wstring ico, std::function<void()> act,
+                   std::wstring identifier = {})
+        : label(std::move(lbl))
+        , icon (std::move(ico))
+        , action(std::move(act))
+        , id   (std::move(identifier))
+    {}
 };
 
 // ---------------------------------------------------------------------------
@@ -26,13 +39,13 @@ public:
     enum class State { Hidden, Opening, Visible, Closing };
 
     struct Config {
-        float    radius          = 185.0f; // Distance from centre to item midpoint (logical px)
-        float    selectionDeadzone = 0.25f; // Stick magnitude below which no sector is selected
-        float    latchMs         = 800.0f; // Hold-still time before latch resets (ms)
-        float    openAnimMs      = 260.0f;
-        float    closeAnimMs     = 160.0f;
-        int32_t  centreX         = -1;     // -1 = screen centre
-        int32_t  centreY         = -1;
+        float    radius              = 185.0f; // Distance from centre to item midpoint (logical px)
+        float    selectionDeadzone  = 0.25f;  // Stick magnitude below which no sector is selected
+        float    latchMs            = 800.0f; // Hold-still time before latch resets (ms)
+        float    openAnimMs         = 260.0f;
+        float    closeAnimMs        = 160.0f;
+        int32_t  centreX            = -1;     // -1 = screen centre
+        int32_t  centreY            = -1;
         bool     showActiveIndicator = true;
     };
 
@@ -46,9 +59,9 @@ public:
     // ---- Lifecycle ----------------------------------------------------------
     void Open();
     void Close();
-    [[nodiscard]] bool  IsVisible()      const noexcept;
-    [[nodiscard]] State GetState()        const noexcept;
-    [[nodiscard]] int32_t GetHoveredIndex() const noexcept;
+    [[nodiscard]] bool    IsVisible()        const noexcept;
+    [[nodiscard]] State   GetState()          const noexcept;
+    [[nodiscard]] int32_t GetHoveredIndex()   const noexcept;
 
     // ---- Callbacks ----------------------------------------------------------
     void SetOnOpen (std::function<void()> cb) { m_onOpen  = std::move(cb); }
@@ -67,11 +80,11 @@ private:
     [[nodiscard]] float AngleForIndex   (int32_t index) const noexcept;
     [[nodiscard]] Vec2  PositionForIndex(int32_t index, float cx, float cy, float radius) const noexcept;
 
-    Config                       m_config;
-    std::vector<RadialMenuItem>  m_items;
-    std::vector<float>           m_itemScales;
-    std::vector<float>           m_itemDelays;
-    std::vector<float>           m_itemDelayTimers;
+    Config                      m_config;
+    std::vector<RadialMenuItem> m_items;
+    std::vector<float>          m_itemScales;
+    std::vector<float>          m_itemDelays;
+    std::vector<float>          m_itemDelayTimers;
 
     State   m_state         = State::Hidden;
     float   m_animTime      = 0.0f;
