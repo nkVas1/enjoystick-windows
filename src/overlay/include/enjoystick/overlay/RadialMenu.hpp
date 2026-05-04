@@ -43,9 +43,9 @@ public:
         int32_t centreX            = -1;
         int32_t centreY            = -1;
         bool    showActiveIndicator = true;
-        // Dwell auto-select: after this many ms on the same sector without
-        // stick movement the sector is confirmed automatically.
-        float   dwellMs            = 1200.0f;
+        // How long (ms) to dwell on a sector before auto-confirm fires.
+        // The shake animation starts at dwellMs*0.55 and peaks at dwellMs.
+        float   dwellMs            = 1400.0f;
     };
 
     explicit RadialMenu(Config config = {});
@@ -92,14 +92,14 @@ private:
     float   m_glowPhase     = 0.0f;
     float   m_latchTimer    = 0.0f;
 
+    // Dwell auto-confirm: shake animation + auto-fire after dwellMs
+    float   m_dwellTimer    = 0.0f;  ///< ms spent hovering same sector without stick motion
+    float   m_dwellShake    = 0.0f;  ///< 0..1 shake envelope (rises during dwell phase)
+    float   m_dwellShakePhase = 0.0f;///< oscillator phase for the shake vibration
+
     // Confirmation flash (brief white burst before close)
     float   m_flashTimer    = 0.0f;
     int32_t m_flashIndex    = -1;
-
-    // Dwell auto-select
-    float   m_dwellTimer      = 0.0f;  // how long user holds same sector without moving
-    float   m_dwellShakePhase = 0.0f;  // oscillator for tremor animation
-    int32_t m_dwellIndex      = -1;    // sector currently being dwelled
 
     int32_t m_hoveredIndex   = -1;
     int32_t m_latchedIndex   = -1;
