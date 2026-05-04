@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.14)
 
 # ---------------------------------------------------------------------------
 # enjoystick_overlay
@@ -24,7 +24,7 @@ target_include_directories(enjoystick_overlay
 )
 
 target_link_libraries(enjoystick_overlay
-    PUBLIC enjoystick_core enjoystick_config
+    PUBLIC  enjoystick_core enjoystick_config
     PRIVATE d2d1 dwrite
 )
 

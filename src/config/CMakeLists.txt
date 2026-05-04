@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.14)
 
 # ---------------------------------------------------------------------------
 # enjoystick_config
@@ -9,6 +9,7 @@ cmake_minimum_required(VERSION 3.20)
 
 add_library(enjoystick_config STATIC
     src/ConfigStore.cpp
+    src/ConfigSerializer.cpp
 )
 
 target_compile_definitions(enjoystick_config PUBLIC
@@ -21,7 +22,14 @@ target_include_directories(enjoystick_config
     PRIVATE src
 )
 
-target_link_libraries(enjoystick_config PUBLIC enjoystick_core enjoystick_cursor enjoystick_input)
+# shell32  — SHGetKnownFolderPath (config path resolution)
+# ole32    — CoTaskMemFree
+# shlwapi  — path helpers (PathFileExistsW etc., used by watcher)
+target_link_libraries(enjoystick_config
+    PUBLIC  enjoystick_core enjoystick_cursor enjoystick_input
+    PRIVATE shell32 ole32 shlwapi
+)
+
 target_compile_features(enjoystick_config PUBLIC cxx_std_20)
 
 if (MSVC)

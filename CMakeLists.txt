@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.14)
 project(enjoystick-windows VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -7,7 +7,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ---------------------------------------------------------------------------
 # NOMINMAX + WIN32_LEAN_AND_MEAN globally for all targets in this project.
-# Prevents Windows.h min/max macros from conflicting with std:: equivalents.
 # ---------------------------------------------------------------------------
 add_compile_definitions(
     WIN32_LEAN_AND_MEAN

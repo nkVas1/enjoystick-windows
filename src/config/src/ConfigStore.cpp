@@ -1,5 +1,9 @@
-// WIN32_LEAN_AND_MEAN and NOMINMAX injected by CMake.
+// WIN32_LEAN_AND_MEAN and NOMINMAX are injected by CMake.
+// shlobj.h and objbase.h must be included AFTER windows.h to get
+// FOLDERID_RoamingAppData, SHGetKnownFolderPath and CoTaskMemFree.
 #include <Windows.h>
+#include <shlobj.h>    // SHGetKnownFolderPath, FOLDERID_RoamingAppData
+#include <objbase.h>   // CoTaskMemFree
 
 #include "enjoystick/config/ConfigStore.hpp"
 #include "enjoystick/config/ConfigSerializer.hpp"
@@ -29,7 +33,7 @@ static std::filesystem::path DefaultConfigPath() {
 }
 
 // ---------------------------------------------------------------------------
-// Open (factory)
+// Open (low-level factory)
 // ---------------------------------------------------------------------------
 
 std::unique_ptr<ConfigStore>
@@ -61,7 +65,7 @@ ConfigStore::Open(const std::filesystem::path& configPath) {
 }
 
 // ---------------------------------------------------------------------------
-// Create (convenience factory — uses %APPDATA%\Enjoystick\config.json)
+// Create (convenience factory — %APPDATA%\Enjoystick\config.json)
 // ---------------------------------------------------------------------------
 
 std::unique_ptr<ConfigStore> ConfigStore::Create() {
@@ -86,7 +90,7 @@ ConfigStore::~ConfigStore() {
 }
 
 // ---------------------------------------------------------------------------
-// GetConfig (read-path)
+// GetConfig
 // ---------------------------------------------------------------------------
 
 const Config& ConfigStore::GetConfig() const noexcept {
@@ -99,6 +103,7 @@ const Config& ConfigStore::GetConfig() const noexcept {
 // ---------------------------------------------------------------------------
 
 void ConfigStore::Save(Config config) {
+    // Atomic rename: write to .tmp, then rename over the real file.
     const auto tmp = std::filesystem::path(m_path).replace_extension(".json.tmp");
     {
         std::ofstream out(tmp);
@@ -116,9 +121,8 @@ void ConfigStore::Save(Config config) {
 
     {
         std::shared_lock lock(m_cbMutex);
-        for (const auto& cb : m_callbacks) {
+        for (const auto& cb : m_callbacks)
             if (cb.fn) cb.fn(config);
-        }
     }
 }
 
@@ -161,9 +165,8 @@ ConfigCallbackHandle ConfigStore::OnChange(ConfigChangedCallback cb) {
     m_callbacks.push_back({id, std::move(cb)});
     return ConfigCallbackHandle([this, id] {
         std::unique_lock lk(m_cbMutex);
-        for (auto& e : m_callbacks) {
+        for (auto& e : m_callbacks)
             if (e.id == id) { e.fn = nullptr; return; }
-        }
     });
 }
 
@@ -185,6 +188,8 @@ void ConfigStore::Unwatch() {
 
 // ---------------------------------------------------------------------------
 // WatchThread
+//
+// Uses overlapped I/O so CancelIoEx() reliably wakes the blocking call.
 // ---------------------------------------------------------------------------
 
 void ConfigStore::WatchThread() {
@@ -221,8 +226,7 @@ void ConfigStore::WatchThread() {
 
         if (!ok) break;
 
-        const DWORD wait = WaitForSingleObject(ov.hEvent, INFINITE);
-        if (wait != WAIT_OBJECT_0) break;
+        if (WaitForSingleObject(ov.hEvent, INFINITE) != WAIT_OBJECT_0) break;
 
         DWORD transferred = 0;
         if (!GetOverlappedResult(m_dirHandle, &ov, &transferred, FALSE)) break;
@@ -230,14 +234,14 @@ void ConfigStore::WatchThread() {
 
         const uint8_t* ptr = buf;
         for (;;) {
-            const auto* fni =
-                reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(ptr);
+            const auto* fni = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(ptr);
 
             if (fni->Action == FILE_ACTION_MODIFIED) {
                 const std::wstring changed(
                     fni->FileName,
                     fni->FileNameLength / sizeof(wchar_t));
                 if (_wcsicmp(changed.c_str(), file.c_str()) == 0) {
+                    // Small delay: text editors flush in two writes.
                     Sleep(80);
                     ReloadFromDisk();
                 }
@@ -278,12 +282,10 @@ bool ConfigStore::ReloadFromDisk() {
         m_currentCopy = parsed;
         m_current.store(std::make_shared<Config>(parsed), std::memory_order_release);
     }
-
     {
         std::shared_lock lock(m_cbMutex);
-        for (const auto& cb : m_callbacks) {
+        for (const auto& cb : m_callbacks)
             if (cb.fn) cb.fn(parsed);
-        }
     }
     return true;
 }

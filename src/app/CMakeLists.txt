@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.14)
 
 # ---------------------------------------------------------------------------
 # enjoystick_app  (static library — no main())
@@ -8,8 +8,6 @@ cmake_minimum_required(VERSION 3.20)
 #
 # Entry point (wWinMain) lives in the root src/main.cpp and is compiled
 # directly into the enjoystick.exe target. It must NOT appear here.
-#
-# KeyboardMapper is part of enjoystick_input — do NOT list it here.
 # ---------------------------------------------------------------------------
 
 add_library(enjoystick_app STATIC
@@ -38,6 +36,7 @@ target_link_libraries(enjoystick_app
     PRIVATE
         shell32
         comctl32
+        shlwapi
 )
 
 target_compile_features(enjoystick_app PUBLIC cxx_std_20)

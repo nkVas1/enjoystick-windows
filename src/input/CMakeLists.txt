@@ -1,10 +1,9 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.14)
 
 # ---------------------------------------------------------------------------
 # enjoystick_input
 #
-# Translates controller button state into keyboard / mouse SendInput calls
-# for system-wide navigation without application-level controller support.
+# Translates gamepad button chords to keyboard SendInput events.
 # ---------------------------------------------------------------------------
 
 add_library(enjoystick_input STATIC
