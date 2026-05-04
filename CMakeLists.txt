@@ -52,6 +52,38 @@ if (MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
+# Third-party: nlohmann/json  (header-only, fetched at configure time)
+#
+# We download only the single-file amalgam so the source tree stays clean.
+# The file lands in <build>/third_party/nlohmann/json.hpp and is exposed
+# through the NLOHMANN_JSON_INCLUDE_DIR variable used by enjoystick_config.
+# ---------------------------------------------------------------------------
+include(FetchContent)
+
+set(NLOHMANN_JSON_INCLUDE_DIR "${CMAKE_BINARY_DIR}/third_party")
+
+if (NOT EXISTS "${NLOHMANN_JSON_INCLUDE_DIR}/nlohmann/json.hpp")
+    message(STATUS "[enjoystick] Downloading nlohmann/json v3.11.3 single-header...")
+    file(DOWNLOAD
+        "https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp"
+        "${NLOHMANN_JSON_INCLUDE_DIR}/nlohmann/json.hpp"
+        SHOW_PROGRESS
+        STATUS _json_dl_status
+        TLS_VERIFY ON
+    )
+    list(GET _json_dl_status 0 _json_dl_code)
+    if (NOT _json_dl_code EQUAL 0)
+        message(WARNING "[enjoystick] nlohmann/json download failed (${_json_dl_status}).\n"
+                        "             If you are offline, place json.hpp at:\n"
+                        "             ${NLOHMANN_JSON_INCLUDE_DIR}/nlohmann/json.hpp")
+    else()
+        message(STATUS "[enjoystick] nlohmann/json downloaded OK.")
+    endif()
+else()
+    message(STATUS "[enjoystick] nlohmann/json already present, skipping download.")
+endif()
+
+# ---------------------------------------------------------------------------
 # Subsystem modules
 # ---------------------------------------------------------------------------
 set(ENJOYSTICK_MODULES
