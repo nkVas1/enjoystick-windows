@@ -1,75 +1,54 @@
 #pragma once
-
-#include <enjoystick/shared/Types.hpp>
-#include <enjoystick/core/InputEngine.hpp>
-#include <cstdint>
-#include <memory>
+#include <enjoystick/core/Types.hpp>
 
 namespace enjoystick::cursor {
 
-///
-/// VirtualMouse — translates right-stick / left-stick analog input into
-/// smooth, acceleration-aware Win32 cursor movement using SendInput().
-///
-/// Design principles:
-///   - Velocity curve:  sqrt-shaped for precision at low deflection, linear at high
-///   - Frame-rate independent: integrates delta-time from QueryPerformanceCounter
-///   - Click emulation:  RT = left-click, LT = right-click (configurable)
-///   - Scroll emulation: D-pad Up/Down or second stick with modifier held
-///
-class VirtualMouse {
+using namespace enjoystick;
+
+class VirtualMouse final {
 public:
     struct Config {
-        /// Maximum cursor speed in pixels/second at full stick deflection.
-        float maxSpeedPx      = 2000.0f;
-
-        /// Velocity curve exponent: 1.0 = linear, 0.5 = sqrt (recommended).
-        float curveExponent   = 0.55f;
-
-        /// Acceleration ramp-up time in seconds (0 = instant).
-        float accelerationMs  = 80.0f;
-
-        /// Which stick drives the cursor (true = right, false = left).
-        bool  useRightStick   = true;
-
-        /// Enable trigger-to-click mapping.
-        bool  triggersAsClicks = true;
-
-        /// Scroll lines per second at full deflection.
-        float scrollSpeed     = 8.0f;
-
-        /// Scroll is inverted (natural scrolling).
+        float maxSpeedPx      = 1800.0f; ///< px/s at full deflection
+        float curveExponent   = 1.8f;    ///< <1 = linear-ish; >1 = exponential
+        float accelerationMs  = 120.0f;  ///< velocity ramp-up time (0 = instant)
+        bool  triggersAsClicks = true;   ///< RT=LMB, LT=RMB; false = scroll
+        float scrollSpeed     = 8.0f;    ///< scroll ticks/s at full deflection
         bool  invertScroll    = false;
+        bool  useRightStick   = true;    ///< false = use left stick for cursor
     };
 
     explicit VirtualMouse(Config config = {});
     ~VirtualMouse();
 
-    /// Feed a new controller state; call on every polling tick.
-    void Update(const ControllerState& state, float deltaSeconds);
+    VirtualMouse(const VirtualMouse&)            = delete;
+    VirtualMouse& operator=(const VirtualMouse&) = delete;
 
     void SetConfig(Config config) noexcept;
-    [[nodiscard]] const Config& GetConfig() const noexcept;
+    const Config& GetConfig() const noexcept;
 
-    /// Temporarily suspend cursor movement (e.g., when overlay is open).
     void SetEnabled(bool enabled) noexcept;
-    [[nodiscard]] bool IsEnabled() const noexcept;
+    bool IsEnabled() const noexcept;
+
+    /// Must be called at the polling rate (e.g. 250 Hz).
+    /// @param state  Latest controller snapshot
+    /// @param deltaSeconds  Time since last call (seconds)
+    void Update(const ControllerState& state, float deltaSeconds);
 
 private:
-    void MoveCursor(Vec2 velocity, float deltaSeconds);
-    void HandleClicks(const ControllerState& state);
-    void HandleScroll(const ControllerState& state, float deltaSeconds);
+    Vec2  ApplyCurve(Vec2 raw) const noexcept;
+    void  MoveCursor(Vec2 velocity, float deltaSeconds);
+    void  HandleClicks(const ControllerState& state);
+    void  HandleScrollTrigger(const ControllerState& state, float deltaSeconds);
+    void  HandleScrollStick(const ControllerState& state, float deltaSeconds);
 
-    [[nodiscard]] Vec2 ApplyCurve(Vec2 raw) const noexcept;
-
-    Config   m_config;
-    bool     m_enabled        = true;
-    Vec2     m_currentVelocity = {};
-    Vec2     m_subPixelRemainder = {};   ///< Sub-pixel accumulator for smooth movement
-    float    m_scrollAccumulator = 0.0f;
-
-    bool     m_leftButtonDown  = false;
-    bool     m_rightButtonDown = false;
+    Config m_config;
+    Vec2   m_currentVelocity   {};
+    Vec2   m_subPixelRemainder {};
+    float  m_scrollV           = 0.0f; ///< vertical scroll accumulator
+    float  m_scrollH           = 0.0f; ///< horizontal scroll accumulator
+    bool   m_enabled           = true;
+    bool   m_leftButtonDown    = false;
+    bool   m_rightButtonDown   = false;
 };
 
 } // namespace enjoystick::cursor
