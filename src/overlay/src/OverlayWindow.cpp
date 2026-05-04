@@ -1,4 +1,5 @@
 #include "OverlayWindow_Impl.hpp"
+#include "Overlay_Theme.hpp"
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
@@ -6,20 +7,13 @@
 #include <stdexcept>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 
 namespace enjoystick::overlay {
-
-// ---------------------------------------------------------------------------
-// Factory
-// ---------------------------------------------------------------------------
 
 std::unique_ptr<OverlayWindow> OverlayWindow::Create(Config config) {
     return std::make_unique<OverlayWindowImpl>(std::move(config));
 }
-
-// ---------------------------------------------------------------------------
-// Construction / destruction
-// ---------------------------------------------------------------------------
 
 OverlayWindowImpl::OverlayWindowImpl(Config config)
     : m_config(std::move(config))
@@ -33,10 +27,6 @@ OverlayWindowImpl::~OverlayWindowImpl() {
     Hide();
     if (m_startEvent) { CloseHandle(m_startEvent); m_startEvent = nullptr; }
 }
-
-// ---------------------------------------------------------------------------
-// Show / Hide
-// ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::Show() {
     if (m_running.exchange(true)) return;
@@ -57,18 +47,10 @@ HWND__*       OverlayWindowImpl::GetHWND()       const noexcept { return m_hwnd;
 RadialMenu&   OverlayWindowImpl::GetRadialMenu()               { return m_radialMenu; }
 SettingsMenu& OverlayWindowImpl::GetSettingsMenu()             { return m_settingsMenu; }
 
-// ---------------------------------------------------------------------------
-// SetModeLabel  (NEW)
-// ---------------------------------------------------------------------------
-
 void OverlayWindowImpl::SetModeLabel(std::wstring label) {
     std::lock_guard lk(m_modeLabelMutex);
     m_modeLabel = std::move(label);
 }
-
-// ---------------------------------------------------------------------------
-// PostState
-// ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::PostState(const ControllerState& state) {
     const int next = 1 - m_activeBuffer;
@@ -76,18 +58,10 @@ void OverlayWindowImpl::PostState(const ControllerState& state) {
     m_pendingState.store(&m_stateBuffers[next], std::memory_order_release);
 }
 
-// ---------------------------------------------------------------------------
-// ShowToast
-// ---------------------------------------------------------------------------
-
 void OverlayWindowImpl::ShowToast(std::wstring message, uint32_t durationMs) {
     std::lock_guard lock(m_toastMutex);
     m_pendingToasts.push({std::move(message), durationMs, 0.0f});
 }
-
-// ---------------------------------------------------------------------------
-// RenderThread
-// ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::RenderThread() {
     CreateWindowAndD2D();
@@ -130,10 +104,6 @@ void OverlayWindowImpl::RenderThread() {
     DestroyWindowAndD2D();
 }
 
-// ---------------------------------------------------------------------------
-// PumpMessages
-// ---------------------------------------------------------------------------
-
 void OverlayWindowImpl::PumpMessages() {
     MSG msg;
     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -145,10 +115,6 @@ void OverlayWindowImpl::PumpMessages() {
         DispatchMessageW(&msg);
     }
 }
-
-// ---------------------------------------------------------------------------
-// CreateWindowAndD2D
-// ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::CreateWindowAndD2D() {
     struct MonitorEnum {
@@ -192,7 +158,6 @@ void OverlayWindowImpl::CreateWindowAndD2D() {
         nullptr, nullptr, wc.hInstance, this);
 
     if (!m_hwnd) return;
-
     ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
 
     D2D1_FACTORY_OPTIONS opts{};
@@ -220,10 +185,6 @@ void OverlayWindowImpl::DestroyWindowAndD2D() {
         m_hwnd = nullptr;
     }
 }
-
-// ---------------------------------------------------------------------------
-// DIB management
-// ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::EnsureDib(int w, int h) {
     if (m_memDC && m_dibW == w && m_dibH == h) return;
@@ -259,10 +220,6 @@ void OverlayWindowImpl::DestroyDib() {
     m_dibDirty = true;
 }
 
-// ---------------------------------------------------------------------------
-// EnsureRenderTarget
-// ---------------------------------------------------------------------------
-
 bool OverlayWindowImpl::EnsureRenderTarget() {
     if (!m_d2dFactory || !m_memDC || !m_hDib) return false;
     if (!m_dibDirty && m_renderTarget) return true;
@@ -286,27 +243,19 @@ bool OverlayWindowImpl::EnsureRenderTarget() {
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// WndProc
-// ---------------------------------------------------------------------------
-
 LRESULT CALLBACK OverlayWindowImpl::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_NCCREATE) {
         auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA,
                           reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
     }
-
     auto* self = reinterpret_cast<OverlayWindowImpl*>(
         GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-
     if (self && msg == WM_SIZE) {
-        const int w = LOWORD(lp);
-        const int h = HIWORD(lp);
+        const int w = LOWORD(lp), h = HIWORD(lp);
         if (w > 0 && h > 0 && (w != self->m_dibW || h != self->m_dibH))
             self->EnsureDib(w, h);
     }
-
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
@@ -317,9 +266,7 @@ LRESULT CALLBACK OverlayWindowImpl::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPAR
 void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
     if (!EnsureRenderTarget()) return;
     auto* rt = m_renderTarget.Get();
-
-    const int w = m_dibW;
-    const int h = m_dibH;
+    const int w = m_dibW, h = m_dibH;
     if (w == 0 || h == 0) return;
 
     RECT dibRect{ 0, 0, w, h };
@@ -327,10 +274,6 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
 
     rt->BeginDraw();
     rt->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
-
-    const float sw = static_cast<float>(w);
-    const float sh = static_cast<float>(h);
-    (void)sw; (void)sh;
 
     const bool settingsOpen = m_settingsMenu.IsOpen();
     if (settingsOpen) {
@@ -343,8 +286,10 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
         m_settingsMenu.Update(empty, deltaSeconds);
     }
 
-    m_radialMenu.Draw(rt, m_dwriteFactory.Get(), m_dpiScale, static_cast<float>(w), static_cast<float>(h));
-    m_settingsMenu.Draw(rt, m_dwriteFactory.Get(), m_dpiScale, static_cast<float>(w), static_cast<float>(h));
+    m_radialMenu.Draw(rt, m_dwriteFactory.Get(), m_dpiScale,
+                      static_cast<float>(w), static_cast<float>(h));
+    m_settingsMenu.Draw(rt, m_dwriteFactory.Get(), m_dpiScale,
+                        static_cast<float>(w), static_cast<float>(h));
     DrawHudMode(rt);
     DrawActiveIndicator(rt);
     DrawToasts(rt, deltaSeconds);
@@ -367,7 +312,51 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
 }
 
 // ---------------------------------------------------------------------------
-// DrawHudMode
+// DrawActiveIndicator  — Dark Regalia: triple concentric gold halos
+// ---------------------------------------------------------------------------
+
+void OverlayWindowImpl::DrawActiveIndicator(ID2D1RenderTarget* rt) {
+    if (!m_config.showActiveIndicator) return;
+
+    const float s    = m_dpiScale;
+    const float cx   = static_cast<float>(m_dibW) - 22.0f * s;
+    const float cy   = static_cast<float>(m_dibH) - 22.0f * s;
+
+    // Outer wide gold glow
+    {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+        rt->CreateSolidColorBrush(Tok::GoldGlow(0.22f), b.GetAddressOf());
+        if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx,cy), 18*s, 18*s), b.Get());
+    }
+    // Mid gold ring (stroke)
+    {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+        rt->CreateSolidColorBrush(Tok::GoldShadow(0.55f), b.GetAddressOf());
+        if (b) rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx,cy), 13*s, 13*s), b.Get(), 1.0f*s);
+    }
+    // Inner bright gold ring
+    {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+        rt->CreateSolidColorBrush(Tok::GoldMid(0.80f), b.GetAddressOf());
+        if (b) rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx,cy), 8*s, 8*s), b.Get(), 1.2f*s);
+    }
+    // Core filled dot — gold hi
+    {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+        rt->CreateSolidColorBrush(Tok::GoldHi(0.95f), b.GetAddressOf());
+        if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx,cy), 4*s, 4*s), b.Get());
+    }
+    // Specular gleam on core (tiny white top-left arc)
+    {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+        rt->CreateSolidColorBrush(Tok::White(0.60f), b.GetAddressOf());
+        if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx - 1.2f*s, cy - 1.2f*s),
+                                              1.5f*s, 1.5f*s), b.Get());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DrawHudMode  — Dark Regalia: obsidian pill with gold left-border accent
 // ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt) {
@@ -381,11 +370,13 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt) {
     }
     if (label.empty()) return;
 
-    const float padX  = 14.0f * m_dpiScale;
-    const float padY  =  8.0f * m_dpiScale;
-    const float fSize = 12.0f * m_dpiScale;
-    const float left  = 16.0f * m_dpiScale;
-    const float bot   = static_cast<float>(m_dibH) - 16.0f * m_dpiScale;
+    const float s     = m_dpiScale;
+    const float padX  = 14.0f * s;
+    const float padY  =  7.0f * s;
+    const float fSize = 11.5f * s;
+    const float left  = 16.0f * s;
+    const float bot   = static_cast<float>(m_dibH) - 18.0f * s;
+    const float accentW = 3.0f * s;  // gold left-border bar width
 
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
     m_dwriteFactory->CreateTextFormat(
@@ -397,62 +388,66 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt) {
     Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
     m_dwriteFactory->CreateTextLayout(
         label.c_str(), static_cast<UINT32>(label.size()),
-        fmt.Get(), 400.0f * m_dpiScale, 40.0f * m_dpiScale,
-        layout.GetAddressOf());
+        fmt.Get(), 420.0f * s, 40.0f * s, layout.GetAddressOf());
     if (!layout) return;
 
     DWRITE_TEXT_METRICS tm{};
     layout->GetMetrics(&tm);
 
-    const float chipW = tm.width  + padX * 2.0f;
+    const float chipW = tm.width  + padX * 2.0f + accentW;
     const float chipH = tm.height + padY * 2.0f;
     const float chipX = left;
     const float chipY = bot - chipH;
+    const float r     = chipH * 0.38f;
 
+    // Obsidian pill background
     {
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bg;
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.06f, 0.06f, 0.10f, 0.82f), bg.GetAddressOf());
-        if (bg) {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+        rt->CreateSolidColorBrush(Tok::DeepVoid(0.88f), b.GetAddressOf());
+        if (b) {
             D2D1_ROUNDED_RECT rr{};
             rr.rect    = D2D1::RectF(chipX, chipY, chipX + chipW, chipY + chipH);
-            rr.radiusX = rr.radiusY = chipH * 0.5f;
-            rt->FillRoundedRectangle(rr, bg.Get());
+            rr.radiusX = rr.radiusY = r;
+            rt->FillRoundedRectangle(rr, b.Get());
         }
     }
+    // Gold left-side accent bar
     {
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> tb;
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.80f, 0.80f, 0.88f, 0.95f), tb.GetAddressOf());
-        if (tb)
-            rt->DrawTextLayout(D2D1::Point2F(chipX + padX, chipY + padY), layout.Get(), tb.Get());
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+        rt->CreateSolidColorBrush(Tok::GoldMid(0.90f), b.GetAddressOf());
+        if (b) {
+            D2D1_ROUNDED_RECT bar{};
+            bar.rect    = D2D1::RectF(chipX, chipY + r * 0.4f,
+                                      chipX + accentW, chipY + chipH - r * 0.4f);
+            bar.radiusX = bar.radiusY = accentW * 0.5f;
+            rt->FillRoundedRectangle(bar, b.Get());
+        }
+    }
+    // Outer border hairline — gold mid, subtle
+    {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+        rt->CreateSolidColorBrush(Tok::GoldShadow(0.40f), b.GetAddressOf());
+        if (b) {
+            D2D1_ROUNDED_RECT rr{};
+            rr.rect    = D2D1::RectF(chipX + 0.5f, chipY + 0.5f,
+                                     chipX + chipW - 0.5f, chipY + chipH - 0.5f);
+            rr.radiusX = rr.radiusY = r;
+            rt->DrawRoundedRectangle(rr, b.Get(), 0.8f);
+        }
+    }
+    // Silver label text
+    {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+        rt->CreateSolidColorBrush(Tok::SilverLt(0.92f), b.GetAddressOf());
+        if (b)
+            rt->DrawTextLayout(
+                D2D1::Point2F(chipX + accentW + padX, chipY + padY),
+                layout.Get(), b.Get());
     }
 }
 
 // ---------------------------------------------------------------------------
-// DrawActiveIndicator
-// ---------------------------------------------------------------------------
-
-void OverlayWindowImpl::DrawActiveIndicator(ID2D1RenderTarget* rt) {
-    if (!m_config.showActiveIndicator) return;
-
-    const float r    = 5.0f  * m_dpiScale;
-    const float glow = 9.0f  * m_dpiScale;
-    const float marg = 18.0f * m_dpiScale;
-    const float cx   = static_cast<float>(m_dibW) - marg;
-    const float cy   = static_cast<float>(m_dibH) - marg;
-
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> glowBrush;
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.34f, 0.31f, 0.98f, 0.30f), glowBrush.GetAddressOf());
-    if (glowBrush)
-        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), glow, glow), glowBrush.Get());
-
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> dotBrush;
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.34f, 0.31f, 0.98f, 0.90f), dotBrush.GetAddressOf());
-    if (dotBrush)
-        rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), dotBrush.Get());
-}
-
-// ---------------------------------------------------------------------------
-// DrawToasts
+// DrawToasts  — Dark Regalia: obsidian pill + gold top-border gleam
 // ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
@@ -473,68 +468,66 @@ void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
 
     const float frac    = toast.elapsed / static_cast<float>(toast.durationMs);
     float opacity = 1.0f;
-    if (frac > 0.80f)
-        opacity = 1.0f - (frac - 0.80f) / 0.20f;
-    else if (frac < 0.05f)
-        opacity = frac / 0.05f;
+    if      (frac > 0.82f) opacity = 1.0f - (frac - 0.82f) / 0.18f;
+    else if (frac < 0.05f) opacity = frac / 0.05f;
+    opacity = std::max(0.0f, opacity);
 
-    const float pw = 360.0f * m_dpiScale;
-    const float ph =  52.0f * m_dpiScale;
+    const float s  = m_dpiScale;
+    const float pw = 380.0f * s;
+    const float ph =  52.0f * s;
     const float px = (static_cast<float>(m_dibW) - pw) * 0.5f;
-    const float py = static_cast<float>(m_dibH) - 108.0f * m_dpiScale;
+    const float py = static_cast<float>(m_dibH) - 112.0f * s;
+    const float rr = ph * 0.5f;
 
+    // Obsidian pill
     {
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush;
-        rt->CreateSolidColorBrush(
-            D2D1::ColorF(0.07f, 0.07f, 0.11f, 0.90f * opacity), bgBrush.GetAddressOf());
-        if (bgBrush) {
-            D2D1_ROUNDED_RECT pill{};
-            pill.rect    = D2D1::RectF(px, py, px + pw, py + ph);
-            pill.radiusX = pill.radiusY = ph * 0.5f;
-            rt->FillRoundedRectangle(pill, bgBrush.Get());
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+        rt->CreateSolidColorBrush(Tok::DeepVoid(0.92f * opacity), b.GetAddressOf());
+        if (b) {
+            D2D1_ROUNDED_RECT pill{ D2D1::RectF(px,py,px+pw,py+ph), rr, rr };
+            rt->FillRoundedRectangle(pill, b.Get());
         }
     }
+    // Gold top-border gleam line
     {
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bd;
-        rt->CreateSolidColorBrush(
-            D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.07f * opacity), bd.GetAddressOf());
-        if (bd) {
-            D2D1_ROUNDED_RECT pill{};
-            pill.rect    = D2D1::RectF(px + 0.5f, py + 0.5f, px + pw - 0.5f, py + ph - 0.5f);
-            pill.radiusX = pill.radiusY = ph * 0.5f;
-            Microsoft::WRL::ComPtr<ID2D1Factory> fac;
-            rt->GetFactory(fac.GetAddressOf());
-            if (fac) {
-                Microsoft::WRL::ComPtr<ID2D1RoundedRectangleGeometry> geo;
-                fac->CreateRoundedRectangleGeometry(pill, geo.GetAddressOf());
-                if (geo) rt->DrawGeometry(geo.Get(), bd.Get(), 1.0f);
-            }
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+        rt->CreateSolidColorBrush(Tok::GoldMid(0.70f * opacity), b.GetAddressOf());
+        if (b) {
+            rt->DrawLine(
+                D2D1::Point2F(px + rr, py + 0.8f),
+                D2D1::Point2F(px + pw - rr, py + 0.8f),
+                b.Get(), 1.2f * s);
         }
     }
-
+    // Outer border gold shadow
+    {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+        rt->CreateSolidColorBrush(Tok::GoldShadow(0.30f * opacity), b.GetAddressOf());
+        if (b) {
+            D2D1_ROUNDED_RECT pill{ D2D1::RectF(px+0.5f,py+0.5f,px+pw-0.5f,py+ph-0.5f), rr, rr };
+            rt->DrawRoundedRectangle(pill, b.Get(), 0.8f);
+        }
+    }
+    // Text
     if (!m_dwriteFactory) return;
-
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
     m_dwriteFactory->CreateTextFormat(
         L"Segoe UI", nullptr,
         DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
-        DWRITE_FONT_STRETCH_NORMAL,
-        15.0f * m_dpiScale, L"en-us", fmt.GetAddressOf());
+        DWRITE_FONT_STRETCH_NORMAL, 14.5f * s, L"en-us", fmt.GetAddressOf());
     if (!fmt) return;
     fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
     fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
-    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
-    rt->CreateSolidColorBrush(
-        D2D1::ColorF(0.95f, 0.95f, 1.0f, opacity), textBrush.GetAddressOf());
-    if (!textBrush) return;
-
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> tb;
+    rt->CreateSolidColorBrush(Tok::SilverLt(0.95f * opacity), tb.GetAddressOf());
+    if (!tb) return;
     rt->DrawText(
         toast.message.c_str(),
         static_cast<UINT32>(toast.message.size()),
         fmt.Get(),
         D2D1::RectF(px, py, px + pw, py + ph),
-        textBrush.Get());
+        tb.Get());
 }
 
 } // namespace enjoystick::overlay
