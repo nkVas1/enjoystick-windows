@@ -21,8 +21,8 @@ namespace enjoystick::app {
 // ---------------------------------------------------------------------------
 
 enum class InputMode : uint8_t {
-    Cursor,    ///< Right-stick = mouse; triggers = clicks
-    Navigate,  ///< D-pad / face buttons = keyboard shortcuts
+    Cursor,
+    Navigate,
 };
 
 static const wchar_t* InputModeLabel(InputMode m) noexcept {
@@ -33,17 +33,12 @@ static const wchar_t* InputModeLabel(InputMode m) noexcept {
 
 // ---------------------------------------------------------------------------
 // FireAndForgetRumble
-//
-// Schedules a single rumble event deferredMs in the future using a
-// Win32 ThreadpoolTimer.  No raw `this` pointer is captured — all data
-// is copied into a heap-allocated context and freed inside the callback.
-// Safe to call even during application shutdown.
 // ---------------------------------------------------------------------------
 
 namespace {
 
 struct RumbleCtx {
-    core::InputEngine* engine;  // non-owning, caller guarantees lifetime
+    core::InputEngine* engine;
     ControllerId       id;
     RumbleParams       params;
 };
@@ -57,8 +52,6 @@ static void CALLBACK RumbleTimerCallback(
     delete r;
 }
 
-/// Schedule a one-shot rumble deferredMs milliseconds from now.
-/// Ownership of the RumbleCtx transfers to the threadpool callback.
 static void ScheduleRumble(
     core::InputEngine* engine,
     ControllerId id,
@@ -67,11 +60,8 @@ static void ScheduleRumble(
 {
     auto* ctx  = new (std::nothrow) RumbleCtx{engine, id, params};
     if (!ctx) return;
-
     PTP_TIMER timer = CreateThreadpoolTimer(RumbleTimerCallback, ctx, nullptr);
     if (!timer) { delete ctx; return; }
-
-    // Negative value = relative time in 100-ns units
     ULARGE_INTEGER due;
     due.QuadPart = static_cast<ULONGLONG>(
         -static_cast<LONGLONG>(deferredMs) * 10'000LL);
@@ -84,7 +74,7 @@ static void ScheduleRumble(
 } // anonymous namespace
 
 // ---------------------------------------------------------------------------
-// Helper: SettingsMenu::Values -> VirtualMouse::Config
+// VMConfigFromSettings
 // ---------------------------------------------------------------------------
 
 static cursor::MouseConfig VMConfigFromSettings(
@@ -101,7 +91,7 @@ static cursor::MouseConfig VMConfigFromSettings(
 }
 
 // ---------------------------------------------------------------------------
-// Helper: stored config -> SettingsMenu::Values
+// SettingsValuesFromConfig
 // ---------------------------------------------------------------------------
 
 static overlay::SettingsMenu::Values SettingsValuesFromConfig(
@@ -127,14 +117,9 @@ static overlay::SettingsMenu::Values SettingsValuesFromConfig(
 class ApplicationImpl final : public Application {
 public:
     ApplicationImpl() {
-        // Cache QPC frequency once — it never changes after boot.
         QueryPerformanceFrequency(&m_qpcFreq);
     }
     ~ApplicationImpl() override = default;
-
-    // -----------------------------------------------------------------------
-    // Init
-    // -----------------------------------------------------------------------
 
     void Init() override {
         m_config = config::ConfigStore::Create();
@@ -163,6 +148,10 @@ public:
         SetupSettingsMenu();
         m_overlay->Show();
 
+        // Set initial HUD label immediately after Show() so it's visible
+        // from the very first rendered frame.
+        m_overlay->SetModeLabel(InputModeLabel(m_mode));
+
         m_tray = SystemTray::Create(L"EnjoyStick \u2014 gamepad navigation active");
         m_tray->SetMenuItems(BuildTrayMenu());
 
@@ -188,10 +177,6 @@ public:
         if (!AutoStart::IsEnabled()) AutoStart::Enable();
     }
 
-    // -----------------------------------------------------------------------
-    // Run / Exit
-    // -----------------------------------------------------------------------
-
     int Run() override {
         MSG msg;
         while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -212,10 +197,6 @@ public:
     }
 
 private:
-
-    // -----------------------------------------------------------------------
-    // SetupRadialMenu
-    // -----------------------------------------------------------------------
 
     void SetupRadialMenu() {
         using RM = overlay::RadialMenuItem;
@@ -241,10 +222,6 @@ private:
         });
     }
 
-    // -----------------------------------------------------------------------
-    // SetupSettingsMenu
-    // -----------------------------------------------------------------------
-
     void SetupSettingsMenu() {
         m_overlay->GetSettingsMenu().SetOnChanged(
             [this](const overlay::SettingsMenu::Values& v) {
@@ -263,20 +240,12 @@ private:
         );
     }
 
-    // -----------------------------------------------------------------------
-    // OpenSettingsMenu
-    // -----------------------------------------------------------------------
-
     void OpenSettingsMenu() {
         const auto& cfg  = m_config->Get();
         const auto  vals = SettingsValuesFromConfig(cfg.mouse, cfg.input);
         m_overlay->GetSettingsMenu().Open(vals);
         m_overlay->GetRadialMenu().Close();
     }
-
-    // -----------------------------------------------------------------------
-    // SetMode
-    // -----------------------------------------------------------------------
 
     void SetMode(InputMode newMode) {
         if (m_mode == newMode) return;
@@ -286,22 +255,20 @@ private:
         m_virtualMouse->SetEnabled(cursor);
         m_keyMapper->SetEnabled(!cursor);
 
-        if (m_overlay) m_overlay->ShowToast(InputModeLabel(m_mode));
-        if (m_tray)    m_tray->SetMenuItems(BuildTrayMenu());
+        // Update HUD chip and toast
+        if (m_overlay) {
+            m_overlay->SetModeLabel(InputModeLabel(m_mode));
+            m_overlay->ShowToast(InputModeLabel(m_mode));
+        }
+        if (m_tray) m_tray->SetMenuItems(BuildTrayMenu());
 
-        // Haptic double-pulse: first pulse immediately, second after 120 ms.
-        // ScheduleRumble uses a Win32 ThreadpoolTimer — no raw `this` capture,
-        // safe during application shutdown.
+        // Haptic double-pulse via ThreadpoolTimer (no detach)
         if (m_inputEngine) {
             m_inputEngine->Rumble(ControllerId{0}, {0.0f, 0.55f, 80});
             ScheduleRumble(m_inputEngine.get(), ControllerId{0},
                            {0.0f, 0.40f, 60}, 120);
         }
     }
-
-    // -----------------------------------------------------------------------
-    // OnControllerState  (250 Hz polling thread)
-    // -----------------------------------------------------------------------
 
     void OnControllerState(const ControllerState& state) {
         LARGE_INTEGER now;
@@ -324,7 +291,6 @@ private:
             return (currMask & static_cast<uint32_t>(b)) != 0;
         };
 
-        // LB + RB chord: mode toggle
         if (held(Button::LB) && held(Button::RB)) {
             if (!m_lbRbChordActive) {
                 m_lbRbChordActive = true;
@@ -334,7 +300,6 @@ private:
             m_lbRbChordActive = false;
         }
 
-        // Guide button combos
         if (pressed(Button::Guide)) {
             if (held(Button::LT_Click)) {
                 SetMode(InputMode::Cursor);
@@ -358,10 +323,6 @@ private:
         m_overlay->PostState(state);
     }
 
-    // -----------------------------------------------------------------------
-    // OnConnectionEvent
-    // -----------------------------------------------------------------------
-
     void OnConnectionEvent(ControllerId id, ConnectionEvent ev) {
         const bool connected = (ev == ConnectionEvent::Connected);
         const std::wstring msg = connected
@@ -373,20 +334,12 @@ private:
             m_inputEngine->Rumble(id, {0.3f, 0.6f, 150});
     }
 
-    // -----------------------------------------------------------------------
-    // Tray menu
-    // -----------------------------------------------------------------------
-
     std::vector<TrayMenuItem> BuildTrayMenu() {
         const wchar_t* modeLabel = (m_mode == InputMode::Cursor)
             ? L"Switch to Navigate mode"
             : L"Switch to Cursor mode";
-
         const bool autoOn = AutoStart::IsEnabled();
-        const wchar_t* autoLabel = autoOn
-            ? L"\u2713 Launch on login"
-            : L"  Launch on login";
-
+        const wchar_t* autoLabel = autoOn ? L"\u2713 Launch on login" : L"  Launch on login";
         return {
             { L"EnjoyStick v0.1", {},       false },
             { L"",                {},       true  },
@@ -402,9 +355,6 @@ private:
         };
     }
 
-    // -----------------------------------------------------------------------
-    // Members
-    // -----------------------------------------------------------------------
     std::unique_ptr<config::ConfigStore>    m_config;
     std::unique_ptr<core::InputEngine>      m_inputEngine;
     std::unique_ptr<cursor::VirtualMouse>   m_virtualMouse;
