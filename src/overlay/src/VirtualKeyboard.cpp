@@ -1,5 +1,6 @@
 #include <enjoystick/overlay/VirtualKeyboard.hpp>
 #include "Overlay_Theme.hpp"
+#include "Overlay_SpringAnim.hpp"
 
 #include <d2d1.h>
 #include <d2d1_1.h>
@@ -22,8 +23,6 @@ namespace enjoystick::overlay {
 
 // ---------------------------------------------------------------------------
 // Layout constants — TV / couch viewing distance (1-2 m)
-// Reference: Steam Deck OSK, Xbox Guide keyboard, PS5 on-screen keyboard.
-// Base unit = 1.0 → key = 72x68 px (≈ 44% larger than the old 50x48).
 // ---------------------------------------------------------------------------
 static constexpr float kKeyW_base   = 72.0f;
 static constexpr float kKeyH_base   = 68.0f;
@@ -31,13 +30,13 @@ static constexpr float kGap_base    =  7.0f;
 static constexpr float kCorner_base = 10.0f;
 static constexpr float kPadX_base   = 28.0f;
 static constexpr float kPadY_base   = 22.0f;
-static constexpr float kTbH_base    = 60.0f;  // text-input bar height
-static constexpr float kHintH_base  = 30.0f;  // bottom hint bar height
-static constexpr float kFKey_base   = 20.0f;  // normal key font
-static constexpr float kFSpec_base  = 18.0f;  // special-key font
-static constexpr float kFText_base  = 18.0f;  // text-bar font
-static constexpr float kFHint_base  = 13.0f;  // hint legend font
-static constexpr float kFBadge_base = 12.0f;  // SYM/CAPS badge font
+static constexpr float kTbH_base    = 60.0f;
+static constexpr float kHintH_base  = 30.0f;
+static constexpr float kFKey_base   = 20.0f;
+static constexpr float kFSpec_base  = 18.0f;
+static constexpr float kFText_base  = 18.0f;
+static constexpr float kFHint_base  = 13.0f;
+static constexpr float kFBadge_base = 12.0f;
 
 // ---------------------------------------------------------------------------
 // Layout
@@ -103,6 +102,45 @@ void VirtualKeyboard::NavigateTo(int32_t row, int32_t col) {
     m_row = row; m_col = col;
 }
 
+// Compute the pixel centre of key [row][col] in the current layout.
+// Returns {-9999,-9999} if out of range.
+Vec2 VirtualKeyboard::KeyCentrePixel(int32_t row, int32_t col,
+                                      float dpiScale, float screenW, float) const noexcept
+{
+    const float s       = dpiScale;
+    const float kKeyW   = kKeyW_base * s;
+    const float kKeyH   = kKeyH_base * s;
+    const float kGap    = kGap_base  * s;
+    const float kPadX   = kPadX_base * s;
+    const float kPadY   = kPadY_base * s;
+    const float kTbH    = kTbH_base  * s;
+
+    // Panel width (same calc as Draw)
+    float maxRowW = 0.0f;
+    for (const auto& r : m_rows) {
+        float rw = -kGap;
+        for (const auto& k : r) rw += k.widthMul * kKeyW + kGap;
+        if (rw > maxRowW) maxRowW = rw;
+    }
+    const float kPanelW = maxRowW + kPadX * 2.0f;
+    const float panelX  = (screenW - kPanelW) * 0.5f;
+    const float keysTop = 0.0f + kPadY + kTbH + 8.0f * s; // relative to panelY — absolute unused here
+
+    if (row < 0 || row >= static_cast<int32_t>(m_rows.size())) return {-9999.0f,-9999.0f};
+    const auto& rrow = m_rows[static_cast<size_t>(row)];
+    if (col < 0 || col >= static_cast<int32_t>(rrow.size())) return {-9999.0f,-9999.0f};
+
+    // Row X offset (centred)
+    float rowW = -kGap;
+    for (const auto& k : rrow) rowW += k.widthMul * kKeyW + kGap;
+    float rx = panelX + (kPanelW - rowW) * 0.5f;
+    for (int32_t c = 0; c < col; ++c)
+        rx += rrow[static_cast<size_t>(c)].widthMul * kKeyW + kGap;
+    const float kw = rrow[static_cast<size_t>(col)].widthMul * kKeyW;
+    const float ry = keysTop + static_cast<float>(row) * (kKeyH + kGap);
+    return { rx + kw * 0.5f, ry + kKeyH * 0.5f };
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
@@ -114,15 +152,27 @@ void VirtualKeyboard::Open(const std::wstring& seed) {
     m_layer         = Layer::Alpha;
     m_shift         = false; m_caps = false;
     m_glowPhase     = 0.0f;
-    m_animProgress  = 0.0f;
     m_state         = State::Opening;
     m_stickCooldown = 0.0f; m_stickActive = false;
     m_prevSouth = m_prevEast = m_prevWest = m_prevNorth =
     m_prevLB    = m_prevRB  = m_prevLS   = false;
+
+    // Spring: panel starts far below screen, springs up
+    m_panelSpring.stiffness = 320.0f;
+    m_panelSpring.damping   = 24.0f;
+    m_panelSpring.Snap(0.0f);      // 0 = fully hidden
+    m_panelSpring.SetTarget(1.0f); // 1 = fully visible
+
+    // Cursor highlight spring: snap to current key, no slide yet
+    m_cursorSpringX.stiffness = 480.0f; m_cursorSpringX.damping = 26.0f;
+    m_cursorSpringY.stiffness = 480.0f; m_cursorSpringY.damping = 26.0f;
+    m_cursorScaleSpring.stiffness = 600.0f; m_cursorScaleSpring.damping = 28.0f;
+    m_cursorScaleSpring.Snap(1.0f);
 }
 void VirtualKeyboard::Close() {
     if (m_state == State::Hidden || m_state == State::Closing) return;
     m_state = State::Closing;
+    m_panelSpring.SetTarget(0.0f);
 }
 bool VirtualKeyboard::IsOpen() const noexcept {
     return m_state != State::Hidden;
@@ -132,18 +182,28 @@ bool VirtualKeyboard::IsOpen() const noexcept {
 // Update
 // ---------------------------------------------------------------------------
 void VirtualKeyboard::Update(const ControllerState& state, float dt) {
-    const float step = dt * 1000.0f / kAnimMs;
+    // Advance panel spring
+    m_panelSpring.Step(dt);
+    const float panelVal = std::max(0.0f, std::min(1.0f, m_panelSpring.value));
+
     if (m_state == State::Opening) {
-        m_animProgress = std::min(1.0f, m_animProgress + step);
-        if (m_animProgress >= 1.0f) m_state = State::Visible;
+        if (m_panelSpring.IsSettled(0.01f) || panelVal >= 0.999f)
+            m_state = State::Visible;
     } else if (m_state == State::Closing) {
-        m_animProgress = std::max(0.0f, m_animProgress - step);
-        if (m_animProgress <= 0.0f) { m_state = State::Hidden; return; }
+        if (m_panelSpring.IsSettled(0.01f) || panelVal <= 0.001f) {
+            m_state = State::Hidden;
+            return;
+        }
     }
     if (m_state == State::Hidden) return;
 
     m_glowPhase += dt * 3.0f;
     if (m_glowPhase > 2.0f * kPi) m_glowPhase -= 2.0f * kPi;
+
+    // Advance cursor springs
+    m_cursorSpringX.Step(dt);
+    m_cursorSpringY.Step(dt);
+    m_cursorScaleSpring.Step(dt);
 
     const bool south = HasButton(state.buttons, Button::South);
     const bool east  = HasButton(state.buttons, Button::East);
@@ -159,7 +219,16 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     if (ls    && !m_prevLS)    { m_caps = !m_caps; m_shift = false; goto done; }
     if (lb    && !m_prevLB)    { m_layer = (m_layer == Layer::Alpha) ? Layer::Sym : Layer::Alpha; goto done; }
     if (rb    && !m_prevRB)    { m_layer = Layer::Alpha; goto done; }
-    if (south && !m_prevSouth) { if (const Key* k = CurrentKey()) TypeKey(*k); goto done; }
+    if (south && !m_prevSouth) {
+        if (const Key* k = CurrentKey()) {
+            TypeKey(*k);
+            // Scale pop on keypress
+            m_cursorScaleSpring.value = 1.18f;
+            m_cursorScaleSpring.velocity = 0.0f;
+            m_cursorScaleSpring.SetTarget(1.0f);
+        }
+        goto done;
+    }
 
     {
         const float lx = state.leftStick.x;
@@ -212,7 +281,6 @@ void VirtualKeyboard::TypeKey(const Key& k) {
 // ---------------------------------------------------------------------------
 namespace {
 
-// Top-edge specular arc stroke — hollow arc geometry, NO oval fill.
 static void DrawArcSpecular(
     ID2D1RenderTarget* rt,
     ID2D1Factory*      fac,
@@ -253,18 +321,15 @@ static void DrawPanelChrome(
     float px, float py, float pw, float ph,
     float r, float s, float ease) noexcept
 {
-    // Outer glow border
     { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
       rt->CreateSolidColorBrush(Tok::GoldShadow(0.30f * ease), b.GetAddressOf());
       if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(px,py,px+pw,py+ph),r,r};
                rt->DrawRoundedRectangle(rr, b.Get(), 1.8f); } }
-    // Inner hairline
     { const float d = 0.5f;
       Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
       rt->CreateSolidColorBrush(Tok::InkLine(0.90f * ease), b.GetAddressOf());
       if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(px+d,py+d,px+pw-d,py+ph-d),r-d,r-d};
                rt->DrawRoundedRectangle(rr, b.Get(), 0.65f); } }
-    // Top luminance strip
     { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
       rt->CreateSolidColorBrush(Tok::White(0.058f * ease), b.GetAddressOf());
       if (b) rt->DrawLine(
@@ -277,7 +342,7 @@ static void DrawPanelChrome(
 } // anon
 
 // ---------------------------------------------------------------------------
-// Draw — Futurist Glamour v3, TV-scale
+// Draw — Futurist Glamour v4 (spring cursor highlight)
 // ---------------------------------------------------------------------------
 void VirtualKeyboard::Draw(
     void*  renderTargetPtr,
@@ -286,7 +351,9 @@ void VirtualKeyboard::Draw(
     float  screenW,
     float  screenH) const
 {
-    if (m_state == State::Hidden || m_animProgress <= 0.0f) return;
+    if (m_state == State::Hidden) return;
+    const float panelVal = std::max(0.0f, std::min(1.0f, m_panelSpring.value));
+    if (panelVal <= 0.001f) return;
     if (!renderTargetPtr || !dwriteFactoryPtr) return;
 
     auto* rt     = static_cast<ID2D1RenderTarget*>(renderTargetPtr);
@@ -296,9 +363,10 @@ void VirtualKeyboard::Draw(
     rt->GetFactory(fac.GetAddressOf());
 
     const float s    = dpiScale;
-    const float ease = 1.0f - std::pow(1.0f - m_animProgress, 3.0f);
+    // Cubic ease-out on panel spring value for alpha/position
+    const float ease = 1.0f - std::pow(1.0f - panelVal, 3.0f);
 
-    // ---- Layout (TV-scale constants) ----------------------------------------
+    // ---- Layout -------------------------------------------------------------
     const float kKeyW   = kKeyW_base   * s;
     const float kKeyH   = kKeyH_base   * s;
     const float kGap    = kGap_base    * s;
@@ -308,7 +376,6 @@ void VirtualKeyboard::Draw(
     const float kTbH    = kTbH_base    * s;
     const float kHintH  = kHintH_base  * s;
 
-    // Panel width from widest row
     float maxRowW = 0.0f;
     for (const auto& row : m_rows) {
         float rw = -kGap;
@@ -320,9 +387,9 @@ void VirtualKeyboard::Draw(
                         + static_cast<float>(m_rows.size()) * (kKeyH + kGap) - kGap
                         + kHintH + kPadY;
 
-    // Slide up from bottom
+    // Spring-driven slide-up: panelVal=0 → fully off-screen below, panelVal=1 → target position
     const float targetY = screenH - kPanelH - 24.0f * s;
-    const float panelY  = screenH - ease * (screenH - targetY);
+    const float panelY  = targetY + (1.0f - panelVal) * (screenH - targetY + 20.0f * s);
     const float panelX  = (screenW - kPanelW) * 0.5f;
     const float panelR  = 16.0f * s;
 
@@ -358,7 +425,6 @@ void VirtualKeyboard::Draw(
         if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(tbX0,tbY,tbX1,tbY+kTbH),8.0f*s,8.0f*s};
                  rt->DrawRoundedRectangle(rr, b.Get(), 1.2f); }
     }
-    // Text content
     if (dwrite) {
         const std::wstring display = m_text.size() > 48
             ? L"\u2026" + m_text.substr(m_text.size() - 47) : m_text;
@@ -374,7 +440,7 @@ void VirtualKeyboard::Draw(
                 fmt.Get(), D2D1::RectF(tbX0 + 14.0f*s, tbY, tbX1 - 14.0f*s, tbY + kTbH), b.Get());
         }
     }
-    // Cursor blink
+    // Blinking cursor
     {
         const float blink  = 0.5f + 0.5f * std::sin(m_glowPhase * 2.0f);
         const float textW  = std::min(
@@ -393,7 +459,6 @@ void VirtualKeyboard::Draw(
     {
         const float hy = panelY + kPanelH - kHintH - kPadY * 0.5f;
         if (dwrite) {
-            // Layer / Caps badge
             if (m_layer == Layer::Sym || m_caps) {
                 const wchar_t* badge = (m_layer == Layer::Sym) ? L"SYM" : L"CAPS";
                 const float bw = 54.0f*s, bh = 20.0f*s;
@@ -420,7 +485,6 @@ void VirtualKeyboard::Draw(
                         bf.Get(), D2D1::RectF(bx,by,bx+bw,by+bh), bb.Get());
                 }
             }
-            // Controls legend
             const wchar_t* legend = (m_layer == Layer::Sym)
                 ? L"[RB] Alpha   [X] \u232B   [Y] Submit   [B] Close"
                 : L"[LB] Sym   [L3] Caps   [X] \u232B   [Y] Submit   [B] Close";
@@ -442,11 +506,50 @@ void VirtualKeyboard::Draw(
     const float keysTop     = panelY + kPadY + kTbH + 8.0f * s;
     const float glowBreathe = 0.5f + 0.5f * std::sin(m_glowPhase);
 
+    // Spring cursor glow position (spring tracks key centre in screen space)
+    // On first draw, snap cursor spring to current key centre
+    const Vec2 selCentre = KeyCentrePixel(m_row, m_col, s, screenW, screenH);
+    const float cursorGlowX = m_cursorSpringX.value;
+    const float cursorGlowY = m_cursorSpringY.value + panelY; // relative-to-panel offset
+
+    // Update spring target every frame (mutable in const Draw via mutable springs)
+    m_cursorSpringX.target = selCentre.x;
+    m_cursorSpringY.target = selCentre.y; // panel-relative Y
+    // If spring not initialised yet, snap it
+    if (m_cursorSpringX.value == 0.0f && m_cursorSpringY.value == 0.0f) {
+        m_cursorSpringX.Snap(selCentre.x);
+        m_cursorSpringY.Snap(selCentre.y);
+    }
+
+    // Draw the smooth cursor glow UNDER all keys (so it appears behind the key caps)
+    {
+        const float scl  = m_cursorScaleSpring.value;
+        const float gR   = kKeyH * 0.56f * scl;
+        const float gW   = kKeyW * 0.56f * scl * (m_col >= 0 && m_col < RowKeyCount(m_row)
+            ? m_rows[static_cast<size_t>(m_row)][static_cast<size_t>(m_col)].widthMul : 1.0f);
+        // Outer glow halo
+        {
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g;
+            rt->CreateSolidColorBrush(
+                Tok::GoldGlow((0.28f + 0.12f * glowBreathe) * ease), g.GetAddressOf());
+            if (g) rt->DrawEllipse(
+                D2D1::Ellipse(D2D1::Point2F(cursorGlowX, cursorGlowY),
+                              gW * 1.20f, gR * 1.20f), g.Get(), 7.0f * s);
+        }
+        // Inner tight ring
+        {
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g;
+            rt->CreateSolidColorBrush(Tok::GoldGlow(0.14f * ease), g.GetAddressOf());
+            if (g) rt->DrawEllipse(
+                D2D1::Ellipse(D2D1::Point2F(cursorGlowX, cursorGlowY),
+                              gW * 0.88f, gR * 0.88f), g.Get(), 2.5f * s);
+        }
+    }
+
     for (int32_t ri = 0; ri < static_cast<int32_t>(m_rows.size()); ++ri) {
         const auto& row = m_rows[static_cast<size_t>(ri)];
         const float ry  = keysTop + static_cast<float>(ri) * (kKeyH + kGap);
 
-        // Centre row horizontally
         float rowW = -kGap;
         for (const auto& k : row) rowW += k.widthMul * kKeyW + kGap;
         float rx = panelX + (kPanelW - rowW) * 0.5f;
@@ -457,27 +560,11 @@ void VirtualKeyboard::Draw(
             const bool  sel = (ri == m_row && ci == m_col);
             const float kCx = rx + kw * 0.5f;
             const float kCy = ry + kKeyH * 0.5f;
-
-            // Animated glow halo — DrawEllipse stroke only (NO fill blob)
-            if (sel) {
-                const float gr = kKeyH * 0.54f + 5.0f*s + 2.5f*s*glowBreathe;
-                const float gw = kw   * 0.54f + 5.0f*s + 2.5f*s*glowBreathe;
-                {
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g;
-                    rt->CreateSolidColorBrush(
-                        Tok::GoldGlow((0.30f + 0.14f*glowBreathe) * ease), g.GetAddressOf());
-                    if (g) rt->DrawEllipse(
-                        D2D1::Ellipse(D2D1::Point2F(kCx,kCy), gw, gr),
-                        g.Get(), 6.0f*s);
-                }
-                {
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g;
-                    rt->CreateSolidColorBrush(Tok::GoldGlow(0.15f * ease), g.GetAddressOf());
-                    if (g) rt->DrawEllipse(
-                        D2D1::Ellipse(D2D1::Point2F(kCx,kCy), gw*0.75f, gr*0.75f),
-                        g.Get(), 2.5f*s);
-                }
-            }
+            const float scl = sel ? m_cursorScaleSpring.value : 1.0f;
+            const float scaledKW = kw  * scl;
+            const float scaledKH = kKeyH * scl;
+            const float sRx = kCx - scaledKW * 0.5f;
+            const float sRy = kCy - scaledKH * 0.5f;
 
             // Keycap outer fill
             {
@@ -485,7 +572,7 @@ void VirtualKeyboard::Draw(
                 rt->CreateSolidColorBrush(
                     sel ? Tok::SurfaceBase(0.97f*ease) : Tok::SurfaceSunken(0.84f*ease),
                     b.GetAddressOf());
-                if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(rx,ry,rx+kw,ry+kKeyH),kCorner,kCorner};
+                if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+scaledKW,sRy+scaledKH),kCorner*scl,kCorner*scl};
                          rt->FillRoundedRectangle(rr, b.Get()); }
             }
             // Keycap inner face (raised plane, inset)
@@ -496,8 +583,8 @@ void VirtualKeyboard::Draw(
                     sel ? Tok::SurfaceRaised(0.90f*ease) : Tok::SurfaceBase(0.74f*ease),
                     b.GetAddressOf());
                 if (b) { D2D1_ROUNDED_RECT rr{
-                    D2D1::RectF(rx+ins, ry+ins, rx+kw-ins, ry+kKeyH-ins*1.5f),
-                    kCorner-ins, kCorner-ins};
+                    D2D1::RectF(sRx+ins, sRy+ins, sRx+scaledKW-ins, sRy+scaledKH-ins*1.5f),
+                    (kCorner-ins)*scl, (kCorner-ins)*scl};
                     rt->FillRoundedRectangle(rr, b.Get()); }
             }
             // Keycap border
@@ -506,7 +593,7 @@ void VirtualKeyboard::Draw(
                 rt->CreateSolidColorBrush(
                     sel ? Tok::GoldHi(0.96f*ease) : Tok::InkLine(0.84f*ease),
                     b.GetAddressOf());
-                if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(rx,ry,rx+kw,ry+kKeyH),kCorner,kCorner};
+                if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+scaledKW,sRy+scaledKH),kCorner*scl,kCorner*scl};
                          rt->DrawRoundedRectangle(rr, b.Get(), sel ? 1.8f : 0.85f); }
             }
             // Bevel shadow rim
@@ -517,15 +604,15 @@ void VirtualKeyboard::Draw(
                     sel ? Tok::GoldShadow(0.24f*ease) : Tok::GoldDeep(0.13f*ease),
                     b.GetAddressOf());
                 if (b) { D2D1_ROUNDED_RECT rr{
-                    D2D1::RectF(rx+bi,ry+bi,rx+kw-bi,ry+kKeyH-bi),
-                    kCorner-bi, kCorner-bi};
+                    D2D1::RectF(sRx+bi,sRy+bi,sRx+scaledKW-bi,sRy+scaledKH-bi),
+                    (kCorner-bi)*scl, (kCorner-bi)*scl};
                     rt->DrawRoundedRectangle(rr, b.Get(), 0.55f); }
             }
-            // Top specular arc — stroke only
+            // Top specular arc
             if (fac) {
                 DrawArcSpecular(rt, fac.Get(),
-                    kCx, ry + kKeyH * 0.28f,
-                    kw  * 0.28f, kKeyH * 0.20f,
+                    kCx, sRy + scaledKH * 0.28f,
+                    scaledKW * 0.28f, scaledKH * 0.20f,
                     (sel ? 0.12f : 0.06f) * ease);
             }
 
@@ -533,7 +620,7 @@ void VirtualKeyboard::Draw(
             if (dwrite) {
                 const std::wstring disp = KeyDisplay(k);
                 if (!disp.empty()) {
-                    const float fontSize = (k.isSpecial ? kFSpec_base : kFKey_base) * s;
+                    const float fontSize = (k.isSpecial ? kFSpec_base : kFKey_base) * s * scl;
                     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
                     dwrite->CreateTextFormat(
                         k.isSpecial ? L"Segoe UI Emoji" : L"Segoe UI",
@@ -552,7 +639,7 @@ void VirtualKeyboard::Draw(
                             lb.GetAddressOf());
                         if (lb) rt->DrawText(disp.c_str(),
                             static_cast<UINT32>(disp.size()), fmt.Get(),
-                            D2D1::RectF(rx, ry, rx+kw, ry+kKeyH), lb.Get());
+                            D2D1::RectF(sRx, sRy, sRx+scaledKW, sRy+scaledKH), lb.Get());
                     }
                 }
             }
