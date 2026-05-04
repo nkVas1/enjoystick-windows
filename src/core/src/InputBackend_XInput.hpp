@@ -19,6 +19,10 @@
 
 namespace enjoystick::core {
 
+// Signature of XInputGetStateEx (ordinal 100) — identical to XInputGetState
+// but also reports the Guide button in wButtons bit 0x0400.
+using PFN_XInputGetStateEx = DWORD(WINAPI*)(DWORD dwUserIndex, XINPUT_STATE* pState);
+
 ///
 /// XInputBackend (concrete implementation of InputEngine)
 ///
@@ -51,11 +55,20 @@ public:
     [[nodiscard]] ControllerState             GetState(ControllerId id) const override;
 
 private:
+    // ---- XInput DLL / GetStateEx loading -----------------------------------
+    void   LoadXInputDll();
+    void   UnloadXInputDll();
+    DWORD  DoGetState(uint32_t index, XINPUT_STATE* pState) const;
+
     void PollLoop();
     void PollController(uint32_t index);
 
     void FireInput     (const ControllerState& state);
     void FireConnection(ControllerId id, ConnectionEvent ev);
+
+    // ---- XInput dynamic load -----------------------------------------------
+    HMODULE               m_xinputModule  = nullptr;
+    PFN_XInputGetStateEx  m_getStateEx    = nullptr;  ///< nullptr => use XInputGetState
 
     // ---- Config / filter ------------------------------------------------
     Config         m_config;
@@ -64,7 +77,7 @@ private:
     // ---- Per-controller slot --------------------------------------------
     struct Slot {
         bool            connected  = false;
-        DWORD           packetNum  = 0;
+        DWORD           packetNum  = 0xFFFFFFFF;  // sentinel: force first-frame update
         ControllerState state      = {};
     };
     std::array<Slot, XUSER_MAX_COUNT> m_slots = {};
