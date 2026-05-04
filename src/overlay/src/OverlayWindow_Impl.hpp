@@ -10,6 +10,8 @@
 #include <enjoystick/overlay/OverlayWindow.hpp>
 #include <enjoystick/overlay/VirtualKeyboard.hpp>
 
+#include "Overlay_SpringAnim.hpp"
+
 #include <atomic>
 #include <mutex>
 #include <thread>
@@ -19,10 +21,27 @@
 
 namespace enjoystick::overlay {
 
+// Toast category decoded from message prefix tag.
+enum class ToastCategory : uint8_t { Info, Success, Warning };
+
 struct ToastNotification {
-    std::wstring message;
-    uint32_t     durationMs;
-    float        elapsed = 0.0f;
+    std::wstring   message;
+    uint32_t       durationMs   = 2500;
+    float          elapsed      = 0.0f;
+    float          slideX       = 1.0f;   // 0 = fully visible (target), 1 = off-screen right
+    float          slideV       = 0.0f;   // spring velocity
+    ToastCategory  category     = ToastCategory::Info;
+
+    // Critically-damped spring step (inlined for simplicity)
+    void StepSlide(float dt) noexcept {
+        if (dt <= 0.0f) return;
+        if (dt > 0.05f) dt = 0.05f;
+        const float stiffness = 340.0f, damping = 22.0f;
+        const float spring = (0.0f - slideX) * stiffness;
+        const float damp   = slideV * (-damping);
+        slideV = slideV + (spring + damp) * dt;
+        slideX = slideX + slideV * dt;
+    }
 };
 
 ///
@@ -57,8 +76,11 @@ private:
     void RenderFrame(float deltaSeconds);
 
     void DrawActiveIndicator(ID2D1RenderTarget* rt);
-    void DrawHudMode(ID2D1RenderTarget* rt);
+    void DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds);
     void DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds);
+
+    // Decode category from message prefix [OK], [WARN] etc.
+    static ToastCategory DecodeCategory(const std::wstring& msg) noexcept;
 
     Config   m_config;
     HWND     m_hwnd    = nullptr;
@@ -92,7 +114,11 @@ private:
 
     std::mutex                      m_toastMutex;
     std::queue<ToastNotification>   m_pendingToasts;
-    std::vector<ToastNotification>  m_activeToasts;
+    std::vector<ToastNotification>  m_activeToasts;   // max 4 shown simultaneously
+
+    // HUD pill spring: animates width/position when label changes
+    FloatSpring m_hudPillWidthSpring;  // tracks target chip pixel width
+    float       m_hudPillPhase = 0.0f; // pulse phase for border glow
 
     std::thread        m_renderThread;
     std::atomic<bool>  m_running{false};
