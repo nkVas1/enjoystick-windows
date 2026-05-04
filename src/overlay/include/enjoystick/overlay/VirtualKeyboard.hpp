@@ -27,7 +27,7 @@ namespace enjoystick::overlay {
 // the user confirms. The caller owns the accumulated string and may pass
 // a seed string via Open().
 //
-// Animation model (v5):
+// Animation model (v4):
 //   Panel slide-in: FloatSpring (stiffness=320, damping=24), 0->1
 //   Cursor glow:    FloatSpring x/y (stiffness=480, damping=26)
 //   Key scale pop:  FloatSpring (stiffness=600, damping=28), 1.18->1
@@ -94,16 +94,12 @@ private:
     int32_t m_row = 0;
     int32_t m_col = 0;
 
-    // navigation — tuned for comfortable "snap-to-key" feel:
-    //   First repeat fires after 0.55 s (avoids accidental multi-step),
-    //   subsequent repeats every 0.20 s (deliberate but not sluggish).
+    // navigation — first repeat delay longer to prevent accidental multi-press;
+    // subsequent interval comfortable for deliberate hold-repeat.
     float  m_stickCooldown = 0.0f;
     static constexpr float kStickRepeatFirst = 0.55f;  // was 0.35
     static constexpr float kStickRepeatNext  = 0.20f;  // was 0.10
-    bool   m_stickActive   = false;
-    // Deadzone raised to 0.50 so small touches don't move the cursor;
-    // combined with the repeat timers this produces the magnetism feel.
-    static constexpr float kNavDeadzone      = 0.50f;  // was 0.35
+    bool   m_stickActive = false;
 
     // state
     State  m_state     = State::Hidden;
