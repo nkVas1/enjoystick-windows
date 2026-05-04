@@ -1,67 +1,104 @@
 #pragma once
 
-#include <enjoystick/input/KeyboardMapper.hpp>
-#include <enjoystick/cursor/VirtualMouse.hpp>
-#include <enjoystick/core/DeadzoneFilter.hpp>
+#include <enjoystick/config/Config.hpp>
+
+#include <atomic>
 #include <functional>
-#include <filesystem>
 #include <memory>
+#include <mutex>
+#include <shared_mutex>
 #include <string>
+#include <thread>
+#include <vector>
+#include <filesystem>
 
 namespace enjoystick::config {
 
+/// Signature: void(const Config&)
+using ConfigChangedCallback = std::function<void(const Config&)>;
+
 ///
-/// ConfigStore — owns and persists user settings.
+/// RAII handle returned by OnChange(). Destructor unregisters the callback.
 ///
-/// File format: JSON, stored in %APPDATA%\Enjoystick\config.json
-/// Hot-reload:  watches the config directory with ReadDirectoryChangesW;
-///              registered listeners are notified on the watcher thread.
-///
-/// Design:
-///   All sub-configurations are plain structs that survive serialisation
-///   round-trips. The store validates values on load and clamps to sane
-///   ranges rather than rejecting invalid configs, ensuring robustness.
-///
-struct AppConfig {
-    cursor::VirtualMouse::Config  cursor;
-    core::DeadzoneConfig          deadzone;
-    // KeyBinding overrides are stored as a map: button_name -> vk_code
-    // (KeyboardMapper applies them at runtime)
+class ConfigCallbackHandle {
+public:
+    ConfigCallbackHandle() = default;
+    explicit ConfigCallbackHandle(std::function<void()> unreg)
+        : m_unreg(std::move(unreg)) {}
+    ~ConfigCallbackHandle() { if (m_unreg) m_unreg(); }
+
+    ConfigCallbackHandle(const ConfigCallbackHandle&)            = delete;
+    ConfigCallbackHandle& operator=(const ConfigCallbackHandle&) = delete;
+    ConfigCallbackHandle(ConfigCallbackHandle&&)                 = default;
+    ConfigCallbackHandle& operator=(ConfigCallbackHandle&&)      = default;
+
+private:
+    std::function<void()> m_unreg;
 };
 
-using ConfigChangedCallback = std::function<void(const AppConfig&)>;
-
+///
+/// ConfigStore — loads, saves, and hot-reloads config.json.
+///
+/// Usage:
+///   auto store = ConfigStore::Open(path);    // load or create default
+///   auto h     = store->OnChange(callback);   // hot-reload subscription
+///   store->Watch();                           // start FS watcher
+///   const Config& c = store->GetConfig();     // current snapshot
+///   store->Save(newConfig);                   // atomic save + reload
+///   store->Unwatch();                         // stop FS watcher
+///
 class ConfigStore {
 public:
-    static std::unique_ptr<ConfigStore> Create();
+    /// Open (or create) config at the given path.
+    [[nodiscard]] static std::unique_ptr<ConfigStore>
+        Open(const std::filesystem::path& configPath);
 
-    virtual ~ConfigStore() = default;
+    ~ConfigStore();
 
-    /// Load config from disk. Creates default config if file does not exist.
-    virtual void Load() = 0;
+    /// Non-blocking access to the current Config snapshot.
+    /// Thread-safe; lock-free on read path.
+    [[nodiscard]] const Config& GetConfig() const noexcept;
 
-    /// Persist current config to disk immediately.
-    virtual void Save() const = 0;
+    /// Persist config to disk and fire OnChange callbacks.
+    void Save(Config config);
 
-    /// Access the live config (read-only; modify via Set*).
-    [[nodiscard]] virtual const AppConfig& Get() const noexcept = 0;
+    /// Start the ReadDirectoryChangesW watcher thread.
+    void Watch();
 
-    /// Update cursor config section and persist.
-    virtual void SetCursorConfig(cursor::VirtualMouse::Config cfg) = 0;
+    /// Stop the watcher thread. Idempotent.
+    void Unwatch();
 
-    /// Update deadzone config section and persist.
-    virtual void SetDeadzoneConfig(core::DeadzoneConfig cfg) = 0;
+    /// Register a hot-reload callback.
+    /// The callback is fired on the watcher thread with a shared read-lock.
+    /// @returns a RAII handle; let it go out of scope to unregister.
+    [[nodiscard]] ConfigCallbackHandle OnChange(ConfigChangedCallback cb);
 
-    /// Register a callback fired whenever config changes (load or hot-reload).
-    /// Returns a handle; destroying the handle unregisters the callback.
-    [[nodiscard]] virtual CallbackHandle OnChanged(ConfigChangedCallback cb) = 0;
+private:
+    explicit ConfigStore(std::filesystem::path path, Config initial);
 
-    /// Start file-system watcher for hot-reload.
-    virtual void StartWatcher() = 0;
-    virtual void StopWatcher()  = 0;
+    void WatchThread();
+    bool ReloadFromDisk();
 
-    /// Returns the config file path.
-    [[nodiscard]] virtual std::filesystem::path GetConfigPath() const = 0;
+    std::filesystem::path  m_path;   ///< full path to config.json
+
+    // Current config — shared_ptr for cheap atomic swap.
+    // C++20: std::atomic<std::shared_ptr<Config>> is spec-mandated lock-free
+    // on MSVC with /std:c++20 when the pointer fits in a machine word.
+    mutable std::atomic<std::shared_ptr<Config>> m_current;
+    // Non-atomic copy for GetConfig() return-by-ref (updated under write-lock)
+    Config                   m_currentCopy;
+    mutable std::shared_mutex m_configMutex;
+
+    // Callback registry
+    struct CB { uint64_t id; ConfigChangedCallback fn; };
+    std::vector<CB>       m_callbacks;
+    std::shared_mutex     m_cbMutex;
+    uint64_t              m_nextCbId = 0;
+
+    // Watcher thread
+    std::thread        m_watchThread;
+    std::atomic<bool>  m_watching{false};
+    HANDLE             m_dirHandle = INVALID_HANDLE_VALUE;  ///< for CancelIoEx
 };
 
 } // namespace enjoystick::config
