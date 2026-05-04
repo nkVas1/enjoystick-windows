@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <thread>
 
 namespace enjoystick::app {
 
@@ -16,7 +17,7 @@ namespace enjoystick::app {
 // ---------------------------------------------------------------------------
 
 enum class InputMode : uint8_t {
-    Cursor,    ///< Right-stick = mouse; triggers = clicks; LB/RB = scroll mod
+    Cursor,    ///< Right-stick = mouse; triggers = clicks
     Navigate,  ///< D-pad / face buttons = keyboard shortcuts
 };
 
@@ -24,6 +25,43 @@ static const wchar_t* InputModeLabel(InputMode m) noexcept {
     return (m == InputMode::Cursor)
         ? L"\U0001F5B1  Cursor mode"
         : L"\u2B06  Navigate mode";
+}
+
+// ---------------------------------------------------------------------------
+// Helper: convert SettingsMenu::Values -> VirtualMouse::Config
+// ---------------------------------------------------------------------------
+
+static cursor::VirtualMouse::Config VMConfigFromSettings(
+    const overlay::SettingsMenu::Values& v) noexcept
+{
+    cursor::VirtualMouse::Config c;
+    c.maxSpeedPx        = v.cursorSpeed;
+    c.curveExponent     = v.curveExponent;
+    c.accelerationMs    = v.accelerationMs;
+    c.scrollSpeed       = v.scrollSpeed;
+    c.triggersAsClicks  = v.triggersAsClicks;
+    c.useRightStick     = v.useRightStick;
+    return c;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: convert VirtualMouse::Config -> SettingsMenu::Values
+// ---------------------------------------------------------------------------
+
+static overlay::SettingsMenu::Values SettingsValuesFromConfig(
+    const cursor::VirtualMouse::Config& c,
+    const core::DeadzoneConfig&         dz) noexcept
+{
+    overlay::SettingsMenu::Values v;
+    v.cursorSpeed      = c.maxSpeedPx;
+    v.curveExponent    = c.curveExponent;
+    v.accelerationMs   = c.accelerationMs;
+    v.scrollSpeed      = c.scrollSpeed;
+    v.triggersAsClicks = c.triggersAsClicks;
+    v.useRightStick    = c.useRightStick;
+    v.dzInner          = dz.inner;
+    v.dzOuter          = dz.outer;
+    return v;
 }
 
 // ---------------------------------------------------------------------------
@@ -56,13 +94,14 @@ public:
         m_virtualMouse = std::make_unique<cursor::VirtualMouse>(cfg.cursor);
         m_keyMapper    = std::make_unique<input::KeyboardMapper>();
 
-        // Start in Cursor mode — mouse enabled, keyboard mapper disabled
+        // Start in Cursor mode
         m_virtualMouse->SetEnabled(true);
         m_keyMapper->SetEnabled(false);
 
         // Overlay
         m_overlay = overlay::OverlayWindow::Create({});
         SetupRadialMenu();
+        SetupSettingsMenu();
         m_overlay->Show();
 
         // System tray
@@ -77,14 +116,13 @@ public:
             OnConnectionEvent(id, ev);
         });
 
-        // Live config propagation
+        // Live config propagation (hot-reload from file watcher)
         m_configHandle = m_config->OnChanged([this](const config::AppConfig& c) {
             m_virtualMouse->SetConfig(c.cursor);
         });
 
         m_inputEngine->Start();
 
-        // Register auto-start silently on first launch
         if (!AutoStart::IsEnabled()) AutoStart::Enable();
     }
 
@@ -107,15 +145,84 @@ public:
 
     void Exit() override { PostQuitMessage(0); }
 
-    // -----------------------------------------------------------------------
-    // ToggleInputMode (public API + internal)
-    // -----------------------------------------------------------------------
-
     void ToggleInputMode() override {
         SetMode(m_mode == InputMode::Cursor ? InputMode::Navigate : InputMode::Cursor);
     }
 
 private:
+
+    // -----------------------------------------------------------------------
+    // SetupRadialMenu
+    // -----------------------------------------------------------------------
+
+    void SetupRadialMenu() {
+        using RM = overlay::RadialMenuItem;
+        m_overlay->GetRadialMenu().SetItems({
+            RM{ L"Desktop",  L"\U0001F5A5",
+                []{ ShellExecuteW(nullptr, L"open", L"shell:Desktop",
+                                  nullptr, nullptr, SW_SHOW); } },
+            RM{ L"Files",    L"\U0001F4C2",
+                []{ ShellExecuteW(nullptr, L"open", L"explorer.exe",
+                                  nullptr, nullptr, SW_SHOW); } },
+            RM{ L"Settings", L"\u2699",
+                // Open the in-overlay EnjoyStick settings panel
+                [this]{ OpenSettingsMenu(); } },
+            RM{ L"Search",   L"\U0001F50D",
+                []{ keybd_event(VK_LWIN, 0, 0, 0);
+                    keybd_event('S', 0, 0, 0);
+                    keybd_event('S', 0, KEYEVENTF_KEYUP, 0);
+                    keybd_event(VK_LWIN, 0, KEYEVENTF_KEYUP, 0); } },
+            RM{ L"Media",    L"\U0001F3B5",
+                []{ keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, 0);
+                    keybd_event(VK_MEDIA_PLAY_PAUSE, 0, KEYEVENTF_KEYUP, 0); } },
+            RM{ L"Mode",     L"\U0001F501", [this]{ ToggleInputMode(); } },
+            RM{ L"Exit",     L"\u23F9",     [this]{ Exit(); } },
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // SetupSettingsMenu
+    //
+    // Wire the OnChanged callback so every value change is immediately
+    // persisted to config.json and applied to the live subsystems.
+    // -----------------------------------------------------------------------
+
+    void SetupSettingsMenu() {
+        m_overlay->GetSettingsMenu() = overlay::SettingsMenu(
+            [this](const overlay::SettingsMenu::Values& v) {
+                // Update cursor config
+                const auto vmCfg = VMConfigFromSettings(v);
+                m_config->SetCursorConfig(vmCfg);
+                m_virtualMouse->SetConfig(vmCfg);
+
+                // Update deadzone config
+                core::DeadzoneConfig dz;
+                dz.inner = v.dzInner;
+                dz.outer = v.dzOuter;
+                m_config->SetDeadzoneConfig(dz);
+
+                // Short haptic confirmation (non-blocking)
+                if (m_inputEngine)
+                    m_inputEngine->Rumble(ControllerId{0}, {0.0f, 0.20f, 30});
+            }
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // OpenSettingsMenu
+    // -----------------------------------------------------------------------
+
+    void OpenSettingsMenu() {
+        const auto& cfg = m_config->Get();
+        const auto vals = SettingsValuesFromConfig(cfg.cursor, cfg.deadzone);
+        m_overlay->GetSettingsMenu().Open(vals);
+        // Close RadialMenu so it doesn't stay visible underneath
+        m_overlay->GetRadialMenu().Close();
+    }
+
+    // -----------------------------------------------------------------------
+    // SetMode
+    // -----------------------------------------------------------------------
 
     void SetMode(InputMode newMode) {
         if (m_mode == newMode) return;
@@ -128,10 +235,9 @@ private:
         if (m_overlay) m_overlay->ShowToast(InputModeLabel(m_mode));
         if (m_tray)    m_tray->SetMenuItems(BuildTrayMenu());
 
-        // Haptic double-pulse: first controller gets feedback
+        // Haptic double-pulse
         if (m_inputEngine) {
             m_inputEngine->Rumble(ControllerId{0}, {0.0f, 0.55f, 80});
-            // Second pulse after 120ms via detached thread
             std::thread([this] {
                 Sleep(120);
                 if (m_inputEngine)
@@ -141,11 +247,10 @@ private:
     }
 
     // -----------------------------------------------------------------------
-    // OnControllerState — called from polling thread at 250 Hz
+    // OnControllerState (250 Hz polling thread)
     // -----------------------------------------------------------------------
 
     void OnControllerState(const ControllerState& state) {
-        // --- Delta time ------------------------------------------------------
         LARGE_INTEGER freq, now;
         QueryPerformanceFrequency(&freq);
         QueryPerformanceCounter(&now);
@@ -155,12 +260,9 @@ private:
               static_cast<float>(freq.QuadPart);
         m_lastTick = now.QuadPart;
 
-        // --- Button edge detection ------------------------------------------
-        // Use locally-tracked previous state so Application handles edges
-        // independently of KeyboardMapper (which has its own m_prevButtons).
         const uint32_t prevMask = static_cast<uint32_t>(m_prevButtons);
         const uint32_t currMask = static_cast<uint32_t>(state.buttons);
-        const uint32_t downMask = currMask & ~prevMask;   // newly pressed
+        const uint32_t downMask = currMask & ~prevMask;
         m_prevButtons = state.buttons;
 
         auto pressed = [&](Button b) -> bool {
@@ -170,7 +272,7 @@ private:
             return (currMask & static_cast<uint32_t>(b)) != 0;
         };
 
-        // --- LB + RB chord: instant mode toggle (no menu needed) ------------
+        // LB + RB chord: mode toggle
         if (held(Button::LB) && held(Button::RB)) {
             if (!m_lbRbChordActive) {
                 m_lbRbChordActive = true;
@@ -180,28 +282,28 @@ private:
             m_lbRbChordActive = false;
         }
 
-        // --- Guide button: open/close radial menu ---------------------------
-        // Guide + LT  = force Cursor mode
-        // Guide + RT  = force Navigate mode
-        // Guide alone = toggle radial menu
+        // Guide button combos
         if (pressed(Button::Guide)) {
             if (held(Button::LT_Click)) {
                 SetMode(InputMode::Cursor);
             } else if (held(Button::RT_Click)) {
                 SetMode(InputMode::Navigate);
+            } else if (held(Button::Select)) {
+                // Guide + Select: open / close Settings
+                auto& sm = m_overlay->GetSettingsMenu();
+                if (sm.IsOpen()) sm.Close();
+                else             OpenSettingsMenu();
             } else {
-                auto& rm = m_overlay->GetRadialMenu();
-                if (rm.IsVisible()) rm.Close();
-                else                rm.Open();
+                // Guide alone: toggle RadialMenu (only when Settings is closed)
+                if (!m_overlay->GetSettingsMenu().IsOpen()) {
+                    auto& rm = m_overlay->GetRadialMenu();
+                    if (rm.IsVisible()) rm.Close();
+                    else                rm.Open();
+                }
             }
         }
 
-        // --- Select (Back): single-press mode toggle -------------------------
-        if (pressed(Button::Select)) {
-            ToggleInputMode();
-        }
-
-        // --- Delegate to subsystems -----------------------------------------
+        // Delegate to subsystems
         m_virtualMouse->Update(state, dt);
         m_keyMapper->Update(state);
         m_overlay->PostState(state);
@@ -223,35 +325,6 @@ private:
     }
 
     // -----------------------------------------------------------------------
-    // Radial menu setup
-    // -----------------------------------------------------------------------
-
-    void SetupRadialMenu() {
-        using RM = overlay::RadialMenuItem;
-        m_overlay->GetRadialMenu().SetItems({
-            RM{ L"Desktop",  L"\U0001F5A5",
-                []{ ShellExecuteW(nullptr, L"open", L"shell:Desktop",
-                                  nullptr, nullptr, SW_SHOW); } },
-            RM{ L"Files",    L"\U0001F4C2",
-                []{ ShellExecuteW(nullptr, L"open", L"explorer.exe",
-                                  nullptr, nullptr, SW_SHOW); } },
-            RM{ L"Settings", L"\u2699",
-                []{ ShellExecuteW(nullptr, L"open", L"ms-settings:",
-                                  nullptr, nullptr, SW_SHOW); } },
-            RM{ L"Search",   L"\U0001F50D",
-                []{ keybd_event(VK_LWIN, 0, 0, 0);
-                    keybd_event('S', 0, 0, 0);
-                    keybd_event('S', 0, KEYEVENTF_KEYUP, 0);
-                    keybd_event(VK_LWIN, 0, KEYEVENTF_KEYUP, 0); } },
-            RM{ L"Media",    L"\U0001F3B5",
-                []{ keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, 0);
-                    keybd_event(VK_MEDIA_PLAY_PAUSE, 0, KEYEVENTF_KEYUP, 0); } },
-            RM{ L"Mode",     L"\U0001F501", [this]{ ToggleInputMode(); } },
-            RM{ L"Exit",     L"\u23F9",     [this]{ Exit(); } },
-        });
-    }
-
-    // -----------------------------------------------------------------------
     // Tray menu
     // -----------------------------------------------------------------------
 
@@ -269,16 +342,14 @@ private:
             { L"EnjoyStick v0.1", {},       false },
             { L"",                {},       true  },
             { modeLabel,          [this]{ ToggleInputMode(); } },
-            { L"Open Settings",
-              []{ ShellExecuteW(nullptr, L"open", L"ms-settings:",
-                                nullptr, nullptr, SW_SHOW); } },
+            { L"Open Settings",   [this]{ OpenSettingsMenu(); } },
             { autoLabel,
               [autoOn]{
                   if (autoOn) AutoStart::Disable();
                   else        AutoStart::Enable();
               } },
-            { L"",                {},       true  },
-            { L"Exit",            [this]{ Exit(); } },
+            { L"",   {},       true },
+            { L"Exit", [this]{ Exit(); } },
         };
     }
 
@@ -296,9 +367,9 @@ private:
     CallbackHandle m_connHandle;
     CallbackHandle m_configHandle;
 
-    InputMode m_mode         = InputMode::Cursor;
-    int64_t   m_lastTick     = 0;
-    Button    m_prevButtons  = Button::None;
+    InputMode m_mode            = InputMode::Cursor;
+    int64_t   m_lastTick        = 0;
+    Button    m_prevButtons     = Button::None;
     bool      m_lbRbChordActive = false;
 };
 
