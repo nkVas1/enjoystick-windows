@@ -9,24 +9,28 @@ namespace enjoystick::cursor {
 ///
 /// Configurable parameters for the virtual-mouse acceleration model.
 ///
-/// Field names are intentionally verbose to be self-documenting at call-sites
-/// such as VMConfigFromSettings() in Application.cpp.
+/// Default values are tuned for comfortable desktop navigation with a
+/// standard analogue stick.  They can be overridden via the Settings menu
+/// or config.json at any time without restarting.
 ///
 struct MouseConfig {
     /// Maximum cursor speed at full stick deflection (pixels per millisecond).
-    float maxSpeedPx       = 25.0f;
+    /// 12 px/ms @ 60 Hz = 720 px per frame max — comfortable for 1080p.
+    float maxSpeedPx       = 12.0f;
 
-    /// Acceleration curve power:  1.0 = linear,  2.0 = squared.
-    float curveExponent    = 2.0f;
+    /// Acceleration curve power.  1.0 = linear (raw).  Values < 2.0 give
+    /// a gentler roll-off that keeps the cursor manageable at low deflection.
+    float curveExponent    = 1.6f;
 
-    /// Time (ms) to ramp from rest to full speed.  0 = no ramp.
-    float accelerationMs   = 0.0f;
+    /// Time (ms) to ramp from rest to full speed.  0 = no ramp (instant).
+    /// 60 ms prevents the jarring lurch felt when you first push the stick.
+    float accelerationMs   = 60.0f;
 
     /// Dead-zone radius inside which no movement is generated ([0, 1]).
-    float linearZone       = 0.15f;
+    float linearZone       = 0.12f;
 
     /// Scroll speed multiplier when using the right stick as a scroll wheel.
-    float scrollSpeed      = 6.0f;
+    float scrollSpeed      = 4.0f;
 
     /// Whether left/right triggers fire mouse button 1 / 2.
     bool  triggersAsClicks = false;

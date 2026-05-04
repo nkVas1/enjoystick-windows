@@ -11,16 +11,19 @@ namespace enjoystick::config {
 // ---------------------------------------------------------------------------
 
 struct MouseCfg {
-    float maxSpeed         = 25.0f;
-    float exponent         = 2.0f;
-    float linearZone       = 0.15f;
+    /// px/ms at full deflection. 12 is comfortable for 1080p desktop use.
+    float maxSpeed         = 12.0f;
+    /// Curve exponent: 1.6 gives a gentle roll-off without being too linear.
+    float exponent         = 1.6f;
+    float linearZone       = 0.12f;
     bool  wrapEdges        = false;
-    float scrollSpeed      = 6.0f;
+    float scrollSpeed      = 4.0f;
 
     // Fields kept in sync with cursor::MouseConfig
     bool  triggersAsClicks = false;  ///< map LT/RT analogue to mouse buttons
     bool  useRightStick    = true;   ///< false → use left stick for cursor
-    float accelerationMs   = 0.0f;   ///< acceleration ramp duration (ms)
+    /// Ramp duration in ms. 60 ms prevents the jarring lurch on first push.
+    float accelerationMs   = 60.0f;
 };
 
 struct InputCfg {
