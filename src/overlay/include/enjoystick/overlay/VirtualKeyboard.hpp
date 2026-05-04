@@ -38,6 +38,8 @@ public:
     using OnCharCallback   = std::function<void(wchar_t ch)>;
     using OnSubmitCallback = std::function<void(const std::wstring& text)>;
 
+    enum class Layer : uint8_t { Alpha, Sym };
+
     VirtualKeyboard() = default;
     ~VirtualKeyboard() = default;
 
@@ -58,8 +60,18 @@ public:
                 float screenW,
                 float screenH) const;
 
-    // ---- Text state (read-only) --------------------------------------------
-    [[nodiscard]] const std::wstring& GetText() const noexcept { return m_text; }
+    // ---- Text / layer state (read-only) ------------------------------------
+    [[nodiscard]] const std::wstring& GetText()  const noexcept { return m_text; }
+    [[nodiscard]] Layer               GetLayer() const noexcept { return m_layer; }
+    [[nodiscard]] bool                GetCaps()  const noexcept { return m_caps;  }
+
+    /// Returns a short uppercase label for the current layer/modifier state:
+    /// "SYM", "CAPS", or "ALPHA".
+    [[nodiscard]] const wchar_t* GetLayerName() const noexcept {
+        if (m_layer == Layer::Sym)  return L"SYM";
+        if (m_caps)                 return L"CAPS";
+        return L"ALPHA";
+    }
 
 private:
     // ---- Key grid -----------------------------------------------------------
@@ -71,7 +83,6 @@ private:
         bool         isSpecial = false;
     };
 
-    enum class Layer : uint8_t { Alpha, Sym };
     enum class State : uint8_t { Hidden, Opening, Visible, Closing };
 
     void BuildLayout();
