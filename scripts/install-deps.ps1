@@ -1,99 +1,64 @@
 <#
 .SYNOPSIS
-    Bootstrap EnjoyStick development dependencies.
-
-.DESCRIPTION
-    Installs or updates:
-      - vcpkg   (cloned to C:\vcpkg, VCPKG_ROOT set in user environment)
-      - Ninja   (downloaded to C:\ninja, added to user PATH)
-
-    Safe to re-run: skips any step that is already done.
-    Does NOT require administrator rights for user-level PATH changes.
-
-.EXAMPLE
-    .\scripts\install-deps.ps1
+    Install/verify third-party dependencies required to build EnjoyStick.
+    Currently checks for: CMake, Ninja, and vcpkg (optional).
 #>
 [CmdletBinding()]
-param(
-    [string]$VcpkgPath = 'C:\vcpkg',
-    [string]$NinjaPath = 'C:\ninja'
-)
+param()
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Write-Step([string]$m) { Write-Host "`n>>> $m" -ForegroundColor Cyan }
-function Write-OK([string]$m)   { Write-Host "    OK: $m" -ForegroundColor Green }
-function Write-Skip([string]$m) { Write-Host "    SKIP: $m (already done)" -ForegroundColor DarkGray }
+function OK   { param([string]$msg) Write-Host ('[OK]    ' + $msg) -ForegroundColor Green  }
+function FAIL { param([string]$msg) Write-Host ('[FAIL]  ' + $msg) -ForegroundColor Red    }
+function INFO { param([string]$msg) Write-Host ('[INFO]  ' + $msg) -ForegroundColor Cyan   }
+function SKIP { param([string]$msg) Write-Host ('[SKIP]  ' + $msg) -ForegroundColor Gray   }
 
 # ---------------------------------------------------------------------------
-# 1. vcpkg
+# Check CMake
 # ---------------------------------------------------------------------------
-Write-Step 'vcpkg'
-
-if (-not (Test-Path (Join-Path $VcpkgPath 'vcpkg.exe'))) {
-    if (Test-Path $VcpkgPath) {
-        Write-Host "    Updating existing clone..."
-        & git -C $VcpkgPath pull --ff-only
-    } else {
-        Write-Host "    Cloning vcpkg..."
-        & git clone https://github.com/microsoft/vcpkg.git $VcpkgPath
-    }
-    Write-Host "    Bootstrapping..."
-    & (Join-Path $VcpkgPath 'bootstrap-vcpkg.bat') -disableMetrics
-    Write-OK "vcpkg built at $VcpkgPath"
-} else {
-    Write-Skip "vcpkg.exe exists at $VcpkgPath"
-}
-
-$currentVcpkg = [System.Environment]::GetEnvironmentVariable('VCPKG_ROOT', 'User')
-if ($currentVcpkg -ne $VcpkgPath) {
-    [System.Environment]::SetEnvironmentVariable('VCPKG_ROOT', $VcpkgPath, 'User')
-    $env:VCPKG_ROOT = $VcpkgPath
-    Write-OK "VCPKG_ROOT = $VcpkgPath (user env)"
-} else {
-    Write-Skip 'VCPKG_ROOT already set'
+INFO 'Checking CMake...'
+try {
+    $cmake = (Get-Command cmake -ErrorAction Stop).Source
+    $ver   = (cmake --version 2>&1 | Select-Object -First 1).ToString().Trim()
+    OK ('cmake found: ' + $cmake + ' (' + $ver + ')')
+} catch {
+    FAIL 'cmake not found. Download from https://cmake.org/download/'
 }
 
 # ---------------------------------------------------------------------------
-# 2. Ninja
+# Check Ninja
 # ---------------------------------------------------------------------------
-Write-Step 'Ninja build tool'
-
-$NinjaExe = Join-Path $NinjaPath 'ninja.exe'
-if (-not (Test-Path $NinjaExe)) {
-    New-Item -ItemType Directory -Path $NinjaPath -Force | Out-Null
-
-    Write-Host "    Fetching latest Ninja release info..."
-    $Release = Invoke-RestMethod 'https://api.github.com/repos/ninja-build/ninja/releases/latest'
-    $Asset   = $Release.assets | Where-Object { $_.name -like '*win*' } | Select-Object -First 1
-
-    if (-not $Asset) {
-        Write-Host "    [WARN] Could not auto-download Ninja. Visit https://ninja-build.org/" -ForegroundColor Yellow
-    } else {
-        $Zip = Join-Path $env:TEMP 'ninja-win.zip'
-        Write-Host "    Downloading $($Asset.name)..."
-        Invoke-WebRequest -Uri $Asset.browser_download_url -OutFile $Zip -UseBasicParsing
-        Expand-Archive -Path $Zip -DestinationPath $NinjaPath -Force
-        Remove-Item $Zip
-        Write-OK "Ninja installed at $NinjaPath"
-    }
-} else {
-    Write-Skip "ninja.exe exists at $NinjaPath"
-}
-
-$UserPath = [System.Environment]::GetEnvironmentVariable('PATH', 'User')
-if ($UserPath -notlike "*$NinjaPath*") {
-    [System.Environment]::SetEnvironmentVariable('PATH', "$UserPath;$NinjaPath", 'User')
-    $env:PATH += ";$NinjaPath"
-    Write-OK "$NinjaPath added to user PATH"
-} else {
-    Write-Skip "$NinjaPath already in PATH"
+INFO 'Checking Ninja...'
+try {
+    $ninja = (Get-Command ninja -ErrorAction Stop).Source
+    $ver   = (ninja --version 2>&1).ToString().Trim()
+    OK ('ninja found: ' + $ninja + ' (' + $ver + ')')
+} catch {
+    SKIP 'ninja not found (optional — MSBuild generator will be used instead)'
 }
 
 # ---------------------------------------------------------------------------
-# Done
+# Check Git
 # ---------------------------------------------------------------------------
-Write-Host ""
-Write-Host "Dependencies ready. Open a NEW terminal for PATH changes to take effect." -ForegroundColor Green
-Write-Host "Then run:  .\scripts\build.ps1" -ForegroundColor Cyan
+INFO 'Checking Git...'
+try {
+    $git = (Get-Command git -ErrorAction Stop).Source
+    $ver  = (git --version 2>&1).ToString().Trim()
+    OK ('git found: ' + $git + ' (' + $ver + ')')
+} catch {
+    FAIL 'git not found. Install Git for Windows: https://git-scm.com/'
+}
+
+# ---------------------------------------------------------------------------
+# Check vcpkg (optional)
+# ---------------------------------------------------------------------------
+INFO 'Checking vcpkg...'
+if ($Env:VCPKG_ROOT -and (Test-Path (Join-Path $Env:VCPKG_ROOT 'vcpkg.exe'))) {
+    OK ('vcpkg found: ' + $Env:VCPKG_ROOT)
+} else {
+    SKIP 'vcpkg not found. Set %VCPKG_ROOT% if you use vcpkg for dependency management.'
+}
+
+Write-Host ''
+INFO 'Dependency check complete.'

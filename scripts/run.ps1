@@ -1,33 +1,30 @@
 <#
 .SYNOPSIS
-    Launch EnjoyStick.exe (most recent Release build).
-
-.DESCRIPTION
-    Searches common build output locations and starts the executable.
-    If no build is found, prompts to run build.ps1 first.
+    Launch EnjoyStick.exe from the build output directory.
+.PARAMETER Config
+    Build configuration to run: Debug | Release (default: Release)
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Release','Debug')]
+    [ValidateSet('Debug','Release')]
     [string]$Config = 'Release'
 )
 
-$RepoRoot = Split-Path $PSScriptRoot -Parent
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
 
-$Candidates = @(
-    (Join-Path $RepoRoot "build\$Config\$Config\EnjoyStick.exe"),
-    (Join-Path $RepoRoot "build\$Config\EnjoyStick.exe"),
-    (Join-Path $RepoRoot "build\windows-release\$Config\EnjoyStick.exe"),
-    (Join-Path $RepoRoot "build\ninja-release\EnjoyStick.exe")
-)
+function INFO { param([string]$msg) Write-Host ('[INFO]  ' + $msg) -ForegroundColor Cyan }
+function FAIL { param([string]$msg) Write-Host ('[FAIL]  ' + $msg) -ForegroundColor Red  }
 
-$Exe = $Candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$RepoRoot  = Split-Path -Parent $ScriptDir
+$ExePath   = Join-Path $RepoRoot ('build\' + 'EnjoyStick.exe')
 
-if (-not $Exe) {
-    Write-Host "EnjoyStick.exe not found. Build first:" -ForegroundColor Yellow
-    Write-Host "  .\scripts\build.ps1" -ForegroundColor Cyan
+if (-not (Test-Path $ExePath)) {
+    FAIL ('EnjoyStick.exe not found at: ' + $ExePath)
+    FAIL 'Run scripts\build.ps1 first.'
     exit 1
 }
 
-Write-Host "Launching: $Exe" -ForegroundColor Green
-Start-Process -FilePath $Exe
+INFO ('Launching: ' + $ExePath)
+Start-Process -FilePath $ExePath

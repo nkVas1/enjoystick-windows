@@ -1,13 +1,23 @@
 <#
 .SYNOPSIS
-    Delete all CMake build directories.
+    Remove build artefacts (build\ directory).
 #>
-$RepoRoot = Split-Path $PSScriptRoot -Parent
-$BuildRoot = Join-Path $RepoRoot 'build'
+[CmdletBinding()]
+param()
 
-if (Test-Path $BuildRoot) {
-    Remove-Item $BuildRoot -Recurse -Force
-    Write-Host "Cleaned: $BuildRoot" -ForegroundColor Green
+Set-StrictMode -Version Latest
+
+function INFO { param([string]$msg) Write-Host ('[INFO]  ' + $msg) -ForegroundColor Cyan  }
+function OK   { param([string]$msg) Write-Host ('[OK]    ' + $msg) -ForegroundColor Green }
+
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$RepoRoot  = Split-Path -Parent $ScriptDir
+$BuildDir  = Join-Path $RepoRoot 'build'
+
+if (Test-Path $BuildDir) {
+    INFO ('Removing: ' + $BuildDir)
+    Remove-Item -Recurse -Force $BuildDir
+    OK 'Build directory removed.'
 } else {
-    Write-Host "Nothing to clean." -ForegroundColor DarkGray
+    INFO 'Nothing to clean (build directory does not exist).'
 }
