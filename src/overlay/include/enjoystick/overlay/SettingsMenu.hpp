@@ -65,6 +65,14 @@ private:
     static constexpr float kAnimMs   = 160.0f;
     static constexpr float kRepeatHz = 8.0f;
 
+    // Stick snap (magnet) navigation
+    // kSnapFirst: how long the stick must be held before the first auto-repeat
+    // kSnapNext:  interval between subsequent auto-repeat steps
+    // kNavDeadzone: stick threshold to trigger vertical navigation
+    static constexpr float kSnapFirst   = 0.38f;   // seconds
+    static constexpr float kSnapNext    = 0.22f;   // seconds (slower = more deliberate)
+    static constexpr float kNavDeadzone = 0.40f;   // stick magnitude threshold
+
     OnChangedCallback m_onChange;
     std::vector<Row>  m_rows;
     Values            m_values;
@@ -72,6 +80,10 @@ private:
     State             m_state        = State::Hidden;
     float             m_animProgress = 0.0f;
     float             m_repeatTimer  = 0.0f;
+
+    // Stick snap state for vertical row navigation
+    bool  m_stickNavActive    = false;
+    float m_stickNavCooldown  = 0.0f;
 
     bool m_prevSouth  = false;
     bool m_prevEast   = false;
