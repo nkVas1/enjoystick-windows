@@ -31,7 +31,14 @@ static float BounceEaseOut(float t) noexcept {
     return 1.0f - inv * inv * std::cos(t * 11.0f);
 }
 static float EaseInQuad(float t) noexcept { return t * t; }
-static float EaseInCubic(float t) noexcept { return t * t * t; }
+
+// Exponential ease: flat for first ~60%, then rapid acceleration.
+// Returns 0 at t=0, 1 at t=1.
+static float EaseInExpo(float t) noexcept {
+    if (t <= 0.0f) return 0.0f;
+    if (t >= 1.0f) return 1.0f;
+    return std::pow(2.0f, 10.0f * t - 10.0f);
+}
 
 // ---------------------------------------------------------------------------
 // Top-edge arc stroke specular
@@ -99,7 +106,7 @@ void RadialMenu::Open() {
     m_flashIndex   = -1;
     m_dwellTimer   = 0.0f;
     m_dwellSector  = -1;
-    m_stickInDeadzone = true;  // treat first frame as coming from centre
+    m_stickInDeadzone = true;
     for (auto& sc : m_itemScales) sc = 0.0f;
     m_itemDelayTimers.assign(m_items.size(), 0.0f);
 }
@@ -133,18 +140,8 @@ void RadialMenu::Update(const ControllerState& state, float deltaSeconds) {
         m_stickInDeadzone = true;
         return;
     }
+    // UpdateSelection now owns dwell accumulation and auto-confirm.
     UpdateSelection(state.rightStick, deltaSeconds);
-
-    // Dwell auto-confirm: if stick has been held on same sector long enough
-    if (m_hoveredIndex >= 0 && m_hoveredIndex == m_dwellSector) {
-        m_dwellTimer += deltaSeconds * 1000.0f;
-        if (m_dwellTimer >= kDwellConfirmMs) {
-            m_dwellTimer  = 0.0f;
-            m_dwellSector = -1;
-            ConfirmSelection();
-            return;
-        }
-    }
 
     const bool south = HasButton(state.buttons, Button::South);
     const bool east  = HasButton(state.buttons, Button::East);
@@ -197,42 +194,33 @@ void RadialMenu::UpdateSelection(Vec2 stick, float deltaSeconds) {
     const float magSq = stick.LengthSq();
     const float dzSq  = m_config.selectionDeadzone * m_config.selectionDeadzone;
     if (magSq < dzSq) {
-        // Stick returned to deadzone
         m_stickInDeadzone = true;
         if (m_latchedIndex >= 0) {
             m_latchTimer += deltaSeconds * 1000.0f;
             if (m_latchTimer >= m_config.latchMs) { m_latchedIndex = -1; m_hoveredIndex = -1; }
             else                                   m_hoveredIndex  = m_latchedIndex;
         } else { m_hoveredIndex = -1; }
-        // Reset dwell when stick returns to centre
+        // Stick returned to centre: dwell resets
         m_dwellTimer  = 0.0f;
         m_dwellSector = -1;
         return;
     }
     m_latchTimer = 0.0f;
 
-    // FIX: correct angle calculation so that physical stick direction == visual sector.
-    // Screen Y is inverted (positive = downward), so we negate stick.y so that
-    // "up on stick" maps to "top of circle" (270 deg / -90 deg from x-axis).
-    // We do NOT negate stick.x — right stays right.
     float angle = std::atan2(-stick.y, stick.x);
     if (angle < 0.0f) angle += k2Pi;
 
-    // Sector 0 is at 12-o'clock (-90 deg = 270 deg), items go clockwise.
-    // Add 90 deg (kPi*0.5) to rotate origin from 3-o'clock to 12-o'clock.
     const float   sector   = k2Pi / static_cast<float>(m_items.size());
-    // Correct offset: +90 deg shifts 0 from east to north, clockwise layout.
     const float   adjusted = std::fmod(angle + kPi * 0.5f, k2Pi);
     const int32_t idx      = static_cast<int32_t>(adjusted / sector) %
                              static_cast<int32_t>(m_items.size());
 
-    const bool sectorChanged = (idx != m_hoveredIndex);
+    const bool sectorChanged    = (idx != m_hoveredIndex);
     const bool justLeftDeadzone = m_stickInDeadzone;
     m_stickInDeadzone = false;
 
     if (sectorChanged || justLeftDeadzone) {
         m_glowPhase   = 0.0f;
-        // New sector — reset dwell completely
         m_dwellTimer  = 0.0f;
         m_dwellSector = idx;
     } else {
@@ -240,6 +228,19 @@ void RadialMenu::UpdateSelection(Vec2 stick, float deltaSeconds) {
     }
     m_hoveredIndex = idx;
     m_latchedIndex = idx;
+
+    // -----------------------------------------------------------------------
+    // Dwell accumulation (owned here so sector is always authoritative)
+    // -----------------------------------------------------------------------
+    if (m_dwellSector == idx) {
+        m_dwellTimer += deltaSeconds * 1000.0f;
+        if (m_dwellTimer >= kDwellConfirmMs) {
+            // Auto-confirm: act as if the user pressed South on this sector
+            m_dwellTimer  = 0.0f;
+            m_dwellSector = -1;
+            ConfirmSelection();
+        }
+    }
 }
 
 void RadialMenu::ConfirmSelection() {
@@ -288,17 +289,20 @@ void RadialMenu::Draw(
     const float s       = dpiScale;
     const int32_t displayHovered = m_hoveredIndex;
 
-    // Dwell progress [0..1] after kDwellStartMs
+    // -----------------------------------------------------------------------
+    // Dwell progress and EXPONENTIAL tremor intensity
+    // dwellFrac: 0..1 over the full dwell window (after kDwellStartMs)
+    // dwellEased: exponential ramp -- flat early, explosive near confirm
+    // -----------------------------------------------------------------------
     const float dwellFrac = (m_dwellTimer > kDwellStartMs)
         ? std::min(1.0f, (m_dwellTimer - kDwellStartMs) / (kDwellConfirmMs - kDwellStartMs))
         : 0.0f;
-    // Cubic ease so tremor starts slowly and accelerates
-    const float dwellEased = EaseInCubic(dwellFrac);
+    const float dwellEased = EaseInExpo(dwellFrac); // exponential, not cubic
 
     Microsoft::WRL::ComPtr<ID2D1Factory> factory;
     rt->GetFactory(factory.GetAddressOf());
 
-    // ---- Scrim  (canonical token: Tok::Scrim — deep violet-black modal dim)
+    // ---- Scrim
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::Scrim(0.55f * alpha), b.GetAddressOf());
@@ -372,7 +376,8 @@ void RadialMenu::Draw(
                 sink->AddArc(oa);
                 sink->EndFigure(D2D1_FIGURE_END_CLOSED);
                 sink->Close();
-                const float fillAlpha = latchPulse * (0.58f + 0.20f * dwellEased) * alpha;
+                // Fill alpha boosted exponentially at high dwell
+                const float fillAlpha = latchPulse * (0.58f + 0.24f * dwellEased) * alpha;
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fill;
                 rt->CreateSolidColorBrush(Tok::SurfaceRaised(fillAlpha), fill.GetAddressOf());
                 if (fill) rt->FillGeometry(geom.Get(), fill.Get());
@@ -393,9 +398,11 @@ void RadialMenu::Draw(
                         bs->EndFigure(D2D1_FIGURE_END_OPEN);
                         bs->Close();
                         const float borderAlpha = (0.90f + 0.10f * dwellEased) * alpha;
+                        // Border stroke width ramps from 2.2 to 5.0 exponentially
+                        const float strokeW = (2.2f + 2.8f * dwellEased) * s;
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> gb;
                         rt->CreateSolidColorBrush(Tok::GoldMid(borderAlpha), gb.GetAddressOf());
-                        if (gb) rt->DrawGeometry(bg.Get(), gb.Get(), (2.2f + 1.5f * dwellEased) * s);
+                        if (gb) rt->DrawGeometry(bg.Get(), gb.Get(), strokeW);
                     }
                 }
             }
@@ -432,12 +439,15 @@ void RadialMenu::Draw(
         const bool   hovered = (i == displayHovered);
         const float  px = pos.x, py = pos.y;
 
-        // Dwell tremor: shake offset applied to hovered item circle only.
-        // Frequency and amplitude both ramp up with cubic ease for organic feel.
+        // Dwell tremor: exponential ramp in frequency AND amplitude.
+        // Phase is seeded from glowPhase (which advances at 2*2pi/s) so the
+        // oscillation is smooth and doesn’t snap on dwell start.
         float tremorX = 0.0f, tremorY = 0.0f;
         if (hovered && dwellEased > 0.0f) {
-            const float freq = 6.0f + dwellEased * 20.0f;   // 6 Hz -> 26 Hz
-            const float amp  = dwellEased * 4.0f * dpiScale; // 0 -> 4 px
+            // Frequency: 5 Hz at dwell start -> 32 Hz at confirm (exponential feel)
+            const float freq = 5.0f + dwellEased * 27.0f;
+            // Amplitude: 0 -> 6 px
+            const float amp  = dwellEased * 6.0f * dpiScale;
             const float phase = m_glowPhase * freq * 0.5f;
             tremorX = amp * std::sin(phase * 2.31f);
             tremorY = amp * std::cos(phase * 1.87f);
@@ -451,16 +461,16 @@ void RadialMenu::Draw(
 
         // Glow rings for hovered
         if (hovered) {
-            const float glowExtra = dwellEased * 0.28f;
+            const float glowExtra = dwellEased * 0.32f;
             {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g;
-                rt->CreateSolidColorBrush(Tok::GoldGlow((0.32f + 0.15f * glowBreathe + 0.22f * dwellEased) * alpha), g.GetAddressOf());
+                rt->CreateSolidColorBrush(Tok::GoldGlow((0.32f + 0.15f * glowBreathe + 0.26f * dwellEased) * alpha), g.GetAddressOf());
                 if (g) rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(ipx,ipy),
-                    iR*(1.50f + 0.12f*glowBreathe + glowExtra), iR*(1.50f + 0.12f*glowBreathe + glowExtra)), g.Get(), (4.5f + 2.5f*dwellEased)*s);
+                    iR*(1.50f + 0.12f*glowBreathe + glowExtra), iR*(1.50f + 0.12f*glowBreathe + glowExtra)), g.Get(), (4.5f + 3.5f*dwellEased)*s);
             }
             {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g2;
-                rt->CreateSolidColorBrush(Tok::GoldGlow((0.22f + 0.12f * dwellEased) * alpha), g2.GetAddressOf());
+                rt->CreateSolidColorBrush(Tok::GoldGlow((0.22f + 0.18f * dwellEased) * alpha), g2.GetAddressOf());
                 if (g2) rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(ipx,ipy),
                     iR*1.22f, iR*1.22f), g2.Get(), 2.0f*s);
             }
@@ -555,7 +565,7 @@ void RadialMenu::Draw(
         }
         // Dwell progress arc in centre disc
         if (dwellEased > 0.0f && factory) {
-            const float progressA = dwellEased * k2Pi;
+            const float progressA = dwellFrac * k2Pi; // progress arc uses linear frac, not eased
             const float startA2   = -kPi * 0.5f;
             const float endA2     = startA2 + progressA;
             const float pR        = discR * 0.62f;
@@ -576,9 +586,10 @@ void RadialMenu::Draw(
                     ps->AddArc(pa);
                     ps->EndFigure(D2D1_FIGURE_END_OPEN);
                     ps->Close();
+                    // Progress arc brightness also scales exponentially with dwell
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> pb;
-                    rt->CreateSolidColorBrush(Tok::GoldBright(0.85f * dwellEased * alpha), pb.GetAddressOf());
-                    if (pb) rt->DrawGeometry(pg.Get(), pb.Get(), 2.5f * s);
+                    rt->CreateSolidColorBrush(Tok::GoldBright((0.65f + 0.35f * dwellEased) * alpha), pb.GetAddressOf());
+                    if (pb) rt->DrawGeometry(pg.Get(), pb.Get(), (2.5f + 1.5f * dwellEased) * s);
                 }
             }
         }
