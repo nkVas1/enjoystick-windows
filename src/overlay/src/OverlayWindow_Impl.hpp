@@ -9,6 +9,7 @@
 
 #include <enjoystick/overlay/OverlayWindow.hpp>
 #include <enjoystick/overlay/VirtualKeyboard.hpp>
+#include <enjoystick/overlay/ControlsOverlay.hpp>
 
 #include "Overlay_SpringAnim.hpp"
 
@@ -59,6 +60,7 @@ public:
     RadialMenu&      GetRadialMenu()      override;
     SettingsMenu&    GetSettingsMenu()    override;
     VirtualKeyboard& GetVirtualKeyboard() override;
+    ControlsOverlay& GetControlsOverlay() override;
     void ShowToast(std::wstring message, uint32_t durationMs) override;
     void SetModeLabel(std::wstring label)       override;
     [[nodiscard]] bool    IsShown()  const noexcept override;
@@ -112,6 +114,7 @@ private:
     RadialMenu      m_radialMenu;
     SettingsMenu    m_settingsMenu;
     VirtualKeyboard m_keyboard;
+    ControlsOverlay m_controlsOverlay;
 
     std::mutex                      m_toastMutex;
     std::queue<ToastNotification>   m_pendingToasts;

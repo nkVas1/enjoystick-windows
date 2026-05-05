@@ -4,6 +4,7 @@
 #include <enjoystick/overlay/RadialMenu.hpp>
 #include <enjoystick/overlay/SettingsMenu.hpp>
 #include <enjoystick/overlay/VirtualKeyboard.hpp>
+#include <enjoystick/overlay/ControlsOverlay.hpp>
 #include <memory>
 #include <string>
 #include <functional>
@@ -35,6 +36,8 @@ namespace enjoystick::overlay {
 ///   overlay->SetModeLabel(L"\U0001F5B1  Cursor mode");
 ///   // open keyboard:
 ///   overlay->GetVirtualKeyboard().Open(L"");
+///   // open controls reference:
+///   overlay->GetControlsOverlay().Open();
 ///
 class OverlayWindow {
 public:
@@ -76,6 +79,9 @@ public:
 
     /// Access the gamepad-driven virtual keyboard.
     virtual VirtualKeyboard& GetVirtualKeyboard() = 0;
+
+    /// Access the gamepad-driven controls reference overlay.
+    virtual ControlsOverlay& GetControlsOverlay() = 0;
 
     /// Trigger a toast notification (thread-safe).
     virtual void ShowToast(std::wstring message, uint32_t durationMs = 2500) = 0;
