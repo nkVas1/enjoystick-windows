@@ -27,21 +27,19 @@ static constexpr float kPi = static_cast<float>(M_PI);
 namespace enjoystick::overlay {
 
 // ---------------------------------------------------------------------------
-// Layout constants
+// Layout constants  (no text bar — keys start directly below accent strip)
 // ---------------------------------------------------------------------------
 static constexpr float kKeyW_base    = 88.0f;
 static constexpr float kKeyH_base    = 72.0f;
 static constexpr float kGap_base     =  7.0f;
 static constexpr float kCorner_base  = 11.0f;
 static constexpr float kPadX_base    = 24.0f;
-static constexpr float kPadY_base    = 18.0f;
+static constexpr float kPadY_base    = 14.0f;
 static constexpr float kHintH_base   = 26.0f;
 static constexpr float kFKey_base    = 24.0f;
 static constexpr float kFSpec_base   = 22.0f;
 static constexpr float kFHint_base   = 13.5f;
 static constexpr float kAccentH_base =  3.0f;
-// Text bar removed — chars go directly to focused input via SendInput.
-// kTbH_base was 52.0f; it is gone.
 
 // ---------------------------------------------------------------------------
 // Layout
@@ -124,48 +122,48 @@ void VirtualKeyboard::NavigateTo(int32_t row, int32_t col) {
     row = (row % nr + nr) % nr;
     const int32_t n = RowKeyCount(row);
     col = (n > 0) ? (col % n + n) % n : 0;
+    if (row == m_row && col == m_col) return;
     m_row = row; m_col = col;
-    // Bounce pop on navigation step.
-    m_cursorScaleSpring.value    = 1.08f;
+    m_cursorScaleSpring.value    = 1.10f;
     m_cursorScaleSpring.velocity = 0.0f;
     m_cursorScaleSpring.SetTarget(1.0f);
-    // Haptic pulse
-    if (m_onNavigate) m_onNavigate();
+    if (m_onHaptic) m_onHaptic(HapticType::Nav);
 }
 
-Vec2 VirtualKeyboard::KeyCentrePixel(int32_t row, int32_t col,
-                                      float dpiScale, float screenW, float) const noexcept
-{
-    const float s     = dpiScale;
+// Returns key centre in screen-space pixels using cached layout from last Draw().
+Vec2 VirtualKeyboard::KeyCentrePixel(int32_t row, int32_t col) const noexcept {
+    const float s     = m_cachedDpiScale;
     const float kKeyW = kKeyW_base * s;
     const float kKeyH = kKeyH_base * s;
     const float kGap  = kGap_base  * s;
-    const float kPadX = kPadX_base * s;
 
-    float maxRowW = 0.0f;
-    for (const auto& r : m_rows) {
-        float rw = -kGap;
-        for (const auto& k : r) rw += k.widthMul * kKeyW + kGap;
-        if (rw > maxRowW) maxRowW = rw;
-    }
-    const float kPanelW = maxRowW + kPadX * 2.0f;
-    const float panelX  = (screenW - kPanelW) * 0.5f;
-    const float kPadY   = kPadY_base * s;
-    // No text bar — keysTop starts right after accentH + padY
-    const float keysTop = kPadY + kAccentH_base * s;
-
-    if (row < 0 || row >= static_cast<int32_t>(m_rows.size())) return {-9999.0f,-9999.0f};
+    if (row < 0 || row >= static_cast<int32_t>(m_rows.size())) return {-9999.f,-9999.f};
     const auto& rrow = m_rows[static_cast<size_t>(row)];
-    if (col < 0 || col >= static_cast<int32_t>(rrow.size())) return {-9999.0f,-9999.0f};
+    if (col < 0 || col >= static_cast<int32_t>(rrow.size())) return {-9999.f,-9999.f};
 
     float rowW = -kGap;
     for (const auto& k : rrow) rowW += k.widthMul * kKeyW + kGap;
-    float rx = panelX + (kPanelW - rowW) * 0.5f;
+    float rx = m_cachedPanelX + (m_cachedPanelW - rowW) * 0.5f;
     for (int32_t c = 0; c < col; ++c)
         rx += rrow[static_cast<size_t>(c)].widthMul * kKeyW + kGap;
     const float kw = rrow[static_cast<size_t>(col)].widthMul * kKeyW;
-    const float ry = keysTop + static_cast<float>(row) * (kKeyH + kGap);
+    const float ry = m_cachedKeysTop + static_cast<float>(row) * (kKeyH + kGap);
     return { rx + kw * 0.5f, ry + kKeyH * 0.5f };
+}
+
+void VirtualKeyboard::FindNearestKey(float sx, float sy,
+                                      int32_t& outRow, int32_t& outCol) const noexcept {
+    float best = 1e9f;
+    outRow = m_row; outCol = m_col;
+    for (int32_t ri = 0; ri < static_cast<int32_t>(m_rows.size()); ++ri) {
+        const int32_t nc = RowKeyCount(ri);
+        for (int32_t ci = 0; ci < nc; ++ci) {
+            const Vec2 c = KeyCentrePixel(ri, ci);
+            const float dx = sx - c.x, dy = sy - c.y;
+            const float d2 = dx*dx + dy*dy;
+            if (d2 < best) { best = d2; outRow = ri; outCol = ci; }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -174,26 +172,25 @@ Vec2 VirtualKeyboard::KeyCentrePixel(int32_t row, int32_t col,
 void VirtualKeyboard::Open(const std::wstring& seed) {
     if (m_state == State::Visible || m_state == State::Opening) return;
     BuildLayout();
-    m_text      = seed;
-    m_row       = 3; m_col = 9; // space bar
-    m_layer     = Layer::Alpha;
-    m_shift     = false; m_caps = false;
-    m_glowPhase = 0.0f;
-    m_state     = State::Opening;
+    m_text     = seed;
+    m_row      = 3; m_col = 9;
+    m_layer    = Layer::Alpha;
+    m_shift    = false; m_caps = false;
+    m_glowPhase= 0.0f;
+    m_state    = State::Opening;
 
-    // DPad / stick nav state
     m_stickCooldown = 0.0f; m_stickActive = false; m_stickHoldTime = 0.0f;
     m_dpadHeld = false; m_dpadTimer = 0.0f;
     m_dpadDirRow = 0; m_dpadDirCol = 0;
 
-    // Hold-to-repeat state
-    m_southHeld = false; m_southHoldTimer = 0.0f; m_southHoldRepeat = 0.0f;
-    m_westHeld  = false; m_westHoldTimer  = 0.0f; m_westHoldRepeat  = 0.0f;
-
-    // Legacy debounce fields — not used for type/backspace anymore
     m_typeDebounce = 0.0f;
     m_westDebounce = 0.0f;
     m_lbDebounce   = 0.0f;
+
+    m_southHoldTime = 0.0f; m_southRepTimer = 0.0f; m_southRepActive = false;
+    m_westHoldTime  = 0.0f; m_westRepTimer  = 0.0f; m_westRepActive  = false;
+
+    m_rsSwipeActive = false; m_rsSwipeX = 0.0f; m_rsSwipeY = 0.0f;
 
     m_prevSouth = m_prevEast = m_prevWest = m_prevNorth =
     m_prevLB    = m_prevRB  = m_prevLS   = false;
@@ -201,19 +198,18 @@ void VirtualKeyboard::Open(const std::wstring& seed) {
     m_panelSpring.stiffness = 320.0f; m_panelSpring.damping = 24.0f;
     m_panelSpring.Snap(0.0f); m_panelSpring.SetTarget(1.0f);
 
-    m_cursorSpringX.stiffness = 480.0f; m_cursorSpringX.damping = 26.0f;
-    m_cursorSpringY.stiffness = 480.0f; m_cursorSpringY.damping = 26.0f;
-    m_cursorScaleSpring.stiffness = 600.0f; m_cursorScaleSpring.damping = 28.0f;
+    m_cursorSpringX.stiffness = 460.0f; m_cursorSpringX.damping = 28.0f;
+    m_cursorSpringY.stiffness = 460.0f; m_cursorSpringY.damping = 28.0f;
+    m_cursorScaleSpring.stiffness = 580.0f; m_cursorScaleSpring.damping = 30.0f;
     m_cursorScaleSpring.Snap(1.0f);
 
-    // Liquid trail — lower stiffness & heavier damping → more viscous lag
-    m_trailSpringX.stiffness = 42.0f; m_trailSpringX.damping = 9.0f;
-    m_trailSpringY.stiffness = 42.0f; m_trailSpringY.damping = 9.0f;
+    // Viscous trail springs — low stiffness gives liquid-stretch feel.
+    m_trailSpringX.stiffness = 38.0f; m_trailSpringX.damping = 8.0f;
+    m_trailSpringY.stiffness = 38.0f; m_trailSpringY.damping = 8.0f;
 
-    // RS geometry cache
-    m_rsCentreX = 0.0f; m_rsCentreY = 0.0f;
-    m_rsHalfW   = 0.0f; m_rsHalfH   = 0.0f;
-    m_rsDpiScale = 1.0f; m_rsScreenW = 0.0f; m_rsScreenH = 0.0f;
+    m_cachedPanelX = 0.0f; m_cachedPanelY = 0.0f;
+    m_cachedPanelW = 0.0f; m_cachedKeysTop = 0.0f;
+    m_cachedDpiScale = 1.0f;
 }
 void VirtualKeyboard::Close() {
     if (m_state == State::Hidden || m_state == State::Closing) return;
@@ -223,37 +219,20 @@ void VirtualKeyboard::Close() {
 bool VirtualKeyboard::IsOpen() const noexcept { return m_state != State::Hidden; }
 
 // ---------------------------------------------------------------------------
-// Direct per-char SendInput helper
+// SendInput helpers
 // ---------------------------------------------------------------------------
 static void SendCharDirect(wchar_t ch) noexcept {
     INPUT inp[2]{};
-    inp[0].type       = INPUT_KEYBOARD;
-    inp[0].ki.wVk     = 0;
-    inp[0].ki.wScan   = ch;
+    inp[0].type = INPUT_KEYBOARD; inp[0].ki.wVk = 0; inp[0].ki.wScan = ch;
     inp[0].ki.dwFlags = KEYEVENTF_UNICODE;
-    inp[1]            = inp[0];
-    inp[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+    inp[1] = inp[0]; inp[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
     SendInput(2, inp, sizeof(INPUT));
 }
 static void SendBackspaceDirect() noexcept {
     INPUT inp[2]{};
-    inp[0].type    = INPUT_KEYBOARD;
-    inp[0].ki.wVk  = VK_BACK;
-    inp[1]         = inp[0];
-    inp[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    inp[0].type = INPUT_KEYBOARD; inp[0].ki.wVk = VK_BACK;
+    inp[1] = inp[0]; inp[1].ki.dwFlags = KEYEVENTF_KEYUP;
     SendInput(2, inp, sizeof(INPUT));
-}
-
-// ---------------------------------------------------------------------------
-// Internal backspace helper — fires one deletion, pops cursor scale
-// ---------------------------------------------------------------------------
-void VirtualKeyboard::DoBackspace() noexcept {
-    SendBackspaceDirect();
-    if (m_onNavigate) m_onNavigate();
-    // Small scale pulse on backspace (less than type press)
-    m_cursorScaleSpring.value    = 1.06f;
-    m_cursorScaleSpring.velocity = 0.0f;
-    m_cursorScaleSpring.SetTarget(1.0f);
 }
 
 // ---------------------------------------------------------------------------
@@ -261,19 +240,14 @@ void VirtualKeyboard::DoBackspace() noexcept {
 // ---------------------------------------------------------------------------
 void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     const float dtMs = dt * 1000.0f;
-    (void)dtMs;
 
     m_panelSpring.Step(dt);
     const float panelVal = std::max(0.0f, std::min(1.0f, m_panelSpring.value));
 
     if (m_state == State::Opening) {
-        if (m_panelSpring.IsSettled(0.01f) || panelVal >= 0.999f)
-            m_state = State::Visible;
+        if (m_panelSpring.IsSettled(0.01f) || panelVal >= 0.999f) m_state = State::Visible;
     } else if (m_state == State::Closing) {
-        if (m_panelSpring.IsSettled(0.01f) || panelVal <= 0.001f) {
-            m_state = State::Hidden;
-            return;
-        }
+        if (m_panelSpring.IsSettled(0.01f) || panelVal <= 0.001f) { m_state = State::Hidden; return; }
     }
     if (m_state == State::Hidden) return;
 
@@ -286,8 +260,10 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     m_trailSpringY.Step(dt);
     m_cursorScaleSpring.Step(dt);
 
-    // Tick LB debounce
-    if (m_lbDebounce > 0.0f) { m_lbDebounce -= dt * 1000.0f; if (m_lbDebounce < 0.0f) m_lbDebounce = 0.0f; }
+    auto tickMs = [&](float& v) { if (v > 0.0f) { v -= dtMs; if (v < 0.0f) v = 0.0f; } };
+    tickMs(m_typeDebounce);
+    tickMs(m_westDebounce);
+    tickMs(m_lbDebounce);
 
     const bool south = HasButton(state.buttons, Button::South);
     const bool east  = HasButton(state.buttons, Button::East);
@@ -303,9 +279,41 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
 
     if (east  && !m_prevEast)  { Close(); goto done; }
     if (north && !m_prevNorth) { if (m_onSubmit) m_onSubmit(m_text); Close(); goto done; }
-    if (ls    && !m_prevLS)    { m_caps = !m_caps; m_shift = false; goto done; }
 
-    // LB layer-cycle — debounced
+    // -------------------------------------------------------------------------
+    // Backspace — West held with accelerating repeat
+    // -------------------------------------------------------------------------
+    if (west) {
+        if (!m_prevWest) {
+            // First press: fire immediately
+            if (!m_text.empty()) m_text.pop_back();
+            SendBackspaceDirect();
+            if (m_onHaptic) m_onHaptic(HapticType::Type);
+            m_westHoldTime  = 0.0f;
+            m_westRepTimer  = kBsRepeatFirst;
+            m_westRepActive = true;
+        } else if (m_westRepActive) {
+            m_westHoldTime += dt;
+            m_westRepTimer -= dt;
+            if (m_westRepTimer <= 0.0f) {
+                const float accelT   = std::max(0.0f,
+                    (m_westHoldTime - kBsRepeatAccelStart) / kBsRepeatAccelRange);
+                const float blend    = std::min(1.0f, accelT * accelT);
+                const float interval = kBsRepeatFirst + (kBsRepeatFast - kBsRepeatFirst) * blend;
+                m_westRepTimer = interval;
+                if (!m_text.empty()) m_text.pop_back();
+                SendBackspaceDirect();
+                if (m_onHaptic) m_onHaptic(HapticType::Type);
+            }
+        }
+    } else {
+        m_westHoldTime  = 0.0f;
+        m_westRepTimer  = 0.0f;
+        m_westRepActive = false;
+    }
+
+    if (ls && !m_prevLS) { m_caps = !m_caps; m_shift = false; goto done; }
+
     if (lb && !m_prevLB && m_lbDebounce <= 0.0f) {
         if      (m_layer == Layer::Alpha) m_layer = Layer::Cyr;
         else if (m_layer == Layer::Cyr)   m_layer = Layer::Sym;
@@ -315,133 +323,87 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     }
     if (rb && !m_prevRB) { m_layer = Layer::Alpha; goto done; }
 
-    // =========================================================================
-    // West — hold-to-backspace with accelerating repeat
-    // =========================================================================
-    if (west) {
-        if (!m_prevWest) {
-            // First press: fire immediately
-            m_westHeld = true;
-            m_westHoldTimer  = 0.0f;
-            m_westHoldRepeat = kBackspaceHoldFirst;
-            DoBackspace();
-        } else {
-            // Held: accumulate time, fire repeat
-            m_westHoldTimer  += dt;
-            m_westHoldRepeat -= dt;
-            if (m_westHoldRepeat <= 0.0f) {
-                const float accelT = std::max(0.0f,
-                    (m_westHoldTimer - kBackspaceAccelStart) / kBackspaceAccelRange);
-                const float blend    = std::min(1.0f, accelT * accelT);
-                const float interval = kBackspaceHoldNext + (kBackspaceHoldFast - kBackspaceHoldNext) * blend;
-                m_westHoldRepeat = interval;
-                DoBackspace();
-            }
-        }
-    } else {
-        m_westHeld = false;
-        m_westHoldTimer  = 0.0f;
-        m_westHoldRepeat = 0.0f;
-    }
-
-    // =========================================================================
-    // South — hold-to-type with accelerating repeat
-    // On ⌫ key, South acts as an additional backspace path.
-    // =========================================================================
+    // -------------------------------------------------------------------------
+    // South — type key with accelerating repeat
+    // -------------------------------------------------------------------------
     if (south) {
-        const Key* k = CurrentKey();
-        if (k) {
-            const bool isBackspace = k->isSpecial && (k->label == L"\u232B");
-            if (!m_prevSouth) {
-                // First press — fire immediately
-                m_southHeld      = true;
-                m_southHoldTimer = 0.0f;
-                m_southHoldRepeat = isBackspace ? kBackspaceHoldFirst : kTypeHoldFirst;
-                if (isBackspace) {
-                    DoBackspace();
-                } else {
+        if (!m_prevSouth) {
+            if (const Key* k = CurrentKey()) {
+                TypeKey(*k);
+                m_cursorScaleSpring.value    = 1.12f;
+                m_cursorScaleSpring.velocity = 0.0f;
+                m_cursorScaleSpring.SetTarget(1.0f);
+            }
+            m_southHoldTime  = 0.0f;
+            m_southRepTimer  = kTypeRepeatFirst;
+            m_southRepActive = true;
+        } else if (m_southRepActive) {
+            m_southHoldTime += dt;
+            m_southRepTimer -= dt;
+            if (m_southRepTimer <= 0.0f) {
+                const float accelT   = std::max(0.0f,
+                    (m_southHoldTime - kTypeRepeatAccelStart) / kTypeRepeatAccelRange);
+                const float blend    = std::min(1.0f, accelT * accelT);
+                const float interval = kTypeRepeatFirst + (kTypeRepeatFast - kTypeRepeatFirst) * blend;
+                m_southRepTimer = interval;
+                if (const Key* k = CurrentKey()) {
                     TypeKey(*k);
-                    // Bigger scale pop on first press
-                    m_cursorScaleSpring.value    = 1.12f;
+                    m_cursorScaleSpring.value    = 1.06f;
                     m_cursorScaleSpring.velocity = 0.0f;
                     m_cursorScaleSpring.SetTarget(1.0f);
                 }
-            } else {
-                // Held — fire repeats with accel curve
-                m_southHoldTimer  += dt;
-                m_southHoldRepeat -= dt;
-                if (m_southHoldRepeat <= 0.0f) {
-                    const float accelStart = isBackspace ? kBackspaceAccelStart : kTypeAccelStart;
-                    const float accelRange = isBackspace ? kBackspaceAccelRange : kTypeAccelRange;
-                    const float holdFast   = isBackspace ? kBackspaceHoldFast   : kTypeHoldFast;
-                    const float holdNext   = isBackspace ? kBackspaceHoldNext   : kTypeHoldNext;
-                    const float accelT = std::max(0.0f,
-                        (m_southHoldTimer - accelStart) / accelRange);
-                    const float blend    = std::min(1.0f, accelT * accelT);
-                    const float interval = holdNext + (holdFast - holdNext) * blend;
-                    m_southHoldRepeat = interval;
-                    if (isBackspace) {
-                        DoBackspace();
-                    } else {
-                        TypeKey(*k);
-                        // Smaller pop on repeats — rhythmic, not frantic
-                        m_cursorScaleSpring.value    = 1.06f;
-                        m_cursorScaleSpring.velocity = 0.0f;
-                        m_cursorScaleSpring.SetTarget(1.0f);
-                    }
-                }
             }
         }
+        goto done;
     } else {
-        m_southHeld       = false;
-        m_southHoldTimer  = 0.0f;
-        m_southHoldRepeat = 0.0f;
+        m_southHoldTime  = 0.0f;
+        m_southRepTimer  = 0.0f;
+        m_southRepActive = false;
     }
 
-    // =========================================================================
-    // Right-stick proximity hover
-    // When RS is deflected, select the key nearest to the mapped screen point.
-    // Left-stick nav is suppressed while RS is active to avoid fighting.
-    // =========================================================================
-    bool rsActive = false;
+    // -------------------------------------------------------------------------
+    // Right-stick proximity hover (swipe mode)
+    // -------------------------------------------------------------------------
     {
         const float rx = state.rightStick.x;
         const float ry = state.rightStick.y;
-        if (std::sqrt(rx*rx + ry*ry) > kRightStickDz && m_rsHalfW > 0.0f) {
-            rsActive = true;
-            // Map stick deflection onto keyboard panel space
-            const float targetX = m_rsCentreX + rx * m_rsHalfW;
-            const float targetY = m_rsCentreY + ry * m_rsHalfH;
-
-            // Find nearest key centre
-            float bestDist2 = 1e18f;
-            int32_t bestRow = m_row, bestCol = m_col;
-            for (int32_t ri = 0; ri < static_cast<int32_t>(m_rows.size()); ++ri) {
-                const auto& row = m_rows[static_cast<size_t>(ri)];
-                for (int32_t ci = 0; ci < static_cast<int32_t>(row.size()); ++ci) {
-                    const Vec2 c = KeyCentrePixel(ri, ci, m_rsDpiScale, m_rsScreenW, m_rsScreenH);
-                    const float dx = c.x - targetX;
-                    const float dy = c.y - targetY;
-                    const float d2 = dx*dx + dy*dy;
-                    if (d2 < bestDist2) { bestDist2 = d2; bestRow = ri; bestCol = ci; }
-                }
+        const float rmag = std::sqrt(rx*rx + ry*ry);
+        if (rmag > kRsSwipeDeadzone) {
+            m_rsSwipeActive = true;
+            m_rsSwipeX = rx; m_rsSwipeY = ry;
+            // Map stick [-1,1] to panel key area in screen space.
+            // Only meaningful after first Draw() has set cached values.
+            if (m_cachedPanelW > 0.0f) {
+                const float s    = m_cachedDpiScale;
+                const float kKeyW = kKeyW_base * s;
+                const float kKeyH = kKeyH_base * s;
+                const float kGap  = kGap_base  * s;
+                const float gridW = m_cachedPanelW - (kPadX_base * s) * 2.0f;
+                const float nRows = static_cast<float>(m_rows.size());
+                const float gridH = nRows * (kKeyH + kGap) - kGap;
+                const float sx = m_cachedPanelX + (kPadX_base * s)
+                                + (rx * 0.5f + 0.5f) * gridW;
+                const float sy = m_cachedKeysTop
+                                + (ry * 0.5f + 0.5f) * gridH;
+                int32_t nr, nc;
+                FindNearestKey(sx, sy, nr, nc);
+                NavigateTo(nr, nc);
             }
-            if (bestRow != m_row || bestCol != m_col)
-                NavigateTo(bestRow, bestCol);
+        } else if (m_rsSwipeActive && rmag < kRsSwipeRelease) {
+            m_rsSwipeActive = false;
         }
     }
 
-    // =========================================================================
+    // -------------------------------------------------------------------------
     // DPad navigation
-    // =========================================================================
-    if (!rsActive) {
+    // -------------------------------------------------------------------------
+    {
         const int32_t dr = dDown ? 1 : (dUp   ? -1 : 0);
         const int32_t dc = dRight? 1 : (dLeft ? -1 : 0);
         const bool dAny  = (dr != 0 || dc != 0);
         if (dAny) {
             if (!m_dpadHeld) {
-                m_dpadHeld   = true;
-                m_dpadTimer  = kDPadFirst;
+                m_dpadHeld = true; m_dpadTimer = kDPadFirst;
                 m_dpadDirRow = dr; m_dpadDirCol = dc;
                 NavigateTo(m_row + dr, m_col + dc);
             } else {
@@ -456,16 +418,15 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
         }
     }
 
-    // =========================================================================
-    // Left-stick navigation — slow first → springy → fast on long hold
-    // =========================================================================
-    if (!rsActive) {
+    // -------------------------------------------------------------------------
+    // Left-stick navigation
+    // -------------------------------------------------------------------------
+    {
         const float lx = state.leftStick.x;
         const float ly = state.leftStick.y;
-        const float dz = kSnapDeadzone;
-        const bool  hx = std::abs(lx) > dz;
-        const bool  hy = std::abs(ly) > dz;
-        if (hx || hy) {
+        const bool  hx = std::abs(lx) > kSnapDeadzone;
+        const bool  hy = std::abs(ly) > kSnapDeadzone;
+        if ((hx || hy) && !m_rsSwipeActive) {
             if (!m_stickActive) {
                 m_stickActive   = true;
                 m_stickHoldTime = 0.0f;
@@ -478,14 +439,13 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
                 if (m_stickCooldown <= 0.0f) {
                     const float accelT = std::max(0.0f,
                         (m_stickHoldTime - kStickRepeatAccelStart) / kStickRepeatAccelRange);
-                    const float blend    = std::min(1.0f, accelT * accelT);
-                    const float interval = kStickRepeatNext + (kStickRepeatFast - kStickRepeatNext) * blend;
-                    m_stickCooldown = interval;
+                    const float blend  = std::min(1.0f, accelT * accelT);
+                    m_stickCooldown = kStickRepeatNext + (kStickRepeatFast - kStickRepeatNext) * blend;
                     if (hx) NavigateTo(m_row, m_col + (lx > 0 ? 1 : -1));
                     else    NavigateTo(m_row + (ly > 0 ? 1 : -1), m_col);
                 }
             }
-        } else {
+        } else if (!hx && !hy) {
             m_stickActive = false; m_stickCooldown = 0.0f; m_stickHoldTime = 0.0f;
         }
     }
@@ -500,29 +460,31 @@ done:
 bool VirtualKeyboard::TypeKey(const Key& k) {
     if (k.isSpecial) {
         if (k.label == L"\u232B") {
-            DoBackspace();
+            if (!m_text.empty()) m_text.pop_back();
+            SendBackspaceDirect();
+            if (m_onHaptic) m_onHaptic(HapticType::Type);
             return true;
         }
         if (k.label == L"\u23CE") {
-            SendCharDirect(L'\n');
+            m_text += L'\n'; SendCharDirect(L'\n');
             if (m_onChar) m_onChar(L'\n');
-            if (m_onNavigate) m_onNavigate();
+            if (m_onHaptic) m_onHaptic(HapticType::Type);
             return false;
         }
         if (k.label == L"\u21E7") { m_shift = !m_shift; return false; }
         if (k.label == L"\u2423") {
-            SendCharDirect(L' ');
+            m_text += L' '; SendCharDirect(L' ');
             if (m_onChar) m_onChar(L' ');
-            if (m_onNavigate) m_onNavigate();
+            if (m_onHaptic) m_onHaptic(HapticType::Type);
             return false;
         }
         return false;
     }
     const std::wstring d = KeyDisplay(k);
     if (d.size() == 1) {
-        SendCharDirect(d[0]);
+        m_text += d[0]; SendCharDirect(d[0]);
         if (m_onChar) m_onChar(d[0]);
-        if (m_onNavigate) m_onNavigate();
+        if (m_onHaptic) m_onHaptic(HapticType::Type);
     }
     if (m_shift && !m_caps) m_shift = false;
     return false;
@@ -538,27 +500,23 @@ static void DrawArcSpecular(
     float cx, float cy, float rx, float ry, float alpha) noexcept
 {
     if (!rt || !fac || rx < 2.0f || ry < 2.0f || alpha < 0.004f) return;
-    const float aFrom = -kPi * 0.84f;
-    const float aTo   = -kPi * 0.16f;
-    const float arx   = rx - 1.5f, ary = ry - 1.5f;
+    const float aFrom = -kPi * 0.84f, aTo = -kPi * 0.16f;
+    const float arx = rx - 1.5f, ary = ry - 1.5f;
     if (arx <= 0.0f || ary <= 0.0f) return;
     Microsoft::WRL::ComPtr<ID2D1PathGeometry> g;
     fac->CreatePathGeometry(g.GetAddressOf());
     if (!g) return;
     Microsoft::WRL::ComPtr<ID2D1GeometrySink> sk;
-    g->Open(sk.GetAddressOf());
-    if (!sk) return;
+    g->Open(sk.GetAddressOf()); if (!sk) return;
     sk->BeginFigure(
         D2D1::Point2F(cx + arx * std::cos(aFrom), cy + ary * std::sin(aFrom)),
         D2D1_FIGURE_BEGIN_HOLLOW);
     D2D1_ARC_SEGMENT arc{};
-    arc.point          = D2D1::Point2F(cx + arx * std::cos(aTo), cy + ary * std::sin(aTo));
-    arc.size           = D2D1::SizeF(arx, ary);
+    arc.point = D2D1::Point2F(cx + arx * std::cos(aTo), cy + ary * std::sin(aTo));
+    arc.size  = D2D1::SizeF(arx, ary);
     arc.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
     arc.arcSize        = D2D1_ARC_SIZE_SMALL;
-    sk->AddArc(arc);
-    sk->EndFigure(D2D1_FIGURE_END_OPEN);
-    sk->Close();
+    sk->AddArc(arc); sk->EndFigure(D2D1_FIGURE_END_OPEN); sk->Close();
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
     rt->CreateSolidColorBrush(Tok::White(alpha), b.GetAddressOf());
     if (b) rt->DrawGeometry(g.Get(), b.Get(), 0.9f);
@@ -568,9 +526,7 @@ static void DrawHintChip(
     ID2D1RenderTarget* rt, IDWriteFactory* dwrite,
     float x, float cy, float s, float ease,
     const wchar_t* label,
-    const D2D1_COLOR_F& chipCol,
-    const D2D1_COLOR_F& textCol,
-    float fontSize) noexcept
+    const D2D1_COLOR_F& chipCol, const D2D1_COLOR_F& textCol, float fontSize) noexcept
 {
     if (!rt || !dwrite) return;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
@@ -582,89 +538,18 @@ static void DrawHintChip(
     dwrite->CreateTextLayout(label, static_cast<UINT32>(std::wcslen(label)),
         fmt.Get(), 300.0f * s, 28.0f * s, lay.GetAddressOf());
     if (!lay) return;
-    DWRITE_TEXT_METRICS tm{};
-    lay->GetMetrics(&tm);
-    const float padH = 7.0f * s, padV = 4.0f * s;
-    const float cw   = tm.width + padH * 2.0f;
-    const float ch   = tm.height + padV * 2.0f;
-    const float cy0  = cy - ch * 0.5f;
+    DWRITE_TEXT_METRICS tm{}; lay->GetMetrics(&tm);
+    const float padH = 7.0f*s, padV = 4.0f*s;
+    const float cw = tm.width + padH*2.0f, ch = tm.height + padV*2.0f;
+    const float cy0 = cy - ch * 0.5f;
     { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
       rt->CreateSolidColorBrush(chipCol, b.GetAddressOf());
-      if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(x, cy0, x+cw, cy0+ch), 4.0f*s, 4.0f*s};
+      if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(x,cy0,x+cw,cy0+ch),4.0f*s,4.0f*s};
                rt->FillRoundedRectangle(rr, b.Get()); } }
     { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
       rt->CreateSolidColorBrush(textCol, b.GetAddressOf());
-      if (b) rt->DrawTextLayout(D2D1::Point2F(x + padH, cy0 + padV), lay.Get(), b.Get()); }
+      if (b) rt->DrawTextLayout(D2D1::Point2F(x+padH, cy0+padV), lay.Get(), b.Get()); }
     (void)ease;
-}
-
-// ---------------------------------------------------------------------------
-// DrawLiquidTrail — dense capsule blob between trail position and cursor
-// ---------------------------------------------------------------------------
-static void DrawLiquidTrail(
-    ID2D1RenderTarget* rt,
-    float tx, float ty,   // trail (lagging) centre
-    float cx, float cy,   // cursor (leading) centre
-    float kw, float kh,   // key width/height in pixels
-    float ease) noexcept
-{
-    if (!rt) return;
-    const float dx   = cx - tx;
-    const float dy   = cy - ty;
-    const float dist = std::sqrt(dx*dx + dy*dy);
-    if (dist < 2.0f) return;
-
-    const float maxDist  = kw * 4.0f;
-    // Alpha: stronger near cursor, dense even at short distances
-    const float rawT     = std::min(1.0f, dist / maxDist);
-    const float alpha    = std::pow(rawT, 0.5f) * 0.58f * ease;
-    const float alphaSpec= alpha * 0.38f;  // inner specular
-
-    // Capsule geometry: a rounded-rect bridging the two centres
-    // plus two capping ellipses to ensure smooth terminations.
-    const float capsuleR  = kh * 0.46f;           // half-height of blob
-    const float capsuleRx = kw  * 0.40f;          // half-width of each cap ellipse
-
-    const float minX = std::min(tx, cx) - capsuleRx;
-    const float maxX = std::max(tx, cx) + capsuleRx;
-    const float minY = std::min(ty, cy) - capsuleR;
-    const float maxY = std::max(ty, cy) + capsuleR;
-
-    // Outer fill — dense gold blob
-    {
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::GoldMid(alpha), b.GetAddressOf());
-        if (b) {
-            // Body between the two end-caps
-            const D2D1_ROUNDED_RECT rr{ D2D1::RectF(minX, minY, maxX, maxY),
-                capsuleR, capsuleR };
-            rt->FillRoundedRectangle(rr, b.Get());
-            // Dense cap at cursor side (leading blob)
-            rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy),
-                capsuleRx * 1.05f, capsuleR * 1.05f), b.Get());
-            // Faded cap at trail tail — alpha^2 for soft fade-out
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bt;
-            rt->CreateSolidColorBrush(Tok::GoldMid(alpha * alpha * 1.8f), bt.GetAddressOf());
-            if (bt) rt->FillEllipse(
-                D2D1::Ellipse(D2D1::Point2F(tx, ty),
-                    capsuleRx * 0.85f, capsuleR * 0.85f), bt.Get());
-        }
-    }
-    // Inner specular stripe — thinner, brighter, liquid sheen
-    {
-        const float sr = capsuleR * 0.52f;
-        const float sx = capsuleRx * 0.62f;
-        const float sminX = std::min(tx, cx) - sx;
-        const float smaxX = std::max(tx, cx) + sx;
-        const float sminY = std::min(ty, cy) - sr;
-        const float smaxY = std::max(ty, cy) + sr;
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::GoldBright(alphaSpec), b.GetAddressOf());
-        if (b) {
-            const D2D1_ROUNDED_RECT rrs{ D2D1::RectF(sminX, sminY, smaxX, smaxY), sr, sr };
-            rt->FillRoundedRectangle(rrs, b.Get());
-        }
-    }
 }
 
 } // anon
@@ -686,7 +571,6 @@ void VirtualKeyboard::Draw(
 
     auto* rt     = static_cast<ID2D1RenderTarget*>(renderTargetPtr);
     auto* dwrite = static_cast<IDWriteFactory*>(dwriteFactoryPtr);
-
     Microsoft::WRL::ComPtr<ID2D1Factory> fac;
     rt->GetFactory(fac.GetAddressOf());
 
@@ -709,7 +593,7 @@ void VirtualKeyboard::Draw(
         if (rw > maxRowW) maxRowW = rw;
     }
     const float kPanelW = maxRowW + kPadX * 2.0f;
-    // Panel height: no text bar — accent + topPad + keys + hintH + botPad
+    // Panel height: accent + top-pad + keys + hint + bottom-pad (no text bar)
     const float kPanelH = kAccH + kPadY
                         + static_cast<float>(m_rows.size()) * (kKeyH + kGap) - kGap
                         + kHintH + kPadY;
@@ -719,100 +603,143 @@ void VirtualKeyboard::Draw(
     const float panelX  = (screenW - kPanelW) * 0.5f;
     const float panelR  = 14.0f * s;
 
-    // Cache geometry for right-stick proximity hover (Update reads this)
-    m_rsCentreX  = panelX + kPanelW * 0.5f;
-    m_rsCentreY  = panelY + kAccH + kPadY + static_cast<float>(m_rows.size()) * (kKeyH + kGap) * 0.5f;
-    m_rsHalfW    = kPanelW * 0.5f;
-    m_rsHalfH    = static_cast<float>(m_rows.size()) * (kKeyH + kGap) * 0.5f;
-    m_rsDpiScale = s;
-    m_rsScreenW  = screenW;
-    m_rsScreenH  = screenH;
+    // Cache layout for Update() / right-stick proximity hover
+    m_cachedPanelX   = panelX;
+    m_cachedPanelY   = panelY;
+    m_cachedPanelW   = kPanelW;
+    m_cachedDpiScale = s;
+    // keysTop in screen-space (no text bar)
+    const float keysTop = panelY + kAccH + kPadY;
+    m_cachedKeysTop = keysTop;
 
-    // Panel fill (accent bar + body)
+    // ---- Panel chrome -------------------------------------------------------
     { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-      rt->CreateSolidColorBrush(Tok::GoldMid(0.88f * ease), b.GetAddressOf());
-      if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX, panelY, panelX+kPanelW, panelY+kAccH+panelR), panelR, panelR};
+      rt->CreateSolidColorBrush(Tok::GoldMid(0.88f*ease), b.GetAddressOf());
+      if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX,panelY,panelX+kPanelW,panelY+kAccH+panelR),panelR,panelR};
                rt->FillRoundedRectangle(rr, b.Get()); } }
     { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-      rt->CreateSolidColorBrush(Tok::SurfaceBase(0.96f * ease), b.GetAddressOf());
-      if (b) {
-          rt->FillRectangle(D2D1::RectF(panelX, panelY+kAccH, panelX+kPanelW, panelY+kAccH+panelR), b.Get());
-          D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX, panelY+kAccH, panelX+kPanelW, panelY+kPanelH), panelR, panelR};
-          rt->FillRoundedRectangle(rr, b.Get());
-      } }
+      rt->CreateSolidColorBrush(Tok::SurfaceBase(0.96f*ease), b.GetAddressOf());
+      if (b) { rt->FillRectangle(D2D1::RectF(panelX,panelY+kAccH,panelX+kPanelW,panelY+kAccH+panelR), b.Get());
+               D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX,panelY+kAccH,panelX+kPanelW,panelY+kPanelH),panelR,panelR};
+               rt->FillRoundedRectangle(rr, b.Get()); } }
     { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-      rt->CreateSolidColorBrush(Tok::GoldShadow(0.35f * ease), b.GetAddressOf());
-      if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX+0.5f, panelY+0.5f, panelX+kPanelW-0.5f, panelY+kPanelH-0.5f), panelR, panelR};
+      rt->CreateSolidColorBrush(Tok::GoldShadow(0.35f*ease), b.GetAddressOf());
+      if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX+0.5f,panelY+0.5f,panelX+kPanelW-0.5f,panelY+kPanelH-0.5f),panelR,panelR};
                rt->DrawRoundedRectangle(rr, b.Get(), 0.9f); } }
 
-    // Hint bar (no text bar above it)
+    // ---- Hint bar -----------------------------------------------------------
     {
-        const float keysBot = panelY + kAccH + kPadY
-                            + static_cast<float>(m_rows.size()) * (kKeyH + kGap) - kGap;
-        const float hy  = keysBot + kPadY * 0.45f;
+        const float hy  = panelY + kPanelH - kHintH - kPadY * 0.55f;
         const float hcy = hy + kHintH * 0.5f;
         const float fnt = kFHint_base * s;
         float hx = panelX + kPadX;
         const float chipGap = 8.0f * s;
         DrawHintChip(rt, dwrite, hx, hcy, s, ease,
             L"\u25CF  Type",
-            Tok::GoldDeep(0.70f * ease), Tok::GoldHi(0.92f * ease), fnt);
+            Tok::GoldDeep(0.70f*ease), Tok::GoldHi(0.92f*ease), fnt);
         hx += 84.0f*s + chipGap;
         DrawHintChip(rt, dwrite, hx, hcy, s, ease,
             L"\u25A0  \u232B",
-            Tok::SurfaceRaised(0.90f * ease), Tok::ChromeMid(0.80f * ease), fnt);
+            Tok::SurfaceRaised(0.90f*ease), Tok::ChromeMid(0.80f*ease), fnt);
         hx += 74.0f*s + chipGap;
         DrawHintChip(rt, dwrite, hx, hcy, s, ease,
             L"\u25B2  Submit",
-            Tok::GoldMid(0.75f * ease), Tok::GoldBright(0.97f * ease), fnt);
+            Tok::GoldMid(0.75f*ease), Tok::GoldBright(0.97f*ease), fnt);
         hx += 94.0f*s + chipGap;
         DrawHintChip(rt, dwrite, hx, hcy, s, ease,
             L"\u25C6  Cancel",
-            Tok::SurfaceRaised(0.90f * ease), Tok::ChromeMid(0.80f * ease), fnt);
+            Tok::SurfaceRaised(0.90f*ease), Tok::ChromeMid(0.80f*ease), fnt);
         hx += 88.0f*s + chipGap;
         {
             const wchar_t* badge = GetLayerName();
-            const bool isCyr  = (m_layer == Layer::Cyr);
-            const bool isSym  = (m_layer == Layer::Sym);
+            const bool isCyr = (m_layer == Layer::Cyr), isSym = (m_layer == Layer::Sym);
             const bool isCaps = (!isCyr && !isSym && m_caps);
             DrawHintChip(rt, dwrite, hx, hcy, s, ease, badge,
-                isCyr  ? Tok::AmberWarm(0.72f * ease)
-                : isSym  ? Tok::GoldDeep(0.85f * ease)
-                : isCaps ? Tok::AmberWarm(0.65f * ease)
-                :          Tok::SurfaceRaised(0.60f * ease),
-                isCyr || isSym || isCaps
-                    ? Tok::GoldBright(0.97f * ease)
-                    : Tok::ChromeMute(0.60f * ease),
-                fnt);
+                isCyr  ? Tok::AmberWarm(0.72f*ease)
+                : isSym  ? Tok::GoldDeep(0.85f*ease)
+                : isCaps ? Tok::AmberWarm(0.65f*ease)
+                :          Tok::SurfaceRaised(0.60f*ease),
+                (isCyr||isSym||isCaps) ? Tok::GoldBright(0.97f*ease)
+                                       : Tok::ChromeMute(0.60f*ease), fnt);
         }
         hx += 64.0f*s + chipGap;
         DrawHintChip(rt, dwrite, hx, hcy, s, ease,
             L"LB  layer",
-            Tok::SurfaceRaised(0.55f * ease), Tok::ChromeMute(0.65f * ease), fnt);
+            Tok::SurfaceRaised(0.55f*ease), Tok::ChromeMute(0.65f*ease), fnt);
     }
 
-    // Keys
-    const float keysTop = panelY + kAccH + kPadY;
-    const Vec2 selCentre = KeyCentrePixel(m_row, m_col, s, screenW, screenH);
+    // ---- Cursor & trail springs target update -------------------------------
+    const Vec2 selCentre = KeyCentrePixel(m_row, m_col);
     m_cursorSpringX.target = selCentre.x;
     m_cursorSpringY.target = selCentre.y;
-    // Trail spring chases cursor spring position, NOT the target directly
-    m_trailSpringX.target = m_cursorSpringX.value;
-    m_trailSpringY.target = m_cursorSpringY.value;
-    if (m_cursorSpringX.value == 0.0f && m_cursorSpringY.value == 0.0f) {
-        m_cursorSpringX.Snap(selCentre.x);
-        m_cursorSpringY.Snap(selCentre.y);
+    // Snap trail to cursor on first frame (when cached pos is zeroed)
+    if (m_trailSpringX.value == 0.0f && m_trailSpringY.value == 0.0f) {
         m_trailSpringX.Snap(selCentre.x);
         m_trailSpringY.Snap(selCentre.y);
     }
+    // Trail chases cursor position (not target) — gives liquid drag
+    m_trailSpringX.target = m_cursorSpringX.value;
+    m_trailSpringY.target = m_cursorSpringY.value;
+
     const float scl = m_cursorScaleSpring.value;
+    const float curX = m_cursorSpringX.value;
+    const float curY = m_cursorSpringY.value;
+    const float trX  = m_trailSpringX.value;
+    const float trY  = m_trailSpringY.value;
 
-    // Liquid trail between trail tip and cursor centre
-    DrawLiquidTrail(rt,
-        m_trailSpringX.value, m_trailSpringY.value,
-        m_cursorSpringX.value, m_cursorSpringY.value,
-        kKeyW, kKeyH, ease);
+    // -------------------------------------------------------------------------
+    // Liquid trail: capsule between trail tip and cursor tip
+    // -------------------------------------------------------------------------
+    {
+        const float dx = curX - trX, dy = curY - trY;
+        const float dist = std::sqrt(dx*dx + dy*dy);
+        const float maxDist = kKeyW * 2.8f;
 
+        if (dist > 2.0f * s) {
+            // ease-in-quad ramp so short movements have no trail
+            const float t    = std::min(1.0f, dist / maxDist);
+            const float ramp = t * t;
+            const float alpha = ramp * 0.56f * ease;
+
+            // Outer filled capsule (rounded rect bounding both circles)
+            const float capR  = kKeyH * 0.52f;  // large radius = pill / liquid drop
+            const float minX  = std::min(trX, curX) - capR * 0.70f;
+            const float maxX  = std::max(trX, curX) + capR * 0.70f;
+            const float minY  = std::min(trY, curY) - capR * 0.70f;
+            const float maxY  = std::max(trY, curY) + capR * 0.70f;
+
+            { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+              rt->CreateSolidColorBrush(Tok::GoldMid(alpha), b.GetAddressOf());
+              if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(minX,minY,maxX,maxY), capR, capR};
+                       rt->FillRoundedRectangle(rr, b.Get()); } }
+
+            // Inner highlight stripe — narrower, simulates surface gloss
+            const float hiAlpha = alpha * 0.55f;
+            const float hiShrink = capR * 0.35f;
+            { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+              rt->CreateSolidColorBrush(Tok::GoldBright(hiAlpha), b.GetAddressOf());
+              if (b) { D2D1_ROUNDED_RECT rr{
+                  D2D1::RectF(minX+hiShrink, minY+hiShrink, maxX-hiShrink, maxY-hiShrink),
+                  std::max(capR-hiShrink, 1.0f), std::max(capR-hiShrink, 1.0f)};
+                  rt->FillRoundedRectangle(rr, b.Get()); } }
+
+            // Leading blob at trail tip (heavier end — source of stretch)
+            { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+              rt->CreateSolidColorBrush(Tok::GoldWarm(alpha * 0.70f), b.GetAddressOf());
+              if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(trX, trY),
+                  capR * 0.62f, capR * 0.62f), b.Get()); }
+
+            // Trailing accent at cursor tip (lighter — surface tension)
+            { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+              rt->CreateSolidColorBrush(Tok::GoldShadow(alpha * 0.38f), b.GetAddressOf());
+              if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(curX, curY),
+                  capR * 0.42f, capR * 0.42f), b.Get()); }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Keys
+    // -------------------------------------------------------------------------
     for (int32_t ri = 0; ri < static_cast<int32_t>(m_rows.size()); ++ri) {
         const auto& row = m_rows[static_cast<size_t>(ri)];
         const float ry  = keysTop + static_cast<float>(ri) * (kKeyH + kGap);
@@ -835,34 +762,35 @@ void VirtualKeyboard::Draw(
 
             { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
               rt->CreateSolidColorBrush(
-                  sel ? Tok::SurfaceRaised(0.97f * ease) : Tok::SurfaceSunken(0.90f * ease),
+                  sel ? Tok::SurfaceRaised(0.97f*ease) : Tok::SurfaceSunken(0.90f*ease),
                   b.GetAddressOf());
-              if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh), cr, cr};
+              if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh),cr,cr};
                        rt->FillRoundedRectangle(rr, b.Get()); } }
-            { const float ins = 2.4f * s;
+            { const float ins = 2.4f*s;
               Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
               rt->CreateSolidColorBrush(
                   sel ? Tok::SurfaceBase(0.92f*ease) : Tok::SurfaceRaised(0.72f*ease),
                   b.GetAddressOf());
               if (b) { D2D1_ROUNDED_RECT rr{
-                  D2D1::RectF(sRx+ins, sRy+ins, sRx+skw-ins, sRy+skh-ins*1.4f),
-                  std::max(cr-ins,0.0f), std::max(cr-ins,0.0f)};
+                  D2D1::RectF(sRx+ins,sRy+ins,sRx+skw-ins,sRy+skh-ins*1.4f),
+                  std::max(cr-ins,0.0f),std::max(cr-ins,0.0f)};
                   rt->FillRoundedRectangle(rr, b.Get()); } }
             if (sel) {
                 { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                  rt->CreateSolidColorBrush(Tok::GoldHi(0.90f * ease), b.GetAddressOf());
-                  if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh), cr, cr};
+                  rt->CreateSolidColorBrush(Tok::GoldHi(0.90f*ease), b.GetAddressOf());
+                  if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh),cr,cr};
                            rt->DrawRoundedRectangle(rr, b.Get(), 2.2f*s); } }
-                { const float g = 3.0f * s;
+                { const float g = 3.0f*s;
                   Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                  rt->CreateSolidColorBrush(Tok::GoldWarm(0.18f * ease), b.GetAddressOf());
-                  if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx+g,sRy+g,sRx+skw-g,sRy+skh-g),
-                           std::max(cr-g,0.0f), std::max(cr-g,0.0f)};
-                           rt->DrawRoundedRectangle(rr, b.Get(), 1.0f*s); } }
+                  rt->CreateSolidColorBrush(Tok::GoldWarm(0.18f*ease), b.GetAddressOf());
+                  if (b) { D2D1_ROUNDED_RECT rr{
+                      D2D1::RectF(sRx+g,sRy+g,sRx+skw-g,sRy+skh-g),
+                      std::max(cr-g,0.0f),std::max(cr-g,0.0f)};
+                      rt->DrawRoundedRectangle(rr, b.Get(), 1.0f*s); } }
             } else {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                rt->CreateSolidColorBrush(Tok::InkLine(0.72f * ease), b.GetAddressOf());
-                if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh), cr, cr};
+                rt->CreateSolidColorBrush(Tok::InkLine(0.72f*ease), b.GetAddressOf());
+                if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh),cr,cr};
                          rt->DrawRoundedRectangle(rr, b.Get(), 0.7f); }
             }
             { const float bi = 1.0f;
@@ -871,21 +799,21 @@ void VirtualKeyboard::Draw(
                   sel ? Tok::GoldShadow(0.22f*ease) : Tok::GoldDeep(0.08f*ease),
                   b.GetAddressOf());
               if (b) { D2D1_ROUNDED_RECT rr{
-                  D2D1::RectF(sRx+bi, sRy+bi, sRx+skw-bi, sRy+skh-bi),
-                  std::max(cr-bi,0.0f), std::max(cr-bi,0.0f)};
+                  D2D1::RectF(sRx+bi,sRy+bi,sRx+skw-bi,sRy+skh-bi),
+                  std::max(cr-bi,0.0f),std::max(cr-bi,0.0f)};
                   rt->DrawRoundedRectangle(rr, b.Get(), 0.5f); } }
 
             if (fac) DrawArcSpecular(rt, fac.Get(),
-                kCx, sRy + skh * 0.28f, skw * 0.26f, skh * 0.18f,
-                (sel ? 0.10f : 0.04f) * ease);
+                kCx, sRy + skh*0.28f, skw*0.26f, skh*0.18f,
+                (sel ? 0.10f : 0.04f)*ease);
 
             if (dwrite) {
                 const std::wstring disp = KeyDisplay(k);
                 if (!disp.empty()) {
                     const float fs = (k.isSpecial ? kFSpec_base : kFKey_base) * s * sc2;
-                    const wchar_t* fontFace = k.isSpecial ? L"Segoe UI Symbol" : L"Segoe UI";
+                    const wchar_t* face = k.isSpecial ? L"Segoe UI Symbol" : L"Segoe UI";
                     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
-                    dwrite->CreateTextFormat(fontFace, nullptr,
+                    dwrite->CreateTextFormat(face, nullptr,
                         k.isSpecial ? DWRITE_FONT_WEIGHT_NORMAL : DWRITE_FONT_WEIGHT_SEMI_BOLD,
                         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
                         fs, L"en-us", fmt.GetAddressOf());
@@ -894,21 +822,19 @@ void VirtualKeyboard::Draw(
                         fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> lb;
                         rt->CreateSolidColorBrush(
-                            sel         ? Tok::GoldBright(0.99f * ease)
-                            : k.isSpecial ? Tok::ChromeMid(0.70f * ease)
-                            :               Tok::ChromeHi(0.82f * ease),
+                            sel          ? Tok::GoldBright(0.99f*ease)
+                            : k.isSpecial ? Tok::ChromeMid(0.70f*ease)
+                            :               Tok::ChromeHi(0.82f*ease),
                             lb.GetAddressOf());
                         if (lb) rt->DrawText(disp.c_str(),
                             static_cast<UINT32>(disp.size()), fmt.Get(),
-                            D2D1::RectF(sRx, sRy, sRx+skw, sRy+skh), lb.Get());
+                            D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh), lb.Get());
                     }
                 }
             }
-
             rx += kw + kGap;
         }
     }
-    (void)keysTop;
 }
 
 } // namespace enjoystick::overlay

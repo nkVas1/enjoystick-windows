@@ -14,23 +14,28 @@ namespace enjoystick::overlay {
 //
 // Controls:
 //   Left stick / DPad  - move cursor; magnetically snaps to keys
-//   Right stick        - proximity hover (nearest key selected by distance)
-//   South (A/Cross)    - type highlighted key  [hold: accelerating auto-repeat]
-//   West  (X/Square)   - backspace             [hold: accelerating auto-repeat]
+//   Right stick        - proximity hover (swipe mode)
+//   South (A/Cross)    - type highlighted key  (hold: accelerating repeat)
+//   West  (X/Square)   - backspace            (hold: accelerating repeat)
 //   East  (B/Circle)   - close / cancel
 //   North (Y/Tri)      - confirm / submit text
-//   LB                 - cycle layer: Alpha -> Cyr -> Sym -> Alpha  (debounced)
+//   LB                 - cycle layer: Alpha -> Cyr -> Sym -> Alpha
 //   RB                 - return to Alpha layer
 //   L3 (click)         - toggle Caps Lock
 //
-// Text bar removed: chars go directly to focused input via SendInput.
+// Layers:
+//   ALPHA  - Latin lowercase / uppercase
+//   CYR    - Russian (Cyrillic) layout
+//   SYM    - Symbols and punctuation
 // ---------------------------------------------------------------------------
+
+enum class HapticType : uint8_t { Nav, Type };
 
 class VirtualKeyboard {
 public:
-    using OnCharCallback     = std::function<void(wchar_t ch)>;
-    using OnSubmitCallback   = std::function<void(const std::wstring& text)>;
-    using OnNavigateCallback = std::function<void()>; // fires on every key-step
+    using OnCharCallback   = std::function<void(wchar_t ch)>;
+    using OnSubmitCallback = std::function<void(const std::wstring& text)>;
+    using OnHapticCallback = std::function<void(HapticType)>;
 
     enum class Layer : uint8_t { Alpha, Cyr, Sym };
 
@@ -43,11 +48,9 @@ public:
     [[nodiscard]] bool IsOpen() const noexcept;
 
     // ---- Callbacks ----------------------------------------------------------
-    void SetOnChar    (OnCharCallback     cb) { m_onChar     = std::move(cb); }
-    void SetOnSubmit  (OnSubmitCallback   cb) { m_onSubmit   = std::move(cb); }
-    // Called on every navigation step and on every key type/backspace.
-    // Application wires this to a short XInput rumble pulse.
-    void SetOnNavigate(OnNavigateCallback cb) { m_onNavigate = std::move(cb); }
+    void SetOnChar   (OnCharCallback   cb) { m_onChar   = std::move(cb); }
+    void SetOnSubmit (OnSubmitCallback cb) { m_onSubmit = std::move(cb); }
+    void SetOnHaptic (OnHapticCallback cb) { m_onHaptic = std::move(cb); }
 
     // ---- Frame --------------------------------------------------------------
     void Update(const ControllerState& state, float deltaSeconds);
@@ -91,72 +94,65 @@ private:
     int32_t m_row = 0;
     int32_t m_col = 0;
 
-    // =========================================================================
-    // Left-stick / DPad navigation timing
-    // =========================================================================
-    float  m_stickCooldown = 0.0f;
-    float  m_stickHoldTime = 0.0f;
-    bool   m_stickActive   = false;
+    // -------------------------------------------------------------------------
+    // Left-stick navigation timing
+    // -------------------------------------------------------------------------
+    float  m_stickCooldown    = 0.0f;
+    float  m_stickHoldTime    = 0.0f;
+    static constexpr float kStickRepeatFirst     = 1.10f;
+    static constexpr float kStickRepeatNext      = 0.28f;
+    static constexpr float kStickRepeatFast      = 0.09f;
+    static constexpr float kStickRepeatAccelStart= 1.60f;
+    static constexpr float kStickRepeatAccelRange= 1.20f;
+    static constexpr float kSnapDeadzone         = 0.78f;
+    bool   m_stickActive = false;
 
-    // Single-flick safety: kStickRepeatFirst is long enough that a gentle
-    // flick-and-release is guaranteed to move exactly ONE key.
-    static constexpr float kStickRepeatFirst      = 1.40f; // s — first-step window
-    static constexpr float kStickRepeatNext       = 0.28f; // s — base auto-repeat
-    static constexpr float kStickRepeatFast       = 0.07f; // s — max speed
-    static constexpr float kStickRepeatAccelStart = 1.80f; // s — hold before accel
-    static constexpr float kStickRepeatAccelRange = 1.00f; // s — blend range
-    static constexpr float kSnapDeadzone          = 0.78f; // strong centre magnet
+    static constexpr float kDPadFirst = 0.70f;
+    static constexpr float kDPadNext  = 0.20f;
+    bool  m_dpadHeld      = false;
+    float m_dpadTimer     = 0.0f;
+    int32_t m_dpadDirRow  = 0;
+    int32_t m_dpadDirCol  = 0;
 
-    static constexpr float kDPadFirst = 0.65f; // s — DPad initial delay
-    static constexpr float kDPadNext  = 0.18f; // s — DPad repeat interval
-    bool    m_dpadHeld   = false;
-    float   m_dpadTimer  = 0.0f;
-    int32_t m_dpadDirRow = 0;
-    int32_t m_dpadDirCol = 0;
+    // -------------------------------------------------------------------------
+    // Hold-acceleration for South (type) and West (backspace)
+    // -------------------------------------------------------------------------
+    static constexpr float kTypeRepeatFirst     = 0.55f;
+    static constexpr float kTypeRepeatFast      = 0.07f;
+    static constexpr float kTypeRepeatAccelStart= 0.90f;
+    static constexpr float kTypeRepeatAccelRange= 0.80f;
 
-    // =========================================================================
-    // Hold-to-repeat: South button (type key)
-    //
-    // kTypeHoldFirst  — first repeat fires after this many seconds
-    // kTypeHoldNext   — initial repeat interval
-    // kTypeHoldFast   — minimum repeat interval after accel
-    // kTypeAccelStart — hold this long before interval starts shrinking
-    // kTypeAccelRange — blend range (seconds) to reach kTypeHoldFast
-    // =========================================================================
-    static constexpr float kTypeHoldFirst   = 0.55f;
-    static constexpr float kTypeHoldNext    = 0.14f;
-    static constexpr float kTypeHoldFast    = 0.055f;
-    static constexpr float kTypeAccelStart  = 1.20f;
-    static constexpr float kTypeAccelRange  = 0.70f;
+    static constexpr float kBsRepeatFirst       = 0.50f;
+    static constexpr float kBsRepeatFast        = 0.06f;
+    static constexpr float kBsRepeatAccelStart  = 0.75f;
+    static constexpr float kBsRepeatAccelRange  = 0.70f;
 
-    bool  m_southHeld      = false;
-    float m_southHoldTimer = 0.0f;  // accumulated hold duration
-    float m_southHoldRepeat= 0.0f;  // countdown to next fire
-    float m_southHoldPhase = 0.0f;  // reserved
+    float m_southHoldTime  = 0.0f;
+    float m_southRepTimer  = 0.0f;  // countdown to next repeat fire
+    bool  m_southRepActive = false;
 
-    // =========================================================================
-    // Hold-to-repeat: West button (backspace)
-    // =========================================================================
-    static constexpr float kBackspaceHoldFirst   = 0.42f;
-    static constexpr float kBackspaceHoldNext    = 0.12f;
-    static constexpr float kBackspaceHoldFast    = 0.040f;
-    static constexpr float kBackspaceAccelStart  = 0.90f;
-    static constexpr float kBackspaceAccelRange  = 0.60f;
+    float m_westHoldTime   = 0.0f;
+    float m_westRepTimer   = 0.0f;
+    bool  m_westRepActive  = false;
 
-    bool  m_westHeld      = false;
-    float m_westHoldTimer = 0.0f;
-    float m_westHoldRepeat= 0.0f;
-    float m_westHoldPhase = 0.0f;
-
-    // =========================================================================
-    // Layer-switch debounce (LB)
-    // =========================================================================
-    static constexpr float kLbDebounceMs = 320.0f;
-    float m_lbDebounce = 0.0f;
-
-    // Kept for compat — no longer used for type/backspace gating
+    // -------------------------------------------------------------------------
+    // Debounce timers (ms) — kept for layer/LB switches
+    // -------------------------------------------------------------------------
+    static constexpr float kTypeDebounceMs  = 180.0f;
+    static constexpr float kWestDebounceMs  = 320.0f;
+    static constexpr float kLbDebounceMs    = 320.0f;
     float m_typeDebounce = 0.0f;
     float m_westDebounce = 0.0f;
+    float m_lbDebounce   = 0.0f;
+
+    // -------------------------------------------------------------------------
+    // Right-stick proximity hover (swipe mode)
+    // -------------------------------------------------------------------------
+    bool  m_rsSwipeActive = false;
+    float m_rsSwipeX      = 0.0f;
+    float m_rsSwipeY      = 0.0f;
+    static constexpr float kRsSwipeDeadzone = 0.25f;
+    static constexpr float kRsSwipeRelease  = 0.20f;
 
     State  m_state     = State::Hidden;
     float  m_glowPhase = 0.0f;
@@ -167,16 +163,22 @@ private:
     mutable FloatSpring m_panelSpring;
     mutable FloatSpring m_cursorSpringX;
     mutable FloatSpring m_cursorSpringY;
-    // Liquid trail: low-stiffness, heavily damped — lags visibly behind cursor
     mutable FloatSpring m_trailSpringX;
     mutable FloatSpring m_trailSpringY;
     mutable FloatSpring m_cursorScaleSpring;
 
+    // cached panel position for KeyCentrePixel (set in Draw, read in Update)
+    mutable float m_cachedPanelX  = 0.0f;
+    mutable float m_cachedPanelY  = 0.0f;
+    mutable float m_cachedPanelW  = 0.0f;
+    mutable float m_cachedKeysTop = 0.0f;
+    mutable float m_cachedDpiScale= 1.0f;
+
     std::wstring m_text;
 
-    OnCharCallback     m_onChar;
-    OnSubmitCallback   m_onSubmit;
-    OnNavigateCallback m_onNavigate; // nav pulse + type haptic
+    OnCharCallback   m_onChar;
+    OnSubmitCallback m_onSubmit;
+    OnHapticCallback m_onHaptic;
 
     bool m_prevSouth = false;
     bool m_prevEast  = false;
@@ -186,32 +188,15 @@ private:
     bool m_prevRB    = false;
     bool m_prevLS    = false;
 
-    // =========================================================================
-    // Right-stick proximity hover
-    //
-    // When ||RS|| > kRightStickDz the key whose screen-space centre is nearest
-    // to (panelCentreX + rx * rsHalfW, panelCentreY + ry * rsHalfH) is selected.
-    // Panel geometry is cached in Draw() and read in Update().
-    // =========================================================================
-    static constexpr float kRightStickDz = 0.20f;
-
-    // Geometry cache (written in Draw const, read in Update)
-    mutable float m_rsCentreX  = 0.0f;
-    mutable float m_rsCentreY  = 0.0f;
-    mutable float m_rsHalfW    = 0.0f;
-    mutable float m_rsHalfH    = 0.0f;
-    mutable float m_rsDpiScale = 1.0f;
-    mutable float m_rsScreenW  = 0.0f;
-    mutable float m_rsScreenH  = 0.0f;
-
     [[nodiscard]] const Key* CurrentKey() const noexcept;
     [[nodiscard]] std::wstring KeyDisplay(const Key& k) const;
     bool TypeKey(const Key& k);
     void NavigateTo(int32_t row, int32_t col);
     [[nodiscard]] int32_t RowKeyCount(int32_t row) const noexcept;
-    [[nodiscard]] Vec2    KeyCentrePixel(int32_t row, int32_t col,
-                                         float dpiScale,
-                                         float screenW, float screenH) const noexcept;
+    // Returns key centre in screen-space pixels using cached panel layout.
+    [[nodiscard]] Vec2 KeyCentrePixel(int32_t row, int32_t col) const noexcept;
+    // Finds the key (row,col) whose centre is nearest to screen point (sx,sy).
+    void FindNearestKey(float sx, float sy, int32_t& outRow, int32_t& outCol) const noexcept;
 };
 
 } // namespace enjoystick::overlay
