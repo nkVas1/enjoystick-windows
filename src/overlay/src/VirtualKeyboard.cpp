@@ -27,21 +27,20 @@ static constexpr float kPi = static_cast<float>(M_PI);
 namespace enjoystick::overlay {
 
 // ---------------------------------------------------------------------------
-// Layout constants — large, far-field readable keys
+// Layout constants
 // ---------------------------------------------------------------------------
-static constexpr float kKeyW_base   = 88.0f;  // wider: was 80
-static constexpr float kKeyH_base   = 72.0f;  // taller: was 68
+static constexpr float kKeyW_base   = 88.0f;
+static constexpr float kKeyH_base   = 72.0f;
 static constexpr float kGap_base    =  7.0f;
 static constexpr float kCorner_base = 11.0f;
 static constexpr float kPadX_base   = 24.0f;
 static constexpr float kPadY_base   = 18.0f;
 static constexpr float kTbH_base    = 52.0f;
 static constexpr float kHintH_base  = 26.0f;
-static constexpr float kFKey_base   = 24.0f;  // was 21
-static constexpr float kFSpec_base  = 22.0f;  // was 20
+static constexpr float kFKey_base   = 24.0f;
+static constexpr float kFSpec_base  = 22.0f;
 static constexpr float kFText_base  = 17.0f;
 static constexpr float kFHint_base  = 13.5f;
-static constexpr float kFBadge_base = 11.0f;
 static constexpr float kAccentH_base = 3.0f;
 
 // ---------------------------------------------------------------------------
@@ -49,31 +48,58 @@ static constexpr float kAccentH_base = 3.0f;
 // ---------------------------------------------------------------------------
 void VirtualKeyboard::BuildLayout() {
     m_rows.clear();
+    // Each Key: { latin-lower, latin-upper, sym, cyr-lower, cyr-upper }
+    // widthMul, isSpecial come after.
     m_rows.push_back({
-        {L"1",L"!",L"\u00B1"}, {L"2",L"@",L"\u00B2"}, {L"3",L"#",L"\u00B3"},
-        {L"4",L"$",L"\u00A3"}, {L"5",L"%",L"\u20AC"}, {L"6",L"^",L"\u00B6"},
-        {L"7",L"&",L"\u2022"}, {L"8",L"*",L"\u00D7"}, {L"9",L"(",L"\u2018"},
-        {L"0",L")",L"\u2019"},
-        {L"\u232B",L"\u232B",L"\u232B", 1.5f, true},
+        {L"1",L"!",L"\u00B1",L"1",L"!"},
+        {L"2",L"@",L"\u00B2",L"2",L"@"},
+        {L"3",L"#",L"\u00B3",L"3",L"#"},
+        {L"4",L"$",L"\u00A3",L"4",L";"},
+        {L"5",L"%",L"\u20AC",L"5",L"%"},
+        {L"6",L"^",L"\u00B6",L"6",L":"},
+        {L"7",L"&",L"\u2022",L"7",L"?"},
+        {L"8",L"*",L"\u00D7",L"8",L"*"},
+        {L"9",L"(",L"\u2018",L"9",L"("},
+        {L"0",L")",L"\u2019",L"0",L")"},
+        {L"\u232B",L"\u232B",L"\u232B",L"\u232B",L"\u232B",1.5f,true},
     });
     m_rows.push_back({
-        {L"q",L"Q",L"-"}, {L"w",L"W",L"_"}, {L"e",L"E",L"="},
-        {L"r",L"R",L"+"}, {L"t",L"T",L"["}, {L"y",L"Y",L"]"},
-        {L"u",L"U",L"{"}, {L"i",L"I",L"}"}, {L"o",L"O",L"\\\\"},
-        {L"p",L"P",L"|"},
+        {L"q",L"Q",L"-",L"\u0439",L"\u0419"},
+        {L"w",L"W",L"_",L"\u0446",L"\u0426"},
+        {L"e",L"E",L"=",L"\u0443",L"\u0423"},
+        {L"r",L"R",L"+",L"\u043A",L"\u041A"},
+        {L"t",L"T",L"[",L"\u0435",L"\u0415"},
+        {L"y",L"Y",L"]",L"\u043D",L"\u041D"},
+        {L"u",L"U",L"{",L"\u0433",L"\u0413"},
+        {L"i",L"I",L"}",L"\u0448",L"\u0428"},
+        {L"o",L"O",L"\\\\",L"\u0449",L"\u0429"},
+        {L"p",L"P",L"|",L"\u0437",L"\u0417"},
     });
     m_rows.push_back({
-        {L"a",L"A",L"~"}, {L"s",L"S",L"`"}, {L"d",L"D",L"<"},
-        {L"f",L"F",L">"}, {L"g",L"G",L","}, {L"h",L"H",L"."},
-        {L"j",L"J",L"\u2026"}, {L"k",L"K",L"\u2014"}, {L"l",L"L",L":"},
-        {L"\u23CE",L"\u23CE",L"\u23CE", 1.5f, true},
+        {L"a",L"A",L"~",L"\u0444",L"\u0424"},
+        {L"s",L"S",L"`",L"\u044B",L"\u042B"},
+        {L"d",L"D",L"<",L"\u0432",L"\u0412"},
+        {L"f",L"F",L">",L"\u0430",L"\u0410"},
+        {L"g",L"G",L",",L"\u043F",L"\u041F"},
+        {L"h",L"H",L".",L"\u0440",L"\u0420"},
+        {L"j",L"J",L"\u2026",L"\u043E",L"\u041E"},
+        {L"k",L"K",L"\u2014",L"\u043B",L"\u041B"},
+        {L"l",L"L",L":",L"\u0434",L"\u0414"},
+        {L"\u23CE",L"\u23CE",L"\u23CE",L"\u23CE",L"\u23CE",1.5f,true},
     });
     m_rows.push_back({
-        {L"\u21E7",L"\u21E7",L"\u21E7", 1.5f, true},
-        {L"z",L"Z",L"/"}, {L"x",L"X",L"?"}, {L"c",L"C",L"\'"},
-        {L"v",L"V",L"\""}, {L"b",L"B",L" "}, {L"n",L"N",L"\u2122"},
-        {L"m",L"M",L"\u00AE"}, {L".",L".",L","},
-        {L"\u2423",L"\u2423",L"\u2423", 4.0f, true},
+        {L"\u21E7",L"\u21E7",L"\u21E7",L"\u21E7",L"\u21E7",1.5f,true},
+        {L"z",L"Z",L"/",L"\u0436",L"\u0416"},
+        {L"x",L"X",L"?",L"\u044D",L"\u042D"},
+        {L"c",L"C",L"\'",L"\u0441",L"\u0421"},
+        {L"v",L"V",L"\"",L"\u043C",L"\u041C"},
+        {L"b",L"B",L" ",L"\u0438",L"\u0418"},
+        {L"n",L"N",L"\u2122",L"\u0442",L"\u0422"},
+        {L"m",L"M",L"\u00AE",L"\u044C",L"\u042C"},
+        {L".",L".",L",",L"\u0431",L"\u0411"},
+        // Extra Cyrillic chars on wide space key (split into separate key for Cyr)
+        {L"\u2423",L"\u2423",L"\u2423",L"\u044E",L"\u042E"},
+        {L"\u2423",L"\u2423",L"\u2423",L"\u2423",L"\u2423",2.5f,true},
     });
 }
 
@@ -92,6 +118,7 @@ const VirtualKeyboard::Key* VirtualKeyboard::CurrentKey() const noexcept {
 }
 std::wstring VirtualKeyboard::KeyDisplay(const Key& k) const {
     if (m_layer == Layer::Sym)  return k.symLabel;
+    if (m_layer == Layer::Cyr)  return (m_shift || m_caps) ? k.cyrShift : k.cyrLabel;
     if (m_shift || m_caps)      return k.shiftLabel;
     return k.label;
 }
@@ -111,7 +138,6 @@ Vec2 VirtualKeyboard::KeyCentrePixel(int32_t row, int32_t col,
     const float kKeyH = kKeyH_base * s;
     const float kGap  = kGap_base  * s;
     const float kPadX = kPadX_base * s;
-    const float kPadY = kPadY_base * s;
     const float kTbH  = kTbH_base  * s;
 
     float maxRowW = 0.0f;
@@ -122,6 +148,7 @@ Vec2 VirtualKeyboard::KeyCentrePixel(int32_t row, int32_t col,
     }
     const float kPanelW = maxRowW + kPadX * 2.0f;
     const float panelX  = (screenW - kPanelW) * 0.5f;
+    const float kPadY   = kPadY_base * s;
     const float keysTop = kPadY + kTbH + 8.0f * s + kAccentH_base * s;
 
     if (row < 0 || row >= static_cast<int32_t>(m_rows.size())) return {-9999.0f,-9999.0f};
@@ -145,7 +172,7 @@ void VirtualKeyboard::Open(const std::wstring& seed) {
     if (m_state == State::Visible || m_state == State::Opening) return;
     BuildLayout();
     m_text          = seed;
-    m_row           = 3; m_col = 9;
+    m_row           = 3; m_col = 9; // space bar
     m_layer         = Layer::Alpha;
     m_shift         = false; m_caps = false;
     m_glowPhase     = 0.0f;
@@ -153,6 +180,7 @@ void VirtualKeyboard::Open(const std::wstring& seed) {
     m_stickCooldown = 0.0f; m_stickActive = false;
     m_dpadHeld      = false; m_dpadTimer = 0.0f;
     m_dpadDirRow    = 0; m_dpadDirCol = 0;
+    m_typeDebounce  = 0.0f;
     m_prevSouth = m_prevEast = m_prevWest = m_prevNorth =
     m_prevLB    = m_prevRB  = m_prevLS   = false;
 
@@ -176,7 +204,7 @@ bool VirtualKeyboard::IsOpen() const noexcept {
 }
 
 // ---------------------------------------------------------------------------
-// Direct per-char SendInput helper (types into focused window immediately)
+// Direct per-char SendInput helper
 // ---------------------------------------------------------------------------
 static void SendCharDirect(wchar_t ch) noexcept {
     INPUT inp[2]{};
@@ -201,6 +229,9 @@ static void SendBackspaceDirect() noexcept {
 // Update
 // ---------------------------------------------------------------------------
 void VirtualKeyboard::Update(const ControllerState& state, float dt) {
+    // dt is in seconds; convert where needed
+    const float dtMs = dt * 1000.0f;
+
     m_panelSpring.Step(dt);
     const float panelVal = std::max(0.0f, std::min(1.0f, m_panelSpring.value));
 
@@ -222,6 +253,12 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     m_cursorSpringY.Step(dt);
     m_cursorScaleSpring.Step(dt);
 
+    // Tick type debounce
+    if (m_typeDebounce > 0.0f) {
+        m_typeDebounce -= dtMs;
+        if (m_typeDebounce < 0.0f) m_typeDebounce = 0.0f;
+    }
+
     const bool south = HasButton(state.buttons, Button::South);
     const bool east  = HasButton(state.buttons, Button::East);
     const bool west  = HasButton(state.buttons, Button::West);
@@ -237,17 +274,25 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     if (east  && !m_prevEast)  { Close(); goto done; }
     if (north && !m_prevNorth) { if (m_onSubmit) m_onSubmit(m_text); Close(); goto done; }
     if (west  && !m_prevWest)  {
-        // Backspace: remove from internal buffer AND send to focused window
         if (!m_text.empty()) m_text.pop_back();
         SendBackspaceDirect();
         goto done;
     }
     if (ls    && !m_prevLS)    { m_caps = !m_caps; m_shift = false; goto done; }
-    if (lb    && !m_prevLB)    { m_layer = (m_layer == Layer::Alpha) ? Layer::Sym : Layer::Alpha; goto done; }
+    if (lb    && !m_prevLB) {
+        // Cycle: Alpha -> Cyr -> Sym -> Alpha
+        if      (m_layer == Layer::Alpha) m_layer = Layer::Cyr;
+        else if (m_layer == Layer::Cyr)   m_layer = Layer::Sym;
+        else                              m_layer = Layer::Alpha;
+        goto done;
+    }
     if (rb    && !m_prevRB)    { m_layer = Layer::Alpha; goto done; }
-    if (south && !m_prevSouth) {
+
+    // Type key with debounce
+    if (south && !m_prevSouth && m_typeDebounce <= 0.0f) {
         if (const Key* k = CurrentKey()) {
             TypeKey(*k);
+            m_typeDebounce = kTypeDebounceMs;
             // Pop scale animation
             m_cursorScaleSpring.value    = 1.12f;
             m_cursorScaleSpring.velocity = 0.0f;
@@ -284,7 +329,7 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     }
 
     // -------------------------------------------------------------------------
-    // Left-stick navigation with strong magnetic snap
+    // Left-stick navigation
     // -------------------------------------------------------------------------
     {
         const float lx = state.leftStick.x;
@@ -361,7 +406,6 @@ static void DrawArcSpecular(
     const float aTo   = -kPi * 0.16f;
     const float arx   = rx - 1.5f, ary = ry - 1.5f;
     if (arx <= 0.0f || ary <= 0.0f) return;
-
     Microsoft::WRL::ComPtr<ID2D1PathGeometry> g;
     fac->CreatePathGeometry(g.GetAddressOf());
     if (!g) return;
@@ -404,12 +448,10 @@ static void DrawHintChip(
     if (!lay) return;
     DWRITE_TEXT_METRICS tm{};
     lay->GetMetrics(&tm);
-
     const float padH = 7.0f * s, padV = 4.0f * s;
     const float cw   = tm.width + padH * 2.0f;
     const float ch   = tm.height + padV * 2.0f;
     const float cy0  = cy - ch * 0.5f;
-
     { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
       rt->CreateSolidColorBrush(chipCol, b.GetAddressOf());
       if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(x, cy0, x+cw, cy0+ch), 4.0f*s, 4.0f*s};
@@ -421,22 +463,17 @@ static void DrawHintChip(
 }
 
 static float MeasureTextWidth(
-    IDWriteFactory* dwrite,
-    const wchar_t*  text,
-    UINT32          len,
-    const wchar_t*  fontFamily,
-    DWRITE_FONT_WEIGHT weight,
-    float           fontSize) noexcept
+    IDWriteFactory* dwrite, const wchar_t* text, UINT32 len,
+    const wchar_t* fontFamily, DWRITE_FONT_WEIGHT weight, float fontSize) noexcept
 {
     if (!dwrite || len == 0) return 0.0f;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
-    dwrite->CreateTextFormat(fontFamily, nullptr,
-        weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+    dwrite->CreateTextFormat(fontFamily, nullptr, weight,
+        DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
         fontSize, L"en-us", fmt.GetAddressOf());
     if (!fmt) return 0.0f;
     Microsoft::WRL::ComPtr<IDWriteTextLayout> lay;
-    dwrite->CreateTextLayout(text, len,
-        fmt.Get(), 4096.0f, fontSize + 8.0f, lay.GetAddressOf());
+    dwrite->CreateTextLayout(text, len, fmt.Get(), 4096.0f, fontSize + 8.0f, lay.GetAddressOf());
     if (!lay) return 0.0f;
     DWRITE_TEXT_METRICS m{};
     lay->GetMetrics(&m);
@@ -469,7 +506,6 @@ void VirtualKeyboard::Draw(
     const float s    = dpiScale;
     const float ease = 1.0f - std::pow(1.0f - panelVal, 3.0f);
 
-    // ---- Layout ----------------------------------------------------------------
     const float kKeyW   = kKeyW_base   * s;
     const float kKeyH   = kKeyH_base   * s;
     const float kGap    = kGap_base    * s;
@@ -496,62 +532,45 @@ void VirtualKeyboard::Draw(
     const float panelX  = (screenW - kPanelW) * 0.5f;
     const float panelR  = 14.0f * s;
 
-    // ---- Panel fill
-    {
+    // Panel fill
+    auto fillPanel = [&](float alpha, bool inner) {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::SurfaceBase(0.96f * ease), b.GetAddressOf());
-        if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX, panelY, panelX+kPanelW, panelY+kPanelH), panelR, panelR};
-                 rt->FillRoundedRectangle(rr, b.Get()); }
-    }
-    // ---- Gold accent bar at top
-    {
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::GoldMid(0.88f * ease), b.GetAddressOf());
-        if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX, panelY, panelX+kPanelW, panelY + kAccH + panelR), panelR, panelR};
-                 rt->FillRoundedRectangle(rr, b.Get()); }
-    }
-    {
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::SurfaceBase(0.96f * ease), b.GetAddressOf());
-        if (b) rt->FillRectangle(
-            D2D1::RectF(panelX, panelY + kAccH, panelX + kPanelW, panelY + kAccH + panelR), b.Get());
-    }
-    {
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::SurfaceBase(0.96f * ease), b.GetAddressOf());
-        if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX, panelY + kAccH, panelX+kPanelW, panelY+kPanelH), panelR, panelR};
-                 rt->FillRoundedRectangle(rr, b.Get()); }
-    }
-    // ---- Panel border
-    {
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::GoldShadow(0.35f * ease), b.GetAddressOf());
-        if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX+0.5f, panelY+0.5f, panelX+kPanelW-0.5f, panelY+kPanelH-0.5f), panelR, panelR};
-                 rt->DrawRoundedRectangle(rr, b.Get(), 0.9f); }
-    }
+        rt->CreateSolidColorBrush(Tok::SurfaceBase(alpha * ease), b.GetAddressOf());
+        if (!b) return;
+        if (inner) {
+            D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX, panelY+kAccH, panelX+kPanelW, panelY+kPanelH), panelR, panelR};
+            rt->FillRoundedRectangle(rr, b.Get());
+        } else {
+            rt->FillRectangle(D2D1::RectF(panelX, panelY+kAccH, panelX+kPanelW, panelY+kAccH+panelR), b.Get());
+        }
+    };
+    { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+      rt->CreateSolidColorBrush(Tok::GoldMid(0.88f * ease), b.GetAddressOf());
+      if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX, panelY, panelX+kPanelW, panelY+kAccH+panelR), panelR, panelR};
+               rt->FillRoundedRectangle(rr, b.Get()); } }
+    fillPanel(0.96f, false);
+    fillPanel(0.96f, true);
+    { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+      rt->CreateSolidColorBrush(Tok::GoldShadow(0.35f * ease), b.GetAddressOf());
+      if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX+0.5f, panelY+0.5f, panelX+kPanelW-0.5f, panelY+kPanelH-0.5f), panelR, panelR};
+               rt->DrawRoundedRectangle(rr, b.Get(), 0.9f); } }
 
-    // ---- Text bar
+    // Text bar
     const float tbX0 = panelX + kPadX;
     const float tbX1 = panelX + kPanelW - kPadX;
     const float tbY  = panelY + kAccH + kPadY;
-    {
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.96f * ease), b.GetAddressOf());
-        if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(tbX0, tbY, tbX1, tbY+kTbH), 7.0f*s, 7.0f*s};
-                 rt->FillRoundedRectangle(rr, b.Get()); }
-    }
-    {
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::GoldDeep(0.60f * ease), b.GetAddressOf());
-        if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(tbX0, tbY, tbX1, tbY+kTbH), 7.0f*s, 7.0f*s};
-                 rt->DrawRoundedRectangle(rr, b.Get(), 1.0f); }
-    }
+    { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+      rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.96f * ease), b.GetAddressOf());
+      if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(tbX0, tbY, tbX1, tbY+kTbH), 7.0f*s, 7.0f*s};
+               rt->FillRoundedRectangle(rr, b.Get()); } }
+    { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+      rt->CreateSolidColorBrush(Tok::GoldDeep(0.60f * ease), b.GetAddressOf());
+      if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(tbX0, tbY, tbX1, tbY+kTbH), 7.0f*s, 7.0f*s};
+               rt->DrawRoundedRectangle(rr, b.Get(), 1.0f); } }
     if (dwrite) {
         const std::wstring display = m_text.size() > 48
             ? L"\u2026" + m_text.substr(m_text.size() - 47) : m_text;
-        const float textAreaW = tbX1 - tbX0 - 24.0f * s;
         const float textFontSz = kFText_base * s;
-
         Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
         dwrite->CreateTextFormat(L"Segoe UI", nullptr,
             DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
@@ -561,84 +580,81 @@ void VirtualKeyboard::Draw(
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
             rt->CreateSolidColorBrush(Tok::ChromeHi(0.94f * ease), b.GetAddressOf());
             if (b) rt->DrawText(display.c_str(), static_cast<UINT32>(display.size()),
-                fmt.Get(), D2D1::RectF(tbX0 + 12.0f*s, tbY, tbX1 - 12.0f*s, tbY+kTbH), b.Get());
+                fmt.Get(), D2D1::RectF(tbX0+12.0f*s, tbY, tbX1-12.0f*s, tbY+kTbH), b.Get());
         }
-
-        // Blinking cursor after last character
-        {
-            const float blink   = 0.5f + 0.5f * std::sin(m_glowPhase * 2.0f);
-            const float textInnerX = tbX0 + 12.0f * s;
-
-            float textPixelW = MeasureTextWidth(
-                dwrite,
-                display.c_str(),
-                static_cast<UINT32>(display.size()),
-                L"Segoe UI",
-                DWRITE_FONT_WEIGHT_NORMAL,
-                textFontSz);
-            textPixelW = std::min(textPixelW, textAreaW);
-
-            const float cursorX = textInnerX + textPixelW;
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-            rt->CreateSolidColorBrush(Tok::GoldHi(blink * 0.90f * ease), b.GetAddressOf());
-            if (b) rt->DrawLine(
-                D2D1::Point2F(cursorX, tbY + 9.0f * s),
-                D2D1::Point2F(cursorX, tbY + kTbH - 9.0f * s),
-                b.Get(), 1.8f * s);
-        }
+        // Blinking cursor
+        { const float blink  = 0.5f + 0.5f * std::sin(m_glowPhase * 2.0f);
+          const float tw = MeasureTextWidth(dwrite, display.c_str(),
+              static_cast<UINT32>(display.size()),
+              L"Segoe UI", DWRITE_FONT_WEIGHT_NORMAL, textFontSz);
+          const float cx = tbX0 + 12.0f*s + std::min(tw, tbX1 - tbX0 - 24.0f*s);
+          Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+          rt->CreateSolidColorBrush(Tok::GoldHi(blink * 0.90f * ease), b.GetAddressOf());
+          if (b) rt->DrawLine(
+              D2D1::Point2F(cx, tbY + 9.0f*s),
+              D2D1::Point2F(cx, tbY + kTbH - 9.0f*s),
+              b.Get(), 1.8f*s); }
     }
 
-    // ---- Hint bar
+    // Hint bar
     {
         const float hy  = panelY + kPanelH - kHintH - kPadY * 0.55f;
         const float hcy = hy + kHintH * 0.5f;
         const float fnt = kFHint_base * s;
         float hx = panelX + kPadX;
-        const float chipGap = 10.0f * s;
-
+        const float chipGap = 8.0f * s;
         DrawHintChip(rt, dwrite, hx, hcy, s, ease,
             L"\u25CF  Type",
             Tok::GoldDeep(0.70f * ease), Tok::GoldHi(0.92f * ease), fnt);
-        hx += 88.0f * s + chipGap;
+        hx += 84.0f*s + chipGap;
         DrawHintChip(rt, dwrite, hx, hcy, s, ease,
             L"\u25A0  \u232B",
             Tok::SurfaceRaised(0.90f * ease), Tok::ChromeMid(0.80f * ease), fnt);
-        hx += 76.0f * s + chipGap;
-        // Submit chip: more prominent gold fill so user sees it clearly
+        hx += 74.0f*s + chipGap;
         DrawHintChip(rt, dwrite, hx, hcy, s, ease,
             L"\u25B2  Submit",
             Tok::GoldMid(0.75f * ease), Tok::GoldBright(0.97f * ease), fnt);
-        hx += 96.0f * s + chipGap;
+        hx += 94.0f*s + chipGap;
         DrawHintChip(rt, dwrite, hx, hcy, s, ease,
             L"\u25C6  Cancel",
             Tok::SurfaceRaised(0.90f * ease), Tok::ChromeMid(0.80f * ease), fnt);
-        hx += 90.0f * s + chipGap;
-        if (m_layer == Layer::Sym || m_caps) {
-            const wchar_t* badge = (m_layer == Layer::Sym) ? L"SYM" : L"CAPS";
+        hx += 88.0f*s + chipGap;
+        // Layer badge
+        {
+            const wchar_t* badge = GetLayerName();
+            const bool isCyr  = (m_layer == Layer::Cyr);
+            const bool isSym  = (m_layer == Layer::Sym);
+            const bool isCaps = (!isCyr && !isSym && m_caps);
             DrawHintChip(rt, dwrite, hx, hcy, s, ease, badge,
-                (m_layer == Layer::Sym) ? Tok::GoldDeep(0.85f * ease) : Tok::AmberWarm(0.65f * ease),
-                Tok::GoldAccent(0.97f * ease), fnt);
+                isCyr  ? Tok::AmberWarm(0.72f * ease)
+                : isSym  ? Tok::GoldDeep(0.85f * ease)
+                : isCaps ? Tok::AmberWarm(0.65f * ease)
+                :          Tok::SurfaceRaised(0.60f * ease),
+                isCyr || isSym || isCaps
+                    ? Tok::GoldBright(0.97f * ease)
+                    : Tok::ChromeMute(0.60f * ease),
+                fnt);
         }
+        hx += 64.0f*s + chipGap;
+        DrawHintChip(rt, dwrite, hx, hcy, s, ease,
+            L"LB  layer",
+            Tok::SurfaceRaised(0.55f * ease), Tok::ChromeMute(0.65f * ease), fnt);
     }
 
-    // ---- Keys
+    // Keys
     const float keysTop = panelY + kAccH + kPadY + kTbH + 8.0f * s;
-
     const Vec2 selCentre = KeyCentrePixel(m_row, m_col, s, screenW, screenH);
-
     m_cursorSpringX.target = selCentre.x;
     m_cursorSpringY.target = selCentre.y;
     if (m_cursorSpringX.value == 0.0f && m_cursorSpringY.value == 0.0f) {
         m_cursorSpringX.Snap(selCentre.x);
         m_cursorSpringY.Snap(selCentre.y);
     }
-
     const float scl = m_cursorScaleSpring.value;
 
     for (int32_t ri = 0; ri < static_cast<int32_t>(m_rows.size()); ++ri) {
         const auto& row = m_rows[static_cast<size_t>(ri)];
         const float ry  = keysTop + static_cast<float>(ri) * (kKeyH + kGap);
-
         float rowW = -kGap;
         for (const auto& k : row) rowW += k.widthMul * kKeyW + kGap;
         float rx = panelX + (kPanelW - rowW) * 0.5f;
@@ -663,66 +679,56 @@ void VirtualKeyboard::Draw(
                   b.GetAddressOf());
               if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh), cr, cr};
                        rt->FillRoundedRectangle(rr, b.Get()); } }
-
             // Inner bevel
             { const float ins = 2.4f * s;
               Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
               rt->CreateSolidColorBrush(
-                  sel ? Tok::SurfaceBase(0.92f * ease) : Tok::SurfaceRaised(0.72f * ease),
+                  sel ? Tok::SurfaceBase(0.92f*ease) : Tok::SurfaceRaised(0.72f*ease),
                   b.GetAddressOf());
               if (b) { D2D1_ROUNDED_RECT rr{
                   D2D1::RectF(sRx+ins, sRy+ins, sRx+skw-ins, sRy+skh-ins*1.4f),
-                  std::max(cr-ins, 0.0f), std::max(cr-ins, 0.0f) };
+                  std::max(cr-ins,0.0f), std::max(cr-ins,0.0f)};
                   rt->FillRoundedRectangle(rr, b.Get()); } }
-
-            // ---- Focus ring: crisp 2px GoldHi border on selected key ONLY.
-            // No circular glow blobs; a clean rectangle ring matches key shape
-            // and reads clearly at distance (Steam keyboard style).
+            // Focus ring
             if (sel) {
-                // Outer ring — bright gold
                 { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                   rt->CreateSolidColorBrush(Tok::GoldHi(0.90f * ease), b.GetAddressOf());
                   if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh), cr, cr};
-                           rt->DrawRoundedRectangle(rr, b.Get(), 2.2f * s); } }
-                // Inner glow stripe — subtle warmth just inside the border
+                           rt->DrawRoundedRectangle(rr, b.Get(), 2.2f*s); } }
                 { const float g = 3.0f * s;
                   Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                   rt->CreateSolidColorBrush(Tok::GoldWarm(0.18f * ease), b.GetAddressOf());
                   if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx+g,sRy+g,sRx+skw-g,sRy+skh-g),
                            std::max(cr-g,0.0f), std::max(cr-g,0.0f)};
-                           rt->DrawRoundedRectangle(rr, b.Get(), 1.0f * s); } }
+                           rt->DrawRoundedRectangle(rr, b.Get(), 1.0f*s); } }
             } else {
-                // Unselected: very dim thin border for key shape definition
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                 rt->CreateSolidColorBrush(Tok::InkLine(0.72f * ease), b.GetAddressOf());
                 if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh), cr, cr};
                          rt->DrawRoundedRectangle(rr, b.Get(), 0.7f); }
             }
-
-            // Inner shadow ring (depth)
+            // Inner shadow
             { const float bi = 1.0f;
               Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
               rt->CreateSolidColorBrush(
-                  sel ? Tok::GoldShadow(0.22f * ease) : Tok::GoldDeep(0.08f * ease),
+                  sel ? Tok::GoldShadow(0.22f*ease) : Tok::GoldDeep(0.08f*ease),
                   b.GetAddressOf());
               if (b) { D2D1_ROUNDED_RECT rr{
                   D2D1::RectF(sRx+bi, sRy+bi, sRx+skw-bi, sRy+skh-bi),
-                  std::max(cr-bi, 0.0f), std::max(cr-bi, 0.0f) };
+                  std::max(cr-bi,0.0f), std::max(cr-bi,0.0f)};
                   rt->DrawRoundedRectangle(rr, b.Get(), 0.5f); } }
 
-            if (fac) {
-                DrawArcSpecular(rt, fac.Get(),
-                    kCx, sRy + skh * 0.28f, skw * 0.26f, skh * 0.18f,
-                    (sel ? 0.10f : 0.04f) * ease);
-            }
+            if (fac) DrawArcSpecular(rt, fac.Get(),
+                kCx, sRy + skh * 0.28f, skw * 0.26f, skh * 0.18f,
+                (sel ? 0.10f : 0.04f) * ease);
 
             if (dwrite) {
                 const std::wstring disp = KeyDisplay(k);
                 if (!disp.empty()) {
                     const float fs = (k.isSpecial ? kFSpec_base : kFKey_base) * s * sc2;
+                    const wchar_t* fontFace = k.isSpecial ? L"Segoe UI Symbol" : L"Segoe UI";
                     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
-                    dwrite->CreateTextFormat(
-                        k.isSpecial ? L"Segoe UI Symbol" : L"Segoe UI", nullptr,
+                    dwrite->CreateTextFormat(fontFace, nullptr,
                         k.isSpecial ? DWRITE_FONT_WEIGHT_NORMAL : DWRITE_FONT_WEIGHT_SEMI_BOLD,
                         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
                         fs, L"en-us", fmt.GetAddressOf());

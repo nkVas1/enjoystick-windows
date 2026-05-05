@@ -18,17 +18,14 @@ namespace enjoystick::overlay {
 //   West  (X/Square)   - backspace
 //   East  (B/Circle)   - close / cancel
 //   North (Y/Tri)      - confirm / submit text
-//   LB                 - toggle symbol layer
-//   RB                 - return to alpha layer
+//   LB                 - cycle layer: Alpha -> Cyr -> Sym -> Alpha
+//   RB                 - return to Alpha layer
 //   L3 (click)         - toggle Caps Lock
 //
-// UX goals:
-//   - Large, clear panel at bottom of screen with big readable keys
-//   - Snap-to-key magnetic cursor (spring-interpolated, never drifts)
-//   - DPad navigation for precise single-step movement
-//   - Per-key press pop animation (scale bounce via FloatSpring)
-//   - Thin focus ring matching key shape instead of heavy glow blob
-//   - Direct SendInput per-char so text lands in the focused field
+// Layers:
+//   ALPHA  - Latin lowercase / uppercase
+//   CYR    - Russian (Cyrillic) layout
+//   SYM    - Symbols and punctuation
 // ---------------------------------------------------------------------------
 
 class VirtualKeyboard {
@@ -36,7 +33,7 @@ public:
     using OnCharCallback   = std::function<void(wchar_t ch)>;
     using OnSubmitCallback = std::function<void(const std::wstring& text)>;
 
-    enum class Layer : uint8_t { Alpha, Sym };
+    enum class Layer : uint8_t { Alpha, Cyr, Sym };
 
     VirtualKeyboard() = default;
     ~VirtualKeyboard() = default;
@@ -64,17 +61,21 @@ public:
     [[nodiscard]] bool                GetCaps()  const noexcept { return m_caps;  }
 
     [[nodiscard]] const wchar_t* GetLayerName() const noexcept {
-        if (m_layer == Layer::Sym)  return L"SYM";
-        if (m_caps)                 return L"CAPS";
-        return L"ALPHA";
+        switch (m_layer) {
+            case Layer::Cyr: return L"CYR";
+            case Layer::Sym: return L"SYM";
+            default:         return m_caps ? L"CAPS" : L"ALPHA";
+        }
     }
 
 private:
     // ---- Key grid -----------------------------------------------------------
     struct Key {
-        std::wstring label;
-        std::wstring shiftLabel;
-        std::wstring symLabel;
+        std::wstring label;      // shown in Alpha layer (lower)
+        std::wstring shiftLabel; // shown when Shift/Caps in Alpha layer
+        std::wstring symLabel;   // shown in Sym layer
+        std::wstring cyrLabel;   // shown in Cyr layer (lower)
+        std::wstring cyrShift;   // shown in Cyr layer + caps
         float        widthMul  = 1.0f;
         bool         isSpecial = false;
     };
@@ -91,32 +92,42 @@ private:
     int32_t m_col = 0;
 
     // --------------------------------------------------------------------------
-    // Stick navigation timing
-    // kStickRepeatFirst: first move fires after this delay — prevents drift
-    // kStickRepeatNext:  comfortable auto-repeat after first move
-    // kSnapDeadzone:     high threshold creates strong "centre magnet" feel
+    // Stick navigation timing  (250 Hz poll = 4 ms/frame)
+    // kStickRepeatFirst: wait this long before auto-repeat kicks in
+    //   -- long enough that a deliberate single-push won't accidentally
+    //      move two keys, but short enough to feel snappy.
+    // kStickRepeatNext:  interval once auto-repeat is active
+    // kSnapDeadzone:     strong magnetic centre; stick must be pushed
+    //   confidently to leave deadzone
     // --------------------------------------------------------------------------
     float  m_stickCooldown = 0.0f;
-    static constexpr float kStickRepeatFirst = 0.50f;  // was 0.80
-    static constexpr float kStickRepeatNext  = 0.14f;  // was 0.22
-    static constexpr float kSnapDeadzone     = 0.62f;  // was 0.55
+    static constexpr float kStickRepeatFirst = 0.55f;
+    static constexpr float kStickRepeatNext  = 0.16f;
+    static constexpr float kSnapDeadzone     = 0.62f;
     bool   m_stickActive = false;
 
     // --------------------------------------------------------------------------
     // DPad navigation timing
-    // kDPadFirst: initial delay before auto-repeat kicks in
-    // kDPadNext:  auto-repeat interval (snappy, not runaway)
+    // kDPadFirst: first-repeat delay (single step on tap)
+    // kDPadNext:  auto-repeat while held (snappy navigation)
     // --------------------------------------------------------------------------
-    static constexpr float kDPadFirst = 0.35f;  // was 0.50
-    static constexpr float kDPadNext  = 0.12f;  // was 0.20
+    static constexpr float kDPadFirst = 0.38f;
+    static constexpr float kDPadNext  = 0.13f;
     bool  m_dpadHeld      = false;
     float m_dpadTimer     = 0.0f;
     int32_t m_dpadDirRow  = 0;
     int32_t m_dpadDirCol  = 0;
 
+    // --------------------------------------------------------------------------
+    // Type debounce: South button press is ignored until this timer expires.
+    // Without it a single 4-ms physical press fires on multiple 250-Hz frames.
+    // --------------------------------------------------------------------------
+    static constexpr float kTypeDebounceMs = 180.0f;
+    float m_typeDebounce = 0.0f;  // counts down in ms; 0 = ready to type
+
     // state
     State  m_state     = State::Hidden;
-    float  m_glowPhase = 0.0f;   // re-used for cursor blink only
+    float  m_glowPhase = 0.0f;
     Layer  m_layer     = Layer::Alpha;
     bool   m_shift     = false;
     bool   m_caps      = false;
