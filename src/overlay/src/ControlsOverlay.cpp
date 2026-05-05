@@ -21,9 +21,6 @@ static constexpr float kPi = static_cast<float>(M_PI);
 
 namespace enjoystick::overlay {
 
-// ---------------------------------------------------------------------------
-// Easing
-// ---------------------------------------------------------------------------
 static float EaseOutCubic(float t) noexcept {
     const float u = 1.0f - t;
     return 1.0f - u * u * u;
@@ -37,7 +34,6 @@ void ControlsOverlay::BuildSections() {
     m_sections.clear();
     m_sections.reserve(6);
 
-    // ---- 1. Cursor Mode ----------------------------------------------------
     {
         Section s;
         s.icon  = L"\U0001F5B1";
@@ -63,8 +59,6 @@ void ControlsOverlay::BuildSections() {
         };
         m_sections.push_back(std::move(s));
     }
-
-    // ---- 2. Navigate Mode --------------------------------------------------
     {
         Section s;
         s.icon  = L"\u2B06";
@@ -85,8 +79,6 @@ void ControlsOverlay::BuildSections() {
         };
         m_sections.push_back(std::move(s));
     }
-
-    // ---- 3. Radial Menu ----------------------------------------------------
     {
         Section s;
         s.icon  = L"\u25CE";
@@ -108,8 +100,6 @@ void ControlsOverlay::BuildSections() {
         };
         m_sections.push_back(std::move(s));
     }
-
-    // ---- 4. Virtual Keyboard -----------------------------------------------
     {
         Section s;
         s.icon  = L"\u2328";
@@ -127,8 +117,6 @@ void ControlsOverlay::BuildSections() {
         };
         m_sections.push_back(std::move(s));
     }
-
-    // ---- 5. Settings Menu --------------------------------------------------
     {
         Section s;
         s.icon  = L"\u2699";
@@ -139,14 +127,13 @@ void ControlsOverlay::BuildSections() {
             { L"DPad \u2191 / \u2193",    L"Navigate rows" },
             { L"Left Stick Y",             L"Navigate rows (analogue)" },
             { L"DPad \u2190 / \u2192",    L"Decrease / Increase value" },
+            { L"Left Stick X",             L"Fine-tune value (step cooldown)" },
             { L"\u25CF  (A)",             L"Toggle boolean setting" },
             { L"\u25B2  (Y)",             L"Reset all to defaults" },
             { L"\u25C6  (B)",             L"Close settings" },
         };
         m_sections.push_back(std::move(s));
     }
-
-    // ---- 6. Global Combos --------------------------------------------------
     {
         Section s;
         s.icon  = L"\u2731";
@@ -171,10 +158,16 @@ void ControlsOverlay::Open() {
     if (m_state == State::Visible || m_state == State::Opening) return;
     BuildSections();
     m_sectionIdx  = 0;
+    m_scrollOffset = 0;
     m_state       = State::Opening;
     m_stickActive = false;
     m_stickCooldown = 0.0f;
-    m_prevEast = m_prevSouth = m_prevDLeft = m_prevDRight = false;
+    m_scrollDpadHeld  = false;
+    m_scrollDpadTimer = 0.0f;
+    m_scrollRyActive  = false;
+    m_scrollRyCooldown= 0.0f;
+    m_prevEast = m_prevSouth = m_prevDLeft = m_prevDRight =
+    m_prevDUp  = m_prevDDown = false;
 
     m_panelSpring.stiffness = 320.0f;
     m_panelSpring.damping   = 26.0f;
@@ -216,24 +209,32 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
     const bool south  = HasButton(state.buttons, Button::South);
     const bool dLeft  = HasButton(state.buttons, Button::DPadLeft);
     const bool dRight = HasButton(state.buttons, Button::DPadRight);
+    const bool dUp    = HasButton(state.buttons, Button::DPadUp);
+    const bool dDown  = HasButton(state.buttons, Button::DPadDown);
 
     if ((east && !m_prevEast) || (south && !m_prevSouth)) {
         Close();
         goto done;
     }
 
-    // ---- Section navigation (DPad)
+    // ---- Section navigation (DPad Left / Right)
     if (dRight && !m_prevDRight) {
         const int32_t n = static_cast<int32_t>(m_sections.size());
         m_sectionIdx = (m_sectionIdx + 1) % n;
         m_tabSpring.SetTarget(static_cast<float>(m_sectionIdx));
-        m_stickActive = false;
+        m_stickActive  = false;
+        m_scrollOffset = 0;
+        m_scrollDpadHeld = false;
+        m_scrollRyActive = false;
     }
     if (dLeft && !m_prevDLeft) {
         const int32_t n = static_cast<int32_t>(m_sections.size());
         m_sectionIdx = (m_sectionIdx - 1 + n) % n;
         m_tabSpring.SetTarget(static_cast<float>(m_sectionIdx));
-        m_stickActive = false;
+        m_stickActive  = false;
+        m_scrollOffset = 0;
+        m_scrollDpadHeld = false;
+        m_scrollRyActive = false;
     }
 
     // ---- Section navigation (Left Stick X)
@@ -246,6 +247,7 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
                 const int32_t n = static_cast<int32_t>(m_sections.size());
                 m_sectionIdx = (m_sectionIdx + (lx > 0 ? 1 : -1) + n) % n;
                 m_tabSpring.SetTarget(static_cast<float>(m_sectionIdx));
+                m_scrollOffset = 0;
             } else {
                 m_stickCooldown -= dt;
                 if (m_stickCooldown <= 0.0f) {
@@ -253,6 +255,7 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
                     const int32_t n = static_cast<int32_t>(m_sections.size());
                     m_sectionIdx = (m_sectionIdx + (lx > 0 ? 1 : -1) + n) % n;
                     m_tabSpring.SetTarget(static_cast<float>(m_sectionIdx));
+                    m_scrollOffset = 0;
                 }
             }
         } else {
@@ -261,11 +264,71 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
         }
     }
 
+    // ---- Scroll binding list (DPad Up / Down)
+    {
+        const bool dVert = dUp || dDown;
+        if (dVert) {
+            if (!m_scrollDpadHeld) {
+                m_scrollDpadHeld  = true;
+                m_scrollDpadTimer = kScrollFirst;
+                if (dUp   && m_scrollOffset > 0) --m_scrollOffset;
+                if (dDown) {
+                    const int32_t total = m_sectionIdx < static_cast<int32_t>(m_sections.size())
+                        ? static_cast<int32_t>(m_sections[static_cast<size_t>(m_sectionIdx)].bindings.size()) : 0;
+                    if (m_scrollOffset < total - 1) ++m_scrollOffset;
+                }
+            } else {
+                m_scrollDpadTimer -= dt;
+                if (m_scrollDpadTimer <= 0.0f) {
+                    m_scrollDpadTimer = kScrollNext;
+                    if (dUp   && m_scrollOffset > 0) --m_scrollOffset;
+                    if (dDown) {
+                        const int32_t total = m_sectionIdx < static_cast<int32_t>(m_sections.size())
+                            ? static_cast<int32_t>(m_sections[static_cast<size_t>(m_sectionIdx)].bindings.size()) : 0;
+                        if (m_scrollOffset < total - 1) ++m_scrollOffset;
+                    }
+                }
+            }
+        } else {
+            m_scrollDpadHeld  = false;
+            m_scrollDpadTimer = 0.0f;
+        }
+    }
+
+    // ---- Scroll binding list (Right Stick Y)
+    {
+        const float ry = state.rightStick.y;
+        if (std::abs(ry) > kScrollRyDz) {
+            if (!m_scrollRyActive) {
+                m_scrollRyActive   = true;
+                m_scrollRyCooldown = kScrollFirst;
+                const int32_t total = m_sectionIdx < static_cast<int32_t>(m_sections.size())
+                    ? static_cast<int32_t>(m_sections[static_cast<size_t>(m_sectionIdx)].bindings.size()) : 0;
+                if (ry < 0 && m_scrollOffset > 0)       --m_scrollOffset;
+                if (ry > 0 && m_scrollOffset < total-1) ++m_scrollOffset;
+            } else {
+                m_scrollRyCooldown -= dt;
+                if (m_scrollRyCooldown <= 0.0f) {
+                    m_scrollRyCooldown = kScrollNext;
+                    const int32_t total = m_sectionIdx < static_cast<int32_t>(m_sections.size())
+                        ? static_cast<int32_t>(m_sections[static_cast<size_t>(m_sectionIdx)].bindings.size()) : 0;
+                    if (ry < 0 && m_scrollOffset > 0)       --m_scrollOffset;
+                    if (ry > 0 && m_scrollOffset < total-1) ++m_scrollOffset;
+                }
+            }
+        } else {
+            m_scrollRyActive   = false;
+            m_scrollRyCooldown = 0.0f;
+        }
+    }
+
 done:
-    m_prevEast  = east;
-    m_prevSouth = south;
-    m_prevDLeft = dLeft;
-    m_prevDRight= dRight;
+    m_prevEast   = east;
+    m_prevSouth  = south;
+    m_prevDLeft  = dLeft;
+    m_prevDRight = dRight;
+    m_prevDUp    = dUp;
+    m_prevDDown  = dDown;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,7 +336,6 @@ done:
 // ---------------------------------------------------------------------------
 namespace {
 
-// Draw a rounded pill chip: [  KEY TEXT  ]
 static void DrawChip(
     ID2D1RenderTarget*   rt,
     IDWriteFactory*      dwrite,
@@ -281,7 +343,7 @@ static void DrawChip(
     float s,
     float ease,
     const wchar_t*       text,
-    bool                 isKey,   // true = gold border chip, false = arrow / label
+    bool                 isKey,
     float                fontSize) noexcept
 {
     if (!rt || !dwrite) return;
@@ -304,45 +366,22 @@ static void DrawChip(
         const float pH = 8.0f * s, pV = 4.0f * s;
         const float cw = tm.width + pH * 2.0f;
         const float ch = tm.height + pV * 2.0f;
-        // fill
         { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
           rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.92f * ease), b.GetAddressOf());
           if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(x, y, x+cw, y+ch), 5.0f*s, 5.0f*s};
                    rt->FillRoundedRectangle(rr, b.Get()); } }
-        // border
         { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
           rt->CreateSolidColorBrush(Tok::GoldMid(0.70f * ease), b.GetAddressOf());
           if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(x+0.5f, y+0.5f, x+cw-0.5f, y+ch-0.5f), 5.0f*s, 5.0f*s};
                    rt->DrawRoundedRectangle(rr, b.Get(), 1.0f); } }
-        // text
         { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
           rt->CreateSolidColorBrush(Tok::GoldHi(0.94f * ease), b.GetAddressOf());
           if (b) rt->DrawTextLayout(D2D1::Point2F(x + pH, y + pV), lay.Get(), b.Get()); }
     } else {
-        // plain label
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::ChromeMid(0.84f * ease), b.GetAddressOf());
         if (b) rt->DrawTextLayout(D2D1::Point2F(x, y), lay.Get(), b.Get());
     }
-}
-
-// Measure chip width (approximate)
-static float ChipWidth(IDWriteFactory* dwrite, const wchar_t* text, bool isKey, float s, float fontSize) noexcept {
-    if (!dwrite) return 80.0f * s;
-    const float fs = fontSize * s;
-    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
-    dwrite->CreateTextFormat(L"Segoe UI", nullptr,
-        isKey ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL,
-        DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-        fs, L"en-us", fmt.GetAddressOf());
-    if (!fmt) return 80.0f * s;
-    Microsoft::WRL::ComPtr<IDWriteTextLayout> lay;
-    dwrite->CreateTextLayout(text, static_cast<UINT32>(std::wcslen(text)),
-        fmt.Get(), 600.0f * s, fs + 10.0f * s, lay.GetAddressOf());
-    if (!lay) return 80.0f * s;
-    DWRITE_TEXT_METRICS tm{};
-    lay->GetMetrics(&tm);
-    return isKey ? tm.width + 16.0f * s : tm.width;
 }
 
 } // anon
@@ -374,11 +413,9 @@ void ControlsOverlay::Draw(
         if (b) rt->FillRectangle(D2D1::RectF(0.0f, 0.0f, screenW, screenH), b.Get());
     }
 
-    // ---- Panel geometry
     const float panelW = std::min(screenW * 0.82f, 820.0f * s);
     const float panelH = std::min(screenH * 0.78f, 600.0f * s);
     const float panelX = (screenW - panelW) * 0.5f;
-    // Slide in from bottom
     const float panelY = (screenH - panelH) * 0.5f + (1.0f - ease) * 60.0f * s;
     const float cr     = 16.0f * s;
 
@@ -389,7 +426,6 @@ void ControlsOverlay::Draw(
         if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX, panelY, panelX+panelW, panelY+panelH), cr, cr};
                  rt->FillRoundedRectangle(rr, b.Get()); }
     }
-    // ---- Top accent bar
     const float accH = 4.0f * s;
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
@@ -408,7 +444,6 @@ void ControlsOverlay::Draw(
         if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX, panelY + accH, panelX+panelW, panelY+panelH), cr, cr};
                  rt->FillRoundedRectangle(rr, b.Get()); }
     }
-    // ---- Panel border
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldShadow(0.30f * ease), b.GetAddressOf());
@@ -416,13 +451,10 @@ void ControlsOverlay::Draw(
                  rt->DrawRoundedRectangle(rr, b.Get(), 0.8f); }
     }
 
-    // ---- Header row (icon + title + dismiss hint)
     const float hdrY  = panelY + accH + 14.0f * s;
     const float padX  = 28.0f * s;
     if (dwrite && m_sectionIdx < static_cast<int32_t>(m_sections.size())) {
         const auto& sec = m_sections[static_cast<size_t>(m_sectionIdx)];
-
-        // Section icon
         { Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
           dwrite->CreateTextFormat(L"Segoe UI Emoji", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
               DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
@@ -435,7 +467,6 @@ void ControlsOverlay::Draw(
                   fmt.Get(), D2D1::RectF(panelX+padX, hdrY, panelX+padX+36.0f*s, hdrY+36.0f*s), b.Get());
           }
         }
-        // Section title
         { Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
           dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_BOLD,
               DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
@@ -448,7 +479,6 @@ void ControlsOverlay::Draw(
                   fmt.Get(), D2D1::RectF(panelX+padX+42.0f*s, hdrY, panelX+panelW-padX, hdrY+36.0f*s), b.Get());
           }
         }
-        // Dismiss hint (top-right)
         { Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
           dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
               DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
@@ -465,7 +495,6 @@ void ControlsOverlay::Draw(
         }
     }
 
-    // ---- Divider
     const float divY = hdrY + 42.0f * s;
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
@@ -476,25 +505,47 @@ void ControlsOverlay::Draw(
             b.Get(), 0.8f);
     }
 
-    // ---- Bindings list
+    // ---- Bindings list (with scroll offset)
     if (m_sectionIdx < static_cast<int32_t>(m_sections.size())) {
         const auto& bindings = m_sections[static_cast<size_t>(m_sectionIdx)].bindings;
         const float listTop  = divY + 10.0f * s;
         const float rowH     = 32.0f * s;
         const float fntSize  = 13.5f;
-        const float keyColW  = 230.0f * s;  // fixed width for key column
+        const float keyColW  = 230.0f * s;
         const float arrowW   = 26.0f  * s;
         const float actX     = panelX + padX + keyColW + arrowW;
-        const float maxY     = panelY + panelH - 54.0f * s;  // leave room for tab bar
+        const float maxY     = panelY + panelH - 54.0f * s;
+        const int32_t total  = static_cast<int32_t>(bindings.size());
 
-        for (int32_t i = 0; i < static_cast<int32_t>(bindings.size()); ++i) {
-            const float ry = listTop + static_cast<float>(i) * rowH;
+        // Clamp scroll
+        const int32_t safeOffset = std::min(m_scrollOffset, std::max(0, total - 1));
+
+        // Scroll indicators
+        const bool canScrollUp   = safeOffset > 0;
+        const bool canScrollDown = (listTop + static_cast<float>(total - safeOffset) * rowH) > maxY;
+
+        if (canScrollUp && dwrite) {
+            Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
+            dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                10.0f * s, L"en-us", fmt.GetAddressOf());
+            if (fmt) {
+                fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+                rt->CreateSolidColorBrush(Tok::GoldMid(0.45f * ease), b.GetAddressOf());
+                const wchar_t* ind = L"\u25B2  scroll";
+                if (b) rt->DrawText(ind, static_cast<UINT32>(std::wcslen(ind)),
+                    fmt.Get(), D2D1::RectF(panelX, listTop - 12.0f*s, panelX+panelW-padX, listTop+2.0f*s), b.Get());
+            }
+        }
+
+        for (int32_t i = safeOffset; i < total; ++i) {
+            const float ry = listTop + static_cast<float>(i - safeOffset) * rowH;
             if (ry + rowH > maxY) break;
 
             const auto& b = bindings[static_cast<size_t>(i)];
 
-            // Alternating row tint
-            if (i % 2 == 0) {
+            if ((i - safeOffset) % 2 == 0) {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bg;
                 rt->CreateSolidColorBrush(Tok::SurfaceRaised(0.28f * ease), bg.GetAddressOf());
                 if (bg) { D2D1_ROUNDED_RECT rr{
@@ -503,14 +554,10 @@ void ControlsOverlay::Draw(
                     rt->FillRoundedRectangle(rr, bg.Get()); }
             }
 
-            // Key chip (left column)
-            const float chipH  = 22.0f * s;
+            const float chipH    = 22.0f * s;
             const float chipVOff = (rowH - chipH) * 0.5f;
-            DrawChip(rt, dwrite,
-                panelX + padX, ry + chipVOff,
-                s, ease, b.keys.c_str(), true, fntSize);
+            DrawChip(rt, dwrite, panelX + padX, ry + chipVOff, s, ease, b.keys.c_str(), true, fntSize);
 
-            // Arrow
             if (dwrite) {
                 Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
                 dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
@@ -522,37 +569,46 @@ void ControlsOverlay::Draw(
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> ab;
                     rt->CreateSolidColorBrush(Tok::GoldShadow(0.55f * ease), ab.GetAddressOf());
                     const wchar_t* arr = L"\u2192";
-                    if (ab) rt->DrawText(arr, 1,
-                        fmt.Get(), D2D1::RectF(
-                            panelX+padX+keyColW, ry,
-                            panelX+padX+keyColW+arrowW, ry+rowH), ab.Get());
+                    if (ab) rt->DrawText(arr, 1, fmt.Get(),
+                        D2D1::RectF(panelX+padX+keyColW, ry, panelX+padX+keyColW+arrowW, ry+rowH), ab.Get());
                 }
             }
 
-            // Action text (right column)
-            DrawChip(rt, dwrite,
-                actX, ry + (rowH - 13.5f * s - 4.0f * s) * 0.5f,
+            DrawChip(rt, dwrite, actX, ry + (rowH - 13.5f * s - 4.0f * s) * 0.5f,
                 s, ease, b.action.c_str(), false, fntSize);
+        }
+
+        if (canScrollDown && dwrite) {
+            Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
+            dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                10.0f * s, L"en-us", fmt.GetAddressOf());
+            if (fmt) {
+                fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+                rt->CreateSolidColorBrush(Tok::GoldMid(0.45f * ease), b.GetAddressOf());
+                const wchar_t* ind = L"\u25BC  more";
+                if (b) rt->DrawText(ind, static_cast<UINT32>(std::wcslen(ind)),
+                    fmt.Get(), D2D1::RectF(panelX, maxY, panelX+panelW-padX, maxY+14.0f*s), b.Get());
+            }
         }
     }
 
-    // ---- Section tab bar at bottom
+    // ---- Section tab bar
     {
         const float tabBarY  = panelY + panelH - 42.0f * s;
         const float tabBarH  = 42.0f * s;
-        // separator
         {
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
             rt->CreateSolidColorBrush(Tok::GoldDeep(0.30f * ease), b.GetAddressOf());
             if (b) rt->DrawLine(
-                D2D1::Point2F(panelX+padX,            tabBarY),
-                D2D1::Point2F(panelX+panelW-padX,     tabBarY),
+                D2D1::Point2F(panelX+padX,        tabBarY),
+                D2D1::Point2F(panelX+panelW-padX, tabBarY),
                 b.Get(), 0.6f);
         }
 
         const int32_t n    = static_cast<int32_t>(m_sections.size());
         const float   tabW = (panelW - padX * 2.0f) / static_cast<float>(n);
-        const float   tabCY = tabBarY + tabBarH * 0.5f;
         const float   tabSprV = m_tabSpring.value;
 
         for (int32_t i = 0; i < n; ++i) {
@@ -561,7 +617,6 @@ void ControlsOverlay::Draw(
             const float dist  = std::abs(static_cast<float>(i) - tabSprV);
             const float blend = std::max(0.0f, 1.0f - dist);
 
-            // Tab icon
             if (dwrite && i < static_cast<int32_t>(m_sections.size())) {
                 Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
                 dwrite->CreateTextFormat(L"Segoe UI Emoji", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
@@ -582,7 +637,6 @@ void ControlsOverlay::Draw(
                 }
             }
 
-            // Active tab underline (slides with spring)
             if (isSel) {
                 const float ulW = tabW * 0.55f * blend + tabW * 0.45f;
                 const float ulX = tx + (tabW - ulW) * 0.5f;
@@ -595,7 +649,6 @@ void ControlsOverlay::Draw(
             }
         }
 
-        // Nav hint
         if (dwrite) {
             Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
             dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
@@ -606,7 +659,7 @@ void ControlsOverlay::Draw(
                 fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                 rt->CreateSolidColorBrush(Tok::ChromeMute(0.40f * ease), b.GetAddressOf());
-                const wchar_t* nh = L"\u25C4 / \u25BA  switch section";
+                const wchar_t* nh = L"\u25C4 / \u25BA  switch  \u25B2\u25BC  scroll";
                 if (b) rt->DrawText(nh, static_cast<UINT32>(std::wcslen(nh)),
                     fmt.Get(), D2D1::RectF(panelX+padX, tabBarY, panelX+panelW-padX-4.0f*s, tabBarY+tabBarH), b.Get());
             }

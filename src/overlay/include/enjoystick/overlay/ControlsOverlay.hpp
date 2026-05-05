@@ -15,10 +15,12 @@ namespace enjoystick::overlay {
 // Opened from the radial menu “Controls” sector.
 //
 // Controls (inside overlay):
-//   DPad Left / Right   — switch between sections
-//   Left Stick X        — switch between sections
-//   East  (B/Circle)    — close
-//   South (A/Cross)     — close
+//   DPad Left / Right        — switch between sections
+//   DPad Up   / Down         — scroll binding list
+//   Left Stick X             — switch between sections
+//   Right Stick Y            — scroll binding list (analogue)
+//   East  (B/Circle)         — close
+//   South (A/Cross)          — close
 // ---------------------------------------------------------------------------
 class ControlsOverlay {
 public:
@@ -56,20 +58,30 @@ private:
 
     State   m_state      = State::Hidden;
     mutable FloatSpring m_panelSpring;
-
-    // Section tab slide spring (tracks section index as float)
     mutable FloatSpring m_tabSpring;
 
-    // Stick nav debounce
+    // Section-switch stick debounce
     float   m_stickCooldown  = 0.0f;
     bool    m_stickActive    = false;
     static constexpr float kStickFirst = 0.55f;
     static constexpr float kStickNext  = 0.25f;
 
-    bool m_prevEast  = false;
-    bool m_prevSouth = false;
-    bool m_prevDLeft = false;
-    bool m_prevDRight= false;
+    // Scroll
+    int32_t m_scrollOffset   = 0;
+    bool    m_scrollDpadHeld = false;
+    float   m_scrollDpadTimer= 0.0f;
+    bool    m_scrollRyActive = false;
+    float   m_scrollRyCooldown= 0.0f;
+    static constexpr float kScrollFirst = 0.40f;
+    static constexpr float kScrollNext  = 0.18f;
+    static constexpr float kScrollRyDz  = 0.35f;
+
+    bool m_prevEast   = false;
+    bool m_prevSouth  = false;
+    bool m_prevDLeft  = false;
+    bool m_prevDRight = false;
+    bool m_prevDUp    = false;
+    bool m_prevDDown  = false;
 };
 
 } // namespace enjoystick::overlay
