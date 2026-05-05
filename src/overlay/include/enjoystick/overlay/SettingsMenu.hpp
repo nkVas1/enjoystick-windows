@@ -71,7 +71,8 @@ private:
     OnChangedCallback m_onChange;
     Values m_values;
     std::vector<Row> m_rows;
-    int32_t m_selectedRow = 0;
+    int32_t m_selectedRow  = 0;
+    int32_t m_scrollOffset = 0;   // first visible row index (virtual scroll)
 
     State m_state        = State::Hidden;
     float m_animProgress = 0.0f;
@@ -87,10 +88,10 @@ private:
     // kNavAccelRange : range over which it blends to kSnapFast.
     // kNavDeadzone   : stick deflection required to start navigating.
     // -----------------------------------------------------------------------
-    static constexpr float kSnapFirst      = 0.62f;
-    static constexpr float kSnapNext       = 0.20f;
-    static constexpr float kSnapFast       = 0.055f;
-    static constexpr float kNavAccelStart  = 1.0f;
+    static constexpr float kSnapFirst      = 0.85f;  // was 0.62
+    static constexpr float kSnapNext       = 0.28f;  // was 0.20
+    static constexpr float kSnapFast       = 0.065f; // was 0.055
+    static constexpr float kNavAccelStart  = 1.2f;   // was 1.0
     static constexpr float kNavAccelRange  = 0.80f;
     static constexpr float kNavDeadzone    = 0.55f;
     static constexpr float kAnimMs         = 220.0f;
@@ -114,17 +115,13 @@ private:
     //
     // m_prevRow    : the row we were on before the last navigation step.
     // m_trailAlpha : 0..1, decays to 0 over kTrailDecayMs after each hop.
-    //   Used to draw a fading semi-transparent gold highlight on the previous
-    //   row, giving the 'items stick to each other briefly' visual.
-    // m_selAnimT   : 0..1 spring-like progress since last hop, drives the
-    //   scale-in pop of the new selection highlight.
-    //   It starts at 0 on each hop and advances toward 1 at kSelAnimSpeed.
+    // m_selAnimT   : 0..1 spring-like progress since last hop.
     // -----------------------------------------------------------------------
     static constexpr float kTrailDecayMs  = 160.0f;
-    static constexpr float kSelAnimSpeed  = 8.0f;  // 1/s  (reaches ~1 in ~0.18 s)
+    static constexpr float kSelAnimSpeed  = 8.0f;
     mutable int32_t m_prevRow    = -1;
     mutable float   m_trailAlpha = 0.0f;
-    mutable float   m_selAnimT   = 1.0f;  // 1 = settled, <1 = animating
+    mutable float   m_selAnimT   = 1.0f;
 
     // DWrite ellipsis for text overflow trimming (mutable = lazy-init in Draw)
     mutable Microsoft::WRL::ComPtr<IDWriteInlineObject> m_dwriteEllipsis;
