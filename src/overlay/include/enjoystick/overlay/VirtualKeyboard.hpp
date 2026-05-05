@@ -71,11 +71,11 @@ public:
 private:
     // ---- Key grid -----------------------------------------------------------
     struct Key {
-        std::wstring label;      // shown in Alpha layer (lower)
-        std::wstring shiftLabel; // shown when Shift/Caps in Alpha layer
-        std::wstring symLabel;   // shown in Sym layer
-        std::wstring cyrLabel;   // shown in Cyr layer (lower)
-        std::wstring cyrShift;   // shown in Cyr layer + caps
+        std::wstring label;
+        std::wstring shiftLabel;
+        std::wstring symLabel;
+        std::wstring cyrLabel;
+        std::wstring cyrShift;
         float        widthMul  = 1.0f;
         bool         isSpecial = false;
     };
@@ -84,79 +84,50 @@ private:
 
     void BuildLayout();
 
-    // grid
     std::vector<std::vector<Key>> m_rows;
 
-    // cursor (logical grid)
     int32_t m_row = 0;
     int32_t m_col = 0;
 
-    // --------------------------------------------------------------------------
-    // Stick navigation timing  (250 Hz poll = 4 ms/frame)
-    //
-    // kStickRepeatFirst: hold time before auto-repeat kicks in.
-    //   Long enough that a deliberate flick moves exactly ONE key.
-    // kStickRepeatNext:  step interval once auto-repeat is active.
-    // kSnapDeadzone:     strong magnetic centre — stick must be pushed
-    //   confidently to leave it, prevents drift at rest.
-    // --------------------------------------------------------------------------
+    // Slow first step, then springy auto-repeat.
     float  m_stickCooldown = 0.0f;
-    static constexpr float kStickRepeatFirst = 0.70f;  // bumped 0.55->0.70
-    static constexpr float kStickRepeatNext  = 0.18f;  // bumped 0.16->0.18
-    static constexpr float kSnapDeadzone     = 0.68f;  // bumped 0.62->0.68
+    static constexpr float kStickRepeatFirst = 0.82f;
+    static constexpr float kStickRepeatNext  = 0.14f;
+    static constexpr float kSnapDeadzone     = 0.74f;
     bool   m_stickActive = false;
 
-    // --------------------------------------------------------------------------
-    // DPad navigation timing
-    // --------------------------------------------------------------------------
-    static constexpr float kDPadFirst = 0.45f;   // bumped 0.38->0.45
-    static constexpr float kDPadNext  = 0.15f;   // bumped 0.13->0.15
+    static constexpr float kDPadFirst = 0.52f;
+    static constexpr float kDPadNext  = 0.14f;
     bool  m_dpadHeld      = false;
     float m_dpadTimer     = 0.0f;
     int32_t m_dpadDirRow  = 0;
     int32_t m_dpadDirCol  = 0;
 
-    // --------------------------------------------------------------------------
-    // Type debounce: South button press is ignored until this timer expires.
-    // --------------------------------------------------------------------------
-    static constexpr float kTypeDebounceMs  = 180.0f; // typing (A button)
-    static constexpr float kWestDebounceMs  = 200.0f; // backspace (X button)
-    static constexpr float kLbDebounceMs    = 220.0f; // layer switch (LB)
-    float m_typeDebounce = 0.0f;  // counts down in ms
-    float m_westDebounce = 0.0f;  // backspace guard
-    float m_lbDebounce   = 0.0f;  // LB layer-cycle guard
+    static constexpr float kTypeDebounceMs  = 180.0f;
+    static constexpr float kWestDebounceMs  = 320.0f;
+    static constexpr float kLbDebounceMs    = 320.0f;
+    float m_typeDebounce = 0.0f;
+    float m_westDebounce = 0.0f;
+    float m_lbDebounce   = 0.0f;
 
-    // state
     State  m_state     = State::Hidden;
     float  m_glowPhase = 0.0f;
     Layer  m_layer     = Layer::Alpha;
     bool   m_shift     = false;
     bool   m_caps      = false;
 
-    // -----------------------------------------------------------------------
-    // Spring animations
-    //
-    // m_cursorSpring X/Y   — main selection cursor, high stiffness + bounce
-    // m_trailSpringX/Y     — 'ghost' trail cursor that lags behind the main
-    //   one, drawn as a fading rounded-rect smear between the previous and
-    //   current key positions. Gives the sticky/adhesive visual trail effect.
-    // m_cursorScaleSpring  — scale pop on keypress
-    // -----------------------------------------------------------------------
     mutable FloatSpring m_panelSpring;
     mutable FloatSpring m_cursorSpringX;
     mutable FloatSpring m_cursorSpringY;
-    mutable FloatSpring m_trailSpringX;   // ghost trail — lower stiffness
+    mutable FloatSpring m_trailSpringX;
     mutable FloatSpring m_trailSpringY;
     mutable FloatSpring m_cursorScaleSpring;
 
-    // accumulated text
     std::wstring m_text;
 
-    // callbacks
     OnCharCallback   m_onChar;
     OnSubmitCallback m_onSubmit;
 
-    // button edge detection
     bool m_prevSouth = false;
     bool m_prevEast  = false;
     bool m_prevWest  = false;
@@ -165,7 +136,6 @@ private:
     bool m_prevRB    = false;
     bool m_prevLS    = false;
 
-    // helpers
     [[nodiscard]] const Key* CurrentKey() const noexcept;
     [[nodiscard]] std::wstring KeyDisplay(const Key& k) const;
     void TypeKey(const Key& k);
