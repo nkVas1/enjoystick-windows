@@ -64,10 +64,10 @@ private:
     [[nodiscard]] int32_t NextInteractiveRow(int32_t from, int32_t dir) const noexcept;
     [[nodiscard]] bool    IsInteractiveRow(int32_t idx) const noexcept;
 
-    static constexpr float kAnimMs     = 160.0f;
-    static constexpr float kSnapFirst  = 0.55f;
-    static constexpr float kSnapNext   = 0.28f;
-    static constexpr float kNavDeadzone= 0.50f;
+    static constexpr float kAnimMs      = 160.0f;
+    static constexpr float kSnapFirst   = 0.40f;  // was 0.55
+    static constexpr float kSnapNext    = 0.15f;  // was 0.28
+    static constexpr float kNavDeadzone = 0.45f;  // was 0.50
 
     OnChangedCallback m_onChange;
     std::vector<Row>  m_rows;
