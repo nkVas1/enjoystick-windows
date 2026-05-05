@@ -312,7 +312,6 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
     static const ControllerState kEmpty{};
 
     if (controlsActive) {
-        // Controls overlay gets full exclusive input; all others starved
         m_radialMenu.Update(kEmpty, deltaSeconds);
         m_keyboard.Update(kEmpty, deltaSeconds);
         m_settingsMenu.Update(kEmpty, deltaSeconds);
@@ -339,7 +338,6 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
         m_controlsOverlay.Update(kEmpty, deltaSeconds);
     }
 
-    // Draw order: radial < settings < keyboard < controls (topmost) < HUD < toasts
     m_radialMenu.Draw(rt, m_dwriteFactory.Get(), m_dpiScale,
                       static_cast<float>(w), static_cast<float>(h));
     m_settingsMenu.Draw(rt, m_dwriteFactory.Get(), m_dpiScale,
@@ -452,9 +450,34 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
     DWRITE_TEXT_METRICS tm{};
     layout->GetMetrics(&tm);
 
-    const bool   kbOpen  = m_keyboard.IsOpen();
-    const float  badgeW  = kbOpen ? 54.0f * s : 0.0f;
-    const float  badgeGap= kbOpen ?  6.0f * s : 0.0f;
+    // Determine active mode badge
+    struct BadgeInfo { const wchar_t* text; D2D1_COLOR_F fill; D2D1_COLOR_F textCol; bool pulse; };
+    BadgeInfo badge{};
+    bool showBadge = false;
+
+    if (m_keyboard.IsOpen()) {
+        badge = { m_keyboard.GetLayerName(),
+                  [&]() -> D2D1_COLOR_F {
+                      const auto layer = m_keyboard.GetLayer();
+                      const bool caps  = m_keyboard.GetCaps();
+                      if (layer == VirtualKeyboard::Layer::Sym) return Tok::GoldDeep(0.82f);
+                      return caps ? Tok::AmberWarm(0.72f) : Tok::SurfaceSunken(0.60f);
+                  }(),
+                  Tok::GoldAccent(0.95f), true };
+        showBadge = true;
+    } else if (m_controlsOverlay.IsOpen()) {
+        badge = { L"REF", Tok::GoldDeep(0.65f), Tok::GoldBright(0.97f), false };
+        showBadge = true;
+    } else if (m_radialMenu.IsVisible()) {
+        badge = { L"MENU", Tok::SurfaceRaised(0.80f), Tok::ChromeHi(0.90f), false };
+        showBadge = true;
+    } else if (m_settingsMenu.IsOpen()) {
+        badge = { L"SETT", Tok::SurfaceRaised(0.80f), Tok::ChromeHi(0.90f), false };
+        showBadge = true;
+    }
+
+    const float badgeW  = showBadge ? 54.0f * s : 0.0f;
+    const float badgeGap= showBadge ?  6.0f * s : 0.0f;
 
     const float rawChipW = tm.width + padX * 2.0f + accentW + badgeW + badgeGap;
     m_hudPillWidthSpring.SetTarget(rawChipW);
@@ -477,7 +500,7 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
         }
     }
     {
-        const float accentAlpha = kbOpen ? (0.70f + 0.28f * pulse) : 0.90f;
+        const float accentAlpha = (showBadge && badge.pulse) ? (0.70f + 0.28f * pulse) : 0.90f;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldMid(accentAlpha), b.GetAddressOf());
         if (b) {
@@ -489,7 +512,7 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
         }
     }
     {
-        const float borderAlpha = kbOpen ? (0.28f + 0.18f * pulse) : 0.40f;
+        const float borderAlpha = (showBadge && badge.pulse) ? (0.28f + 0.18f * pulse) : 0.40f;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldShadow(borderAlpha), b.GetAddressOf());
         if (b) {
@@ -508,22 +531,14 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
                 D2D1::Point2F(chipX + accentW + padX, chipY + padY),
                 layout.Get(), b.Get());
     }
-    if (kbOpen && badgeW > 0.0f) {
+    if (showBadge && badgeW > 0.0f) {
         const float bx = chipX + chipW - badgeW - padX * 0.5f;
         const float by = chipY + (chipH - chipH * 0.55f) * 0.5f;
         const float bh = chipH * 0.55f;
 
-        const wchar_t* badgeText = m_keyboard.GetLayerName();
-        const VirtualKeyboard::Layer layer = m_keyboard.GetLayer();
-        const bool isCaps = m_keyboard.GetCaps();
-        const D2D1_COLOR_F fillCol =
-            (layer == VirtualKeyboard::Layer::Sym) ? Tok::GoldDeep(0.82f)
-            : isCaps                               ? Tok::AmberWarm(0.72f)
-            :                                        Tok::SurfaceSunken(0.60f);
-
         {
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-            rt->CreateSolidColorBrush(fillCol, b.GetAddressOf());
+            rt->CreateSolidColorBrush(badge.fill, b.GetAddressOf());
             if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(bx,by,bx+badgeW,by+bh),4.0f*s,4.0f*s};
                      rt->FillRoundedRectangle(rr, b.Get()); }
         }
@@ -536,8 +551,9 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
                 bf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
                 bf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bb;
-                rt->CreateSolidColorBrush(Tok::GoldAccent(0.95f), bb.GetAddressOf());
-                if (bb) rt->DrawText(badgeText, static_cast<UINT32>(std::wcslen(badgeText)),
+                rt->CreateSolidColorBrush(badge.textCol, bb.GetAddressOf());
+                if (bb) rt->DrawText(badge.text,
+                    static_cast<UINT32>(std::wcslen(badge.text)),
                     bf.Get(), D2D1::RectF(bx,by,bx+badgeW,by+bh), bb.Get());
             }
         }
