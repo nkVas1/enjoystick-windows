@@ -97,7 +97,6 @@ void VirtualKeyboard::BuildLayout() {
         {L"n",L"N",L"\u2122",L"\u0442",L"\u0422"},
         {L"m",L"M",L"\u00AE",L"\u044C",L"\u042C"},
         {L".",L".",L",",L"\u0431",L"\u0411"},
-        // Extra Cyrillic chars on wide space key (split into separate key for Cyr)
         {L"\u2423",L"\u2423",L"\u2423",L"\u044E",L"\u042E"},
         {L"\u2423",L"\u2423",L"\u2423",L"\u2423",L"\u2423",2.5f,true},
     });
@@ -128,6 +127,10 @@ void VirtualKeyboard::NavigateTo(int32_t row, int32_t col) {
     const int32_t n = RowKeyCount(row);
     col = (n > 0) ? (col % n + n) % n : 0;
     m_row = row; m_col = col;
+    // Gentle bounce pop on every navigation step.
+    m_cursorScaleSpring.value    = 1.08f;
+    m_cursorScaleSpring.velocity = 0.0f;
+    m_cursorScaleSpring.SetTarget(1.0f);
 }
 
 Vec2 VirtualKeyboard::KeyCentrePixel(int32_t row, int32_t col,
@@ -181,6 +184,8 @@ void VirtualKeyboard::Open(const std::wstring& seed) {
     m_dpadHeld      = false; m_dpadTimer = 0.0f;
     m_dpadDirRow    = 0; m_dpadDirCol = 0;
     m_typeDebounce  = 0.0f;
+    m_westDebounce  = 0.0f;
+    m_lbDebounce    = 0.0f;
     m_prevSouth = m_prevEast = m_prevWest = m_prevNorth =
     m_prevLB    = m_prevRB  = m_prevLS   = false;
 
@@ -189,10 +194,16 @@ void VirtualKeyboard::Open(const std::wstring& seed) {
     m_panelSpring.Snap(0.0f);
     m_panelSpring.SetTarget(1.0f);
 
+    // Main cursor spring: responsive + bouncy
     m_cursorSpringX.stiffness = 480.0f; m_cursorSpringX.damping = 26.0f;
     m_cursorSpringY.stiffness = 480.0f; m_cursorSpringY.damping = 26.0f;
     m_cursorScaleSpring.stiffness = 600.0f; m_cursorScaleSpring.damping = 28.0f;
     m_cursorScaleSpring.Snap(1.0f);
+
+    // Trail (ghost) springs: low stiffness = sluggish, creates lag
+    m_trailSpringX.stiffness = 80.0f;  m_trailSpringX.damping = 12.0f;
+    m_trailSpringY.stiffness = 80.0f;  m_trailSpringY.damping = 12.0f;
+    // Will be snapped to cursor position on first Draw frame
 }
 void VirtualKeyboard::Close() {
     if (m_state == State::Hidden || m_state == State::Closing) return;
@@ -229,7 +240,6 @@ static void SendBackspaceDirect() noexcept {
 // Update
 // ---------------------------------------------------------------------------
 void VirtualKeyboard::Update(const ControllerState& state, float dt) {
-    // dt is in seconds; convert where needed
     const float dtMs = dt * 1000.0f;
 
     m_panelSpring.Step(dt);
@@ -251,13 +261,17 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
 
     m_cursorSpringX.Step(dt);
     m_cursorSpringY.Step(dt);
+    m_trailSpringX.Step(dt);
+    m_trailSpringY.Step(dt);
     m_cursorScaleSpring.Step(dt);
 
-    // Tick type debounce
-    if (m_typeDebounce > 0.0f) {
-        m_typeDebounce -= dtMs;
-        if (m_typeDebounce < 0.0f) m_typeDebounce = 0.0f;
-    }
+    // Tick debounce timers
+    auto tickMs = [&](float& v) {
+        if (v > 0.0f) { v -= dtMs; if (v < 0.0f) v = 0.0f; }
+    };
+    tickMs(m_typeDebounce);
+    tickMs(m_westDebounce);
+    tickMs(m_lbDebounce);
 
     const bool south = HasButton(state.buttons, Button::South);
     const bool east  = HasButton(state.buttons, Button::East);
@@ -273,27 +287,33 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
 
     if (east  && !m_prevEast)  { Close(); goto done; }
     if (north && !m_prevNorth) { if (m_onSubmit) m_onSubmit(m_text); Close(); goto done; }
-    if (west  && !m_prevWest)  {
+
+    // Backspace — West (X), debounced
+    if (west && !m_prevWest && m_westDebounce <= 0.0f) {
         if (!m_text.empty()) m_text.pop_back();
         SendBackspaceDirect();
+        m_westDebounce = kWestDebounceMs;
         goto done;
     }
-    if (ls    && !m_prevLS)    { m_caps = !m_caps; m_shift = false; goto done; }
-    if (lb    && !m_prevLB) {
-        // Cycle: Alpha -> Cyr -> Sym -> Alpha
+
+    if (ls && !m_prevLS) { m_caps = !m_caps; m_shift = false; goto done; }
+
+    // LB layer-cycle — debounced
+    if (lb && !m_prevLB && m_lbDebounce <= 0.0f) {
         if      (m_layer == Layer::Alpha) m_layer = Layer::Cyr;
         else if (m_layer == Layer::Cyr)   m_layer = Layer::Sym;
         else                              m_layer = Layer::Alpha;
+        m_lbDebounce = kLbDebounceMs;
         goto done;
     }
-    if (rb    && !m_prevRB)    { m_layer = Layer::Alpha; goto done; }
+    if (rb && !m_prevRB) { m_layer = Layer::Alpha; goto done; }
 
     // Type key with debounce
     if (south && !m_prevSouth && m_typeDebounce <= 0.0f) {
         if (const Key* k = CurrentKey()) {
             TypeKey(*k);
             m_typeDebounce = kTypeDebounceMs;
-            // Pop scale animation
+            // Pop scale animation (type press)
             m_cursorScaleSpring.value    = 1.12f;
             m_cursorScaleSpring.velocity = 0.0f;
             m_cursorScaleSpring.SetTarget(1.0f);
@@ -646,11 +666,59 @@ void VirtualKeyboard::Draw(
     const Vec2 selCentre = KeyCentrePixel(m_row, m_col, s, screenW, screenH);
     m_cursorSpringX.target = selCentre.x;
     m_cursorSpringY.target = selCentre.y;
+    // Trail spring chases cursor spring
+    m_trailSpringX.target = m_cursorSpringX.value;
+    m_trailSpringY.target = m_cursorSpringY.value;
+    // Snap cursor on first frame
     if (m_cursorSpringX.value == 0.0f && m_cursorSpringY.value == 0.0f) {
         m_cursorSpringX.Snap(selCentre.x);
         m_cursorSpringY.Snap(selCentre.y);
+        m_trailSpringX.Snap(selCentre.x);
+        m_trailSpringY.Snap(selCentre.y);
     }
     const float scl = m_cursorScaleSpring.value;
+
+    // -------------------------------------------------------------------------
+    // Trail (ghost) smear between trail position and cursor position
+    // -------------------------------------------------------------------------
+    {
+        const float tx = m_trailSpringX.value;
+        const float ty = m_trailSpringY.value;
+        const float cx2 = m_cursorSpringX.value;
+        const float cy2 = m_cursorSpringY.value;
+        const float dx = cx2 - tx;
+        const float dy = cy2 - ty;
+        const float dist = std::sqrt(dx*dx + dy*dy);
+
+        if (dist > 4.0f * s) {
+            // Trail alpha fades with distance: strong near trail end, zero near cursor
+            // Cap at reasonable amount so it doesn’t look too garish
+            const float maxDist = kKeyW * 3.0f;
+            const float trailAlpha = std::min(1.0f, dist / maxDist) * 0.22f * ease;
+
+            // Draw a stretched rounded rect along the trail vector
+            // We compute a bounding box that covers both points with some padding
+            const float minX = std::min(tx, cx2) - kKeyW * 0.38f;
+            const float maxX = std::max(tx, cx2) + kKeyW * 0.38f;
+            const float minY = std::min(ty, cy2) - kKeyH * 0.38f;
+            const float maxY = std::max(ty, cy2) + kKeyH * 0.38f;
+
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> tb;
+            rt->CreateSolidColorBrush(Tok::GoldMid(trailAlpha), tb.GetAddressOf());
+            if (tb) {
+                D2D1_ROUNDED_RECT rr{
+                    D2D1::RectF(minX, minY, maxX, maxY),
+                    kKeyH * 0.5f, kKeyH * 0.5f };
+                rt->FillRoundedRectangle(rr, tb.Get());
+            }
+            // Inner stronger glow spot at trail origin
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> gb;
+            rt->CreateSolidColorBrush(Tok::GoldShadow(trailAlpha * 0.55f), gb.GetAddressOf());
+            if (gb) rt->FillEllipse(
+                D2D1::Ellipse(D2D1::Point2F(tx, ty),
+                    kKeyW * 0.28f, kKeyH * 0.28f), gb.Get());
+        }
+    }
 
     for (int32_t ri = 0; ri < static_cast<int32_t>(m_rows.size()); ++ri) {
         const auto& row = m_rows[static_cast<size_t>(ri)];
