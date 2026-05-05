@@ -15,10 +15,10 @@ namespace enjoystick::overlay {
 // Controls:
 //   Left stick / DPad  - move cursor; magnetically snaps to keys
 //   South (A/Cross)    - type highlighted key
-//   West  (X/Square)   - backspace
+//   West  (X/Square)   - backspace  (debounced — never multi-deletes)
 //   East  (B/Circle)   - close / cancel
 //   North (Y/Tri)      - confirm / submit text
-//   LB                 - cycle layer: Alpha -> Cyr -> Sym -> Alpha
+//   LB                 - cycle layer: Alpha -> Cyr -> Sym -> Alpha  (debounced)
 //   RB                 - return to Alpha layer
 //   L3 (click)         - toggle Caps Lock
 //
@@ -93,26 +93,24 @@ private:
 
     // --------------------------------------------------------------------------
     // Stick navigation timing  (250 Hz poll = 4 ms/frame)
-    // kStickRepeatFirst: wait this long before auto-repeat kicks in
-    //   -- long enough that a deliberate single-push won't accidentally
-    //      move two keys, but short enough to feel snappy.
-    // kStickRepeatNext:  interval once auto-repeat is active
-    // kSnapDeadzone:     strong magnetic centre; stick must be pushed
-    //   confidently to leave deadzone
+    //
+    // kStickRepeatFirst: hold time before auto-repeat kicks in.
+    //   Long enough that a deliberate flick moves exactly ONE key.
+    // kStickRepeatNext:  step interval once auto-repeat is active.
+    // kSnapDeadzone:     strong magnetic centre — stick must be pushed
+    //   confidently to leave it, prevents drift at rest.
     // --------------------------------------------------------------------------
     float  m_stickCooldown = 0.0f;
-    static constexpr float kStickRepeatFirst = 0.55f;
-    static constexpr float kStickRepeatNext  = 0.16f;
-    static constexpr float kSnapDeadzone     = 0.62f;
+    static constexpr float kStickRepeatFirst = 0.70f;  // bumped 0.55->0.70
+    static constexpr float kStickRepeatNext  = 0.18f;  // bumped 0.16->0.18
+    static constexpr float kSnapDeadzone     = 0.68f;  // bumped 0.62->0.68
     bool   m_stickActive = false;
 
     // --------------------------------------------------------------------------
     // DPad navigation timing
-    // kDPadFirst: first-repeat delay (single step on tap)
-    // kDPadNext:  auto-repeat while held (snappy navigation)
     // --------------------------------------------------------------------------
-    static constexpr float kDPadFirst = 0.38f;
-    static constexpr float kDPadNext  = 0.13f;
+    static constexpr float kDPadFirst = 0.45f;   // bumped 0.38->0.45
+    static constexpr float kDPadNext  = 0.15f;   // bumped 0.13->0.15
     bool  m_dpadHeld      = false;
     float m_dpadTimer     = 0.0f;
     int32_t m_dpadDirRow  = 0;
@@ -120,10 +118,13 @@ private:
 
     // --------------------------------------------------------------------------
     // Type debounce: South button press is ignored until this timer expires.
-    // Without it a single 4-ms physical press fires on multiple 250-Hz frames.
     // --------------------------------------------------------------------------
-    static constexpr float kTypeDebounceMs = 180.0f;
-    float m_typeDebounce = 0.0f;  // counts down in ms; 0 = ready to type
+    static constexpr float kTypeDebounceMs  = 180.0f; // typing (A button)
+    static constexpr float kWestDebounceMs  = 200.0f; // backspace (X button)
+    static constexpr float kLbDebounceMs    = 220.0f; // layer switch (LB)
+    float m_typeDebounce = 0.0f;  // counts down in ms
+    float m_westDebounce = 0.0f;  // backspace guard
+    float m_lbDebounce   = 0.0f;  // LB layer-cycle guard
 
     // state
     State  m_state     = State::Hidden;
@@ -132,10 +133,20 @@ private:
     bool   m_shift     = false;
     bool   m_caps      = false;
 
+    // -----------------------------------------------------------------------
     // Spring animations
+    //
+    // m_cursorSpring X/Y   — main selection cursor, high stiffness + bounce
+    // m_trailSpringX/Y     — 'ghost' trail cursor that lags behind the main
+    //   one, drawn as a fading rounded-rect smear between the previous and
+    //   current key positions. Gives the sticky/adhesive visual trail effect.
+    // m_cursorScaleSpring  — scale pop on keypress
+    // -----------------------------------------------------------------------
     mutable FloatSpring m_panelSpring;
     mutable FloatSpring m_cursorSpringX;
     mutable FloatSpring m_cursorSpringY;
+    mutable FloatSpring m_trailSpringX;   // ghost trail — lower stiffness
+    mutable FloatSpring m_trailSpringY;
     mutable FloatSpring m_cursorScaleSpring;
 
     // accumulated text
