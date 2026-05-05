@@ -2,6 +2,8 @@
 
 #include <enjoystick/shared/Types.hpp>
 
+#include <dwrite.h>
+#include <wrl/client.h>
 #include <functional>
 #include <string>
 #include <vector>
@@ -62,15 +64,10 @@ private:
     [[nodiscard]] int32_t NextInteractiveRow(int32_t from, int32_t dir) const noexcept;
     [[nodiscard]] bool    IsInteractiveRow(int32_t idx) const noexcept;
 
-    static constexpr float kAnimMs = 160.0f;
-
-    // Snap-navigation timing.
-    // kSnapFirst: long initial pause — one press = exactly one row/column move.
-    // kSnapNext:  comfortable hold-scroll interval.
-    // kNavDeadzone: high stick threshold gives strong "centre magnet" feel.
-    static constexpr float kSnapFirst   = 0.55f;  // was 0.38
-    static constexpr float kSnapNext    = 0.28f;  // was 0.22
-    static constexpr float kNavDeadzone = 0.50f;  // was 0.40
+    static constexpr float kAnimMs     = 160.0f;
+    static constexpr float kSnapFirst  = 0.55f;
+    static constexpr float kSnapNext   = 0.28f;
+    static constexpr float kNavDeadzone= 0.50f;
 
     OnChangedCallback m_onChange;
     std::vector<Row>  m_rows;
@@ -83,6 +80,10 @@ private:
     // Left-stick vertical snap navigation
     bool  m_stickNavActive   = false;
     float m_stickNavCooldown = 0.0f;
+
+    // Left-stick horizontal fine-tune (mutually exclusive with Y-nav)
+    bool  m_stickLxActive   = false;
+    float m_stickLxCooldown = 0.0f;
 
     // DPad vertical navigation
     bool  m_dpadVertHeld  = false;
@@ -99,6 +100,9 @@ private:
     bool m_prevDDown  = false;
     bool m_prevDLeft  = false;
     bool m_prevDRight = false;
+
+    // Mutable: lazily created in Draw() for label ellipsis trimming
+    mutable Microsoft::WRL::ComPtr<IDWriteInlineObject> m_dwriteEllipsis;
 };
 
 } // namespace enjoystick::overlay
