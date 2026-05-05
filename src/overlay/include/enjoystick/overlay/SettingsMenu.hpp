@@ -1,114 +1,119 @@
 #pragma once
 
 #include <enjoystick/shared/Types.hpp>
-
-#include <dwrite.h>
-#include <wrl/client.h>
 #include <functional>
 #include <string>
 #include <vector>
+#include <wrl/client.h>
+
+interface IDWriteInlineObject;
 
 namespace enjoystick::overlay {
 
+// ---------------------------------------------------------------------------
+// SettingsMenu
+// ---------------------------------------------------------------------------
 class SettingsMenu {
 public:
     struct Values {
-        float cursorSpeed        = 6.0f;
-        float curveExponent      = 1.35f;
-        float accelerationMs     = 80.0f;
-        float scrollSpeed        = 4.0f;
-        float dzInner            = 0.08f;
-        float dzOuter            = 0.98f;
-        bool  triggersAsClicks   = false;
-        bool  useRightStick      = true;
-        bool  adaptiveSpeed      = true;
-        float targetTraversalMs  = 900.0f;
-        float dpiWeight          = 0.5f;
+        float cursorSpeed       = 8.0f;
+        float curveExponent     = 1.5f;
+        float accelerationMs    = 120.0f;
+        bool  useRightStick     = false;
+        float scrollSpeed       = 12.0f;
+        bool  triggersAsClicks  = false;
+        bool  adaptiveSpeed     = false;
+        float targetTraversalMs = 800.0f;
+        float dpiWeight         = 0.5f;
+        float dzInner           = 0.12f;
+        float dzOuter           = 0.92f;
     };
-
     using OnChangedCallback = std::function<void(const Values&)>;
 
     explicit SettingsMenu(OnChangedCallback onChange = nullptr);
 
-    void Open (const Values& current);
+    void Open(const Values& current);
     void Close();
     [[nodiscard]] bool IsOpen() const noexcept;
 
-    void Update(const ControllerState& state, float deltaSeconds);
-    void Draw  (void* renderTargetPtr, void* dwriteFactoryPtr,
-                float dpiScale, float screenW, float screenH) const;
+    void Update(const ControllerState& state, float dt);
+    void Draw(void* renderTargetPtr, void* dwriteFactoryPtr,
+              float dpiScale, float screenW, float screenH) const;
 
-    void SetOnChanged(OnChangedCallback cb) { m_onChange = std::move(cb); }
-
-private:
-    enum class RowType : uint8_t { FloatSlider, BoolToggle, SectionHeader };
-    struct Row {
-        const wchar_t* label   = nullptr;
-        RowType        type    = RowType::FloatSlider;
-        float          min     = 0.0f;
-        float          max     = 1.0f;
-        float          step    = 0.1f;
-        float*         fTarget = nullptr;
-        bool*          bTarget = nullptr;
-        const wchar_t* unit    = L"";
-    };
-
-    enum class State : uint8_t { Hidden, Opening, Visible, Closing };
-
-    void BuildRows();
-    void UpdateAnimation(float deltaSeconds);
-    void AdjustSelected(float direction, bool repeat);
-    void CommitChange();
+    [[nodiscard]] const Values& GetValues() const noexcept { return m_values; }
     void ResetToDefaults();
 
-    [[nodiscard]] int32_t NextInteractiveRow(int32_t from, int32_t dir) const noexcept;
-    [[nodiscard]] bool    IsInteractiveRow(int32_t idx) const noexcept;
+private:
+    enum class RowType  : uint8_t { SectionHeader, FloatSlider, BoolToggle };
+    enum class State    : uint8_t { Hidden, Opening, Visible, Closing };
 
-    static constexpr float kAnimMs      = 160.0f;
-    // Magnetic snap timings:
-    // kSnapFirst: initial delay before auto-repeat kicks in.
-    //   Longer = stronger 'magnetic' feel; a tap always moves exactly one step.
-    // kSnapNext:  interval between steps once auto-repeat is active.
-    //   Short enough for fast navigation, long enough to count steps.
-    // kNavDeadzone: analogue stick centre deadzone.
-    //   Raised slightly so a gently resting stick never drifts selection.
-    static constexpr float kSnapFirst   = 0.50f;
-    static constexpr float kSnapNext    = 0.14f;
-    static constexpr float kNavDeadzone = 0.48f;
+    struct Row {
+        const wchar_t* label   = nullptr;
+        RowType        type    = RowType::SectionHeader;
+        float          min     = 0.0f, max = 1.0f, step = 0.1f;
+        float*         fTarget = nullptr;
+        bool*          bTarget = nullptr;
+        const wchar_t* unit    = nullptr;
+    };
+
+    void BuildRows();
+    bool IsInteractiveRow(int32_t idx) const noexcept;
+    int32_t NextInteractiveRow(int32_t from, int32_t dir) const noexcept;
+    void AdjustSelected(float direction, bool repeat);
+    void CommitChange();
+    void UpdateAnimation(float dt);
 
     OnChangedCallback m_onChange;
-    std::vector<Row>  m_rows;
-    Values            m_values;
-    int32_t           m_selectedRow  = 0;
-    State             m_state        = State::Hidden;
-    float             m_animProgress = 0.0f;
-    float             m_repeatTimer  = 0.0f;
+    Values m_values;
+    std::vector<Row> m_rows;
+    int32_t m_selectedRow = 0;
 
-    // Left-stick vertical snap navigation
+    State m_state        = State::Hidden;
+    float m_animProgress = 0.0f;
+    float m_repeatTimer  = 0.0f;
+
+    // -----------------------------------------------------------------------
+    // Navigation timing (all in seconds)
+    //
+    // kSnapFirst: hold duration before auto-repeat begins.
+    //   Must be long enough that a light single flick moves exactly one row.
+    // kSnapNext:  auto-repeat step interval.
+    // kNavDeadzone: stick deflection required to start navigating.
+    // -----------------------------------------------------------------------
+    static constexpr float kSnapFirst  = 0.55f;  // bumped 0.38->0.55
+    static constexpr float kSnapNext   = 0.16f;  // bumped 0.14->0.16
+    static constexpr float kNavDeadzone= 0.55f;
+    static constexpr float kAnimMs     = 220.0f;
+
     bool  m_stickNavActive   = false;
     float m_stickNavCooldown = 0.0f;
+    bool  m_stickLxActive    = false;
+    float m_stickLxCooldown  = 0.0f;
+    bool  m_dpadVertHeld     = false;
+    float m_dpadVertTimer    = 0.0f;
+    bool  m_dpadHorzHeld     = false;
+    float m_dpadHorzTimer    = 0.0f;
 
-    // Left-stick horizontal fine-tune (mutually exclusive with Y-nav)
-    bool  m_stickLxActive   = false;
-    float m_stickLxCooldown = 0.0f;
+    bool m_prevSouth = false, m_prevEast  = false, m_prevNorth = false;
+    bool m_prevDUp   = false, m_prevDDown = false;
+    bool m_prevDLeft = false, m_prevDRight= false;
 
-    // DPad vertical navigation
-    bool  m_dpadVertHeld  = false;
-    float m_dpadVertTimer = 0.0f;
+    // -----------------------------------------------------------------------
+    // Trail / transition animation state.
+    //
+    // m_prevRow:    the row we were on before the last navigation step.
+    // m_trailAlpha: 0..1, decays to 0 over kTrailDecayMs after each hop.
+    //   Used to draw a fading semi-transparent highlight on the previous
+    //   row, giving the 'items stick to each other briefly' visual.
+    // m_selAnimT:   0..1 spring-like progress since last hop, drives the
+    //   scale-in pop of the new selection highlight.
+    // -----------------------------------------------------------------------
+    static constexpr float kTrailDecayMs = 160.0f;
+    mutable int32_t m_prevRow    = -1;
+    mutable float   m_trailAlpha = 0.0f;
+    mutable float   m_selAnimT   = 1.0f;  // 1=settled, <1=animating
 
-    // DPad horizontal slider adjustment
-    bool  m_dpadHorzHeld  = false;
-    float m_dpadHorzTimer = 0.0f;
-
-    bool m_prevSouth  = false;
-    bool m_prevEast   = false;
-    bool m_prevNorth  = false;
-    bool m_prevDUp    = false;
-    bool m_prevDDown  = false;
-    bool m_prevDLeft  = false;
-    bool m_prevDRight = false;
-
-    // Mutable: lazily created in Draw() for label ellipsis trimming
+    // DWrite ellipsis for text overflow trimming (mutable = lazy-init in Draw)
     mutable Microsoft::WRL::ComPtr<IDWriteInlineObject> m_dwriteEllipsis;
 };
 
