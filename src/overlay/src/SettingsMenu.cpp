@@ -71,9 +71,10 @@ void SettingsMenu::Open(const Values& current) {
     m_animProgress = 0.0f;
     m_repeatTimer  = 0.0f;
 
-    // Reset all navigation state so a re-open starts clean
     m_stickNavActive   = false;
     m_stickNavCooldown = 0.0f;
+    m_stickLxActive    = false;
+    m_stickLxCooldown  = 0.0f;
     m_dpadVertHeld     = false;
     m_dpadVertTimer    = 0.0f;
     m_dpadHorzHeld     = false;
@@ -87,9 +88,10 @@ void SettingsMenu::Close() {
     if (m_state == State::Hidden) return;
     m_state = State::Closing;
 
-    // Zero nav state so next Open() doesn’t inherit stale timers
     m_stickNavActive   = false;
     m_stickNavCooldown = 0.0f;
+    m_stickLxActive    = false;
+    m_stickLxCooldown  = 0.0f;
     m_dpadVertHeld     = false;
     m_dpadVertTimer    = 0.0f;
     m_dpadHorzHeld     = false;
@@ -121,7 +123,7 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
     if (north && !m_prevNorth) { ResetToDefaults(); goto done; }
 
     // -----------------------------------------------------------------------
-    // DPad vertical: navigate rows with proper member-field cooldown
+    // DPad vertical — navigate rows
     // -----------------------------------------------------------------------
     {
         const bool dVert = dUp || dDown;
@@ -154,7 +156,7 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
     }
 
     // -----------------------------------------------------------------------
-    // DPad horizontal: adjust selected slider with proper member-field cooldown
+    // DPad horizontal — adjust selected slider
     // -----------------------------------------------------------------------
     {
         const bool hHorz = dLeft || dRight;
@@ -179,13 +181,18 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
     }
 
     // -----------------------------------------------------------------------
-    // Left stick: Y-axis navigates rows, X-axis fine-tunes slider
+    // Left Stick — Y navigates rows, X fine-tunes slider.
+    // Mutual exclusion: whichever axis fires first owns the stick until
+    // both axes return inside the deadzone.
     // -----------------------------------------------------------------------
     {
         const float ly = state.leftStick.y;
         const float lx = state.leftStick.x;
+        const bool  lyActive = std::abs(ly) > kNavDeadzone;
+        const bool  lxActive = std::abs(lx) > 0.25f;
 
-        if (std::abs(ly) > kNavDeadzone) {
+        // Once Y engages, block X until stick centres on both axes
+        if (lyActive && !m_stickLxActive) {
             const int dir = (ly > 0.0f) ? 1 : -1;
             if (!m_stickNavActive) {
                 m_stickNavActive   = true;
@@ -198,19 +205,39 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
                     m_selectedRow = NextInteractiveRow(m_selectedRow, dir);
                 }
             }
-        } else {
+        } else if (!lyActive) {
             m_stickNavActive   = false;
             m_stickNavCooldown = 0.0f;
         }
 
-        if (std::abs(lx) > 0.25f) {
-            const auto& row = m_rows[static_cast<size_t>(m_selectedRow)];
-            if (row.type == RowType::FloatSlider && row.fTarget) {
-                *row.fTarget = std::clamp(
-                    *row.fTarget + lx * dt * row.step * 8.0f,
-                    row.min, row.max);
-                CommitChange();
+        // Once X engages (and Y is not driving), fine-tune slider with cooldown
+        if (lxActive && !m_stickNavActive) {
+            if (!m_stickLxActive) {
+                m_stickLxActive   = true;
+                m_stickLxCooldown = kSnapFirst;
+                const auto& row = m_rows[static_cast<size_t>(m_selectedRow)];
+                if (row.type == RowType::FloatSlider && row.fTarget) {
+                    *row.fTarget = std::clamp(
+                        *row.fTarget + (lx > 0 ? 1.0f : -1.0f) * row.step,
+                        row.min, row.max);
+                    CommitChange();
+                }
+            } else {
+                m_stickLxCooldown -= dt;
+                if (m_stickLxCooldown <= 0.0f) {
+                    m_stickLxCooldown = kSnapNext * 0.6f; // faster repeat for fine-tune
+                    const auto& row = m_rows[static_cast<size_t>(m_selectedRow)];
+                    if (row.type == RowType::FloatSlider && row.fTarget) {
+                        *row.fTarget = std::clamp(
+                            *row.fTarget + (lx > 0 ? 1.0f : -1.0f) * row.step,
+                            row.min, row.max);
+                        CommitChange();
+                    }
+                }
             }
+        } else if (!lxActive) {
+            m_stickLxActive   = false;
+            m_stickLxCooldown = 0.0f;
         }
     }
 
@@ -262,6 +289,40 @@ static void DrawPanelChrome(
     (void)fac; (void)s;
 }
 
+static void DrawHintChip(
+    ID2D1RenderTarget* rt, IDWriteFactory* dwrite,
+    float x, float cy, float s, float ease,
+    const wchar_t* label,
+    const D2D1_COLOR_F& chipCol,
+    const D2D1_COLOR_F& textCol,
+    float fontSize) noexcept
+{
+    if (!rt || !dwrite) return;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
+    dwrite->CreateTextFormat(L"Segoe UI", nullptr,
+        DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL, fontSize, L"en-us", fmt.GetAddressOf());
+    if (!fmt) return;
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> lay;
+    dwrite->CreateTextLayout(label, static_cast<UINT32>(std::wcslen(label)),
+        fmt.Get(), 300.0f * s, 28.0f * s, lay.GetAddressOf());
+    if (!lay) return;
+    DWRITE_TEXT_METRICS tm{};
+    lay->GetMetrics(&tm);
+    const float padH = 7.0f * s, padV = 4.0f * s;
+    const float cw   = tm.width + padH * 2.0f;
+    const float ch   = tm.height + padV * 2.0f;
+    const float cy0  = cy - ch * 0.5f;
+    { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+      rt->CreateSolidColorBrush(chipCol, b.GetAddressOf());
+      if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(x, cy0, x+cw, cy0+ch), 4.0f*s, 4.0f*s};
+               rt->FillRoundedRectangle(rr, b.Get()); } }
+    { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+      rt->CreateSolidColorBrush(textCol, b.GetAddressOf());
+      if (b) rt->DrawTextLayout(D2D1::Point2F(x + padH, cy0 + padV), lay.Get(), b.Get()); }
+    (void)ease;
+}
+
 } // anon
 
 // ---------------------------------------------------------------------------
@@ -294,8 +355,9 @@ void SettingsMenu::Draw(
     const float gap    =  4.0f  * s;
     const float cr     = 14.0f  * s;
     const float accentH =  3.0f * s;
+    const float hintBarH = 36.0f * s;
 
-    float totalH = padY * 2.0f + accentH;
+    float totalH = padY * 2.0f + accentH + hintBarH;
     for (const auto& row : m_rows)
         totalH += (row.type == RowType::SectionHeader ? ph_hdr : ph_row) + gap;
     totalH -= gap;
@@ -362,7 +424,6 @@ void SettingsMenu::Draw(
                     b.Get(), 0.8f);
             }
         } else {
-            // ---- Selection highlight
             if (sel) {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                 rt->CreateSolidColorBrush(Tok::SurfaceRaised(0.80f * ease), b.GetAddressOf());
@@ -370,7 +431,6 @@ void SettingsMenu::Draw(
                     D2D1::RectF(px+8.0f*s, ry+1.0f*s, px+pw-8.0f*s, ry+rh-1.0f*s),
                     7.0f*s, 7.0f*s};
                     rt->FillRoundedRectangle(rr, b.Get()); }
-                // Left accent bar
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> ab;
                 rt->CreateSolidColorBrush(Tok::GoldHi(0.85f * ease), ab.GetAddressOf());
                 if (ab) { D2D1_ROUNDED_RECT rr{
@@ -378,7 +438,6 @@ void SettingsMenu::Draw(
                     1.5f*s, 1.5f*s};
                     rt->FillRoundedRectangle(rr, ab.Get()); }
             }
-            // ---- Row label
             if (dwrite && row.label) {
                 Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
                 dwrite->CreateTextFormat(L"Segoe UI", nullptr,
@@ -386,14 +445,26 @@ void SettingsMenu::Draw(
                     DWRITE_FONT_STRETCH_NORMAL, 13.5f * s, L"en-us", fmt.GetAddressOf());
                 if (fmt) {
                     fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                    rt->CreateSolidColorBrush(
-                        sel ? Tok::GoldHi(0.96f*ease) : Tok::ChromeHi(0.82f*ease),
-                        b.GetAddressOf());
-                    if (b) rt->DrawText(row.label,
+                    // Clip label to left half with ellipsis trimming
+                    Microsoft::WRL::ComPtr<IDWriteTextLayout> lay;
+                    dwrite->CreateTextLayout(row.label,
                         static_cast<UINT32>(std::wcslen(row.label)),
-                        fmt.Get(),
-                        D2D1::RectF(px+padX+6.0f*s, ry, px+pw*0.5f, ry+rh), b.Get());
+                        fmt.Get(), pw * 0.5f - padX - 8.0f * s, ph_row,
+                        lay.GetAddressOf());
+                    if (lay) {
+                        lay->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                        Microsoft::WRL::ComPtr<IDWriteInlineObject> trimSign;
+                        m_dwriteEllipsis ? lay->SetTrimming(
+                            &DWRITE_TRIMMING{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0},
+                            m_dwriteEllipsis.Get()) : void();
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+                        rt->CreateSolidColorBrush(
+                            sel ? Tok::GoldHi(0.96f*ease) : Tok::ChromeHi(0.82f*ease),
+                            b.GetAddressOf());
+                        if (b) rt->DrawTextLayout(
+                            D2D1::Point2F(px+padX+6.0f*s, ry + (ph_row - 13.5f*s*1.4f)*0.5f),
+                            lay.Get(), b.Get());
+                    }
                 }
             }
             // ---- Value widget (right half)
@@ -404,14 +475,12 @@ void SettingsMenu::Draw(
                 const float t   = std::clamp((*row.fTarget - row.min) / (row.max - row.min + 0.0001f), 0.0f, 1.0f);
                 const float bcy = ry + rh * 0.5f;
                 const float bh2 = 5.0f * s;
-                // Track background
                 {
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                     rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.90f * ease), b.GetAddressOf());
                     if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(wx,bcy-bh2,wx1,bcy+bh2),bh2,bh2};
                              rt->FillRoundedRectangle(rr, b.Get()); }
                 }
-                // Fill
                 {
                     const float fillX = wx + (wx1-wx)*t;
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
@@ -421,7 +490,6 @@ void SettingsMenu::Draw(
                     if (b && fillX > wx) { D2D1_ROUNDED_RECT rr{D2D1::RectF(wx,bcy-bh2,fillX,bcy+bh2),bh2,bh2};
                                            rt->FillRoundedRectangle(rr, b.Get()); }
                 }
-                // Thumb fill
                 {
                     const float tx = wx + (wx1-wx)*t;
                     const float tr = 8.0f * s;
@@ -431,7 +499,6 @@ void SettingsMenu::Draw(
                         b.GetAddressOf());
                     if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(tx,bcy),tr,tr), b.Get());
                 }
-                // Thumb ring (selected only)
                 if (sel) {
                     const float tx = wx + (wx1-wx)*t;
                     const float tr = 8.0f * s;
@@ -441,7 +508,6 @@ void SettingsMenu::Draw(
                         D2D1::Ellipse(D2D1::Point2F(tx,bcy), tr+1.5f*s, tr+1.5f*s),
                         rb.Get(), 1.2f*s);
                 }
-                // Value label
                 if (dwrite && row.fTarget) {
                     wchar_t buf[32];
                     std::swprintf(buf, 32, L"%.2f%ls", *row.fTarget, row.unit ? row.unit : L"");
@@ -466,7 +532,6 @@ void SettingsMenu::Draw(
                 const float tcy = ry + rh * 0.5f;
                 const float tw  = 42.0f * s;
                 const float th  = 22.0f * s;
-                // Track
                 {
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                     rt->CreateSolidColorBrush(
@@ -477,7 +542,6 @@ void SettingsMenu::Draw(
                         th*0.5f, th*0.5f};
                         rt->FillRoundedRectangle(rr, b.Get()); }
                 }
-                // Track border (selected)
                 if (sel) {
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                     rt->CreateSolidColorBrush(Tok::GoldMid(0.45f*ease), b.GetAddressOf());
@@ -486,7 +550,6 @@ void SettingsMenu::Draw(
                         th*0.5f, th*0.5f};
                         rt->DrawRoundedRectangle(rr, b.Get(), 1.1f*s); }
                 }
-                // Thumb
                 {
                     const float tx = on ? tcx+tw*0.5f-th*0.5f : tcx-tw*0.5f+th*0.5f;
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
@@ -501,22 +564,41 @@ void SettingsMenu::Draw(
         ry += rh + gap;
     }
 
-    // ---- Hint bar
+    // ---- Hint bar — coloured pill chips
     if (dwrite) {
-        const float hy = py + totalH - padY * 0.7f;
-        const wchar_t* hints = L"\u25CF Toggle   \u25C6 Close   \u25B2 Reset defaults";
-        Microsoft::WRL::ComPtr<IDWriteTextFormat> hf;
-        dwrite->CreateTextFormat(L"Segoe UI", nullptr,
-            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL, 11.0f*s, L"en-us", hf.GetAddressOf());
-        if (hf) {
-            hf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            hf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        const float hintY  = py + totalH - hintBarH;
+        const float hintCY = hintY + hintBarH * 0.5f;
+        // Separator
+        {
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-            rt->CreateSolidColorBrush(Tok::ChromeMute(0.50f*ease), b.GetAddressOf());
-            if (b) rt->DrawText(hints, static_cast<UINT32>(std::wcslen(hints)),
-                hf.Get(), D2D1::RectF(px,hy,px+pw,hy+padY), b.Get());
+            rt->CreateSolidColorBrush(Tok::GoldDeep(0.14f * ease), b.GetAddressOf());
+            if (b) rt->DrawLine(
+                D2D1::Point2F(px + padX, hintY),
+                D2D1::Point2F(px + pw - padX, hintY),
+                b.Get(), 0.6f);
         }
+        const float fnt    = 11.0f * s;
+        const float chipGap = 10.0f * s;
+        float hx = px + padX;
+
+        DrawHintChip(rt, dwrite, hx, hintCY, s, ease,
+            L"\u25CF  Toggle",
+            Tok::GoldDeep(0.70f * ease), Tok::GoldHi(0.92f * ease), fnt);
+        hx += 90.0f * s + chipGap;
+
+        DrawHintChip(rt, dwrite, hx, hintCY, s, ease,
+            L"\u25C6  Close",
+            Tok::SurfaceRaised(0.90f * ease), Tok::ChromeMid(0.80f * ease), fnt);
+        hx += 82.0f * s + chipGap;
+
+        DrawHintChip(rt, dwrite, hx, hintCY, s, ease,
+            L"\u25B2  Reset defaults",
+            Tok::SurfaceRaised(0.90f * ease), Tok::ChromeMid(0.80f * ease), fnt);
+        hx += 130.0f * s + chipGap;
+
+        DrawHintChip(rt, dwrite, hx, hintCY, s, ease,
+            L"\u25C4\u25BA  Adjust value",
+            Tok::GoldMid(0.55f * ease), Tok::GoldBright(0.95f * ease), fnt);
     }
 }
 
