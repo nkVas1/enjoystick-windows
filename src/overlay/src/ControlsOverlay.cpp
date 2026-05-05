@@ -110,7 +110,7 @@ void ControlsOverlay::BuildSections() {
             { L"\u25A0  (X)",             L"Backspace" },
             { L"\u25B2  (Y)",             L"Submit text and close" },
             { L"\u25C6  (B)",             L"Cancel and close" },
-            { L"LB",                       L"Toggle SYM layer" },
+            { L"LB",                       L"Toggle SYM / CYR / ALPHA layer" },
             { L"RB",                       L"Return to ALPHA layer" },
             { L"L3 (L-Stick click)",       L"Toggle Caps Lock" },
             { L"Shift key",                L"One-shot uppercase next char" },
@@ -166,6 +166,11 @@ void ControlsOverlay::Open() {
     m_scrollDpadTimer = 0.0f;
     m_scrollRyActive  = false;
     m_scrollRyCooldown= 0.0f;
+
+    // Record which buttons are ALREADY held so we don't mis-fire close.
+    // Cleared in Update() once released.
+    m_openMask = Button::None;
+
     m_prevEast = m_prevSouth = m_prevDLeft = m_prevDRight =
     m_prevDUp  = m_prevDDown = false;
 
@@ -205,12 +210,31 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
 
     m_tabSpring.Step(dt);
 
-    const bool east   = HasButton(state.buttons, Button::East);
-    const bool south  = HasButton(state.buttons, Button::South);
-    const bool dLeft  = HasButton(state.buttons, Button::DPadLeft);
-    const bool dRight = HasButton(state.buttons, Button::DPadRight);
-    const bool dUp    = HasButton(state.buttons, Button::DPadUp);
-    const bool dDown  = HasButton(state.buttons, Button::DPadDown);
+    // Lazily record open-mask on the very first Update frame.
+    // This handles buttons that were already held when Open() was called.
+    if (m_openMask == Button::None) {
+        m_openMask = state.buttons;
+    }
+    // Release open-mask bits that are no longer held.
+    m_openMask = static_cast<Button>(
+        static_cast<uint32_t>(m_openMask) &
+        static_cast<uint32_t>(state.buttons));
+
+    // A button in m_openMask is still held-from-before — treat as not-pressed.
+    const uint32_t effectiveMask =
+        static_cast<uint32_t>(state.buttons) &
+        ~static_cast<uint32_t>(m_openMask);
+
+    auto btn = [&](Button b) -> bool {
+        return (effectiveMask & static_cast<uint32_t>(b)) != 0;
+    };
+
+    const bool east   = btn(Button::East);
+    const bool south  = btn(Button::South);
+    const bool dLeft  = btn(Button::DPadLeft);
+    const bool dRight = btn(Button::DPadRight);
+    const bool dUp    = btn(Button::DPadUp);
+    const bool dDown  = btn(Button::DPadDown);
 
     if ((east && !m_prevEast) || (south && !m_prevSouth)) {
         Close();
@@ -517,10 +541,8 @@ void ControlsOverlay::Draw(
         const float maxY     = panelY + panelH - 54.0f * s;
         const int32_t total  = static_cast<int32_t>(bindings.size());
 
-        // Clamp scroll
         const int32_t safeOffset = std::min(m_scrollOffset, std::max(0, total - 1));
 
-        // Scroll indicators
         const bool canScrollUp   = safeOffset > 0;
         const bool canScrollDown = (listTop + static_cast<float>(total - safeOffset) * rowH) > maxY;
 
@@ -543,7 +565,7 @@ void ControlsOverlay::Draw(
             const float ry = listTop + static_cast<float>(i - safeOffset) * rowH;
             if (ry + rowH > maxY) break;
 
-            const auto& b = bindings[static_cast<size_t>(i)];
+            const auto& bind = bindings[static_cast<size_t>(i)];
 
             if ((i - safeOffset) % 2 == 0) {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bg;
@@ -556,7 +578,7 @@ void ControlsOverlay::Draw(
 
             const float chipH    = 22.0f * s;
             const float chipVOff = (rowH - chipH) * 0.5f;
-            DrawChip(rt, dwrite, panelX + padX, ry + chipVOff, s, ease, b.keys.c_str(), true, fntSize);
+            DrawChip(rt, dwrite, panelX + padX, ry + chipVOff, s, ease, bind.keys.c_str(), true, fntSize);
 
             if (dwrite) {
                 Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
@@ -575,7 +597,7 @@ void ControlsOverlay::Draw(
             }
 
             DrawChip(rt, dwrite, actX, ry + (rowH - 13.5f * s - 4.0f * s) * 0.5f,
-                s, ease, b.action.c_str(), false, fntSize);
+                s, ease, bind.action.c_str(), false, fntSize);
         }
 
         if (canScrollDown && dwrite) {

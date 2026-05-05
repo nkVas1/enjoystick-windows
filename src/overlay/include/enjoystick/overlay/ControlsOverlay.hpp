@@ -40,8 +40,8 @@ public:
 
 private:
     struct Binding {
-        std::wstring keys;   // e.g. L"\u25CF" or L"\u25CF + \u25A0"
-        std::wstring action; // human-readable description
+        std::wstring keys;
+        std::wstring action;
     };
     struct Section {
         std::wstring          icon;
@@ -59,6 +59,9 @@ private:
     State   m_state      = State::Hidden;
     mutable FloatSpring m_panelSpring;
     mutable FloatSpring m_tabSpring;
+
+    // Buttons held at the moment Open() was called — ignored until released
+    Button  m_openMask   = Button::None;
 
     // Section-switch stick debounce
     float   m_stickCooldown  = 0.0f;
