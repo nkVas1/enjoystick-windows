@@ -372,6 +372,33 @@ static void DrawHintChip(
     (void)ease;
 }
 
+// ---------------------------------------------------------------------------
+// MeasureTextWidth: measure actual pixel width of a string using DWrite layout.
+// Returns 0 on failure.
+// ---------------------------------------------------------------------------
+static float MeasureTextWidth(
+    IDWriteFactory* dwrite,
+    const wchar_t*  text,
+    UINT32          len,
+    const wchar_t*  fontFamily,
+    DWRITE_FONT_WEIGHT weight,
+    float           fontSize) noexcept
+{
+    if (!dwrite || len == 0) return 0.0f;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
+    dwrite->CreateTextFormat(fontFamily, nullptr,
+        weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+        fontSize, L"en-us", fmt.GetAddressOf());
+    if (!fmt) return 0.0f;
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> lay;
+    dwrite->CreateTextLayout(text, len,
+        fmt.Get(), 4096.0f, fontSize + 8.0f, lay.GetAddressOf());
+    if (!lay) return 0.0f;
+    DWRITE_TEXT_METRICS m{};
+    lay->GetMetrics(&m);
+    return m.widthIncludingTrailingWhitespace;
+}
+
 } // anon
 
 // ---------------------------------------------------------------------------
@@ -420,7 +447,7 @@ void VirtualKeyboard::Draw(
                         + static_cast<float>(m_rows.size()) * (kKeyH + kGap) - kGap
                         + kHintH + kPadY;
 
-    const float targetY = screenH - kPanelH - 28.0f * s;  // was 20
+    const float targetY = screenH - kPanelH - 28.0f * s;
     const float panelY  = targetY + (1.0f - panelVal) * (screenH - targetY + 28.0f * s);
     const float panelX  = (screenW - kPanelW) * 0.5f;
     const float panelR  = 14.0f * s;
@@ -478,10 +505,13 @@ void VirtualKeyboard::Draw(
     if (dwrite) {
         const std::wstring display = m_text.size() > 48
             ? L"\u2026" + m_text.substr(m_text.size() - 47) : m_text;
+        const float textAreaW = tbX1 - tbX0 - 24.0f * s;
+        const float textFontSz = kFText_base * s;
+
         Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
         dwrite->CreateTextFormat(L"Segoe UI", nullptr,
             DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL, kFText_base * s, L"en-us", fmt.GetAddressOf());
+            DWRITE_FONT_STRETCH_NORMAL, textFontSz, L"en-us", fmt.GetAddressOf());
         if (fmt) {
             fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
@@ -489,20 +519,32 @@ void VirtualKeyboard::Draw(
             if (b) rt->DrawText(display.c_str(), static_cast<UINT32>(display.size()),
                 fmt.Get(), D2D1::RectF(tbX0 + 12.0f*s, tbY, tbX1 - 12.0f*s, tbY+kTbH), b.Get());
         }
-    }
-    // Blinking cursor
-    {
-        const float blink   = 0.5f + 0.5f * std::sin(m_glowPhase * 2.0f);
-        const float textW   = std::min(
-            static_cast<float>(m_text.size()) * 10.0f * s,
-            tbX1 - tbX0 - 24.0f * s);
-        const float cursorX = tbX0 + 12.0f * s + textW;
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::GoldHi(blink * 0.90f * ease), b.GetAddressOf());
-        if (b) rt->DrawLine(
-            D2D1::Point2F(cursorX, tbY + 9.0f * s),
-            D2D1::Point2F(cursorX, tbY + kTbH - 9.0f * s),
-            b.Get(), 1.8f * s);
+
+        // --- Blinking cursor: measure actual text width via IDWriteTextLayout
+        // so the cursor lands precisely after the last character regardless
+        // of font metrics or DPI scale.
+        {
+            const float blink   = 0.5f + 0.5f * std::sin(m_glowPhase * 2.0f);
+            const float textInnerX = tbX0 + 12.0f * s;
+
+            float textPixelW = MeasureTextWidth(
+                dwrite,
+                display.c_str(),
+                static_cast<UINT32>(display.size()),
+                L"Segoe UI",
+                DWRITE_FONT_WEIGHT_NORMAL,
+                textFontSz);
+            // Clamp so cursor never escapes the text box
+            textPixelW = std::min(textPixelW, textAreaW);
+
+            const float cursorX = textInnerX + textPixelW;
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+            rt->CreateSolidColorBrush(Tok::GoldHi(blink * 0.90f * ease), b.GetAddressOf());
+            if (b) rt->DrawLine(
+                D2D1::Point2F(cursorX, tbY + 9.0f * s),
+                D2D1::Point2F(cursorX, tbY + kTbH - 9.0f * s),
+                b.Get(), 1.8f * s);
+        }
     }
 
     // ---- Hint bar
