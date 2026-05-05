@@ -225,7 +225,7 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
             } else {
                 m_stickLxCooldown -= dt;
                 if (m_stickLxCooldown <= 0.0f) {
-                    m_stickLxCooldown = kSnapNext * 0.6f; // faster repeat for fine-tune
+                    m_stickLxCooldown = kSnapNext * 0.6f;
                     const auto& row = m_rows[static_cast<size_t>(m_selectedRow)];
                     if (row.type == RowType::FloatSlider && row.fTarget) {
                         *row.fTarget = std::clamp(
@@ -343,6 +343,21 @@ void SettingsMenu::Draw(
     auto* rt     = static_cast<ID2D1RenderTarget*>(renderTargetPtr);
     auto* dwrite = static_cast<IDWriteFactory*>(dwriteFactoryPtr);
 
+    // Lazy-init ellipsis trimming sign (mutable, created once per factory)
+    if (dwrite && !m_dwriteEllipsis) {
+        dwrite->CreateEllipsisTrimmingSign(
+            // Need any text format as prototype — create a throwaway one
+            [&]() -> IDWriteTextFormat* {
+                IDWriteTextFormat* proto = nullptr;
+                dwrite->CreateTextFormat(L"Segoe UI", nullptr,
+                    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL, 13.0f * dpiScale,
+                    L"en-us", &proto);
+                return proto;
+            }(),
+            m_dwriteEllipsis.GetAddressOf());
+    }
+
     Microsoft::WRL::ComPtr<ID2D1Factory> fac;
     rt->GetFactory(fac.GetAddressOf());
 
@@ -445,7 +460,6 @@ void SettingsMenu::Draw(
                     DWRITE_FONT_STRETCH_NORMAL, 13.5f * s, L"en-us", fmt.GetAddressOf());
                 if (fmt) {
                     fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-                    // Clip label to left half with ellipsis trimming
                     Microsoft::WRL::ComPtr<IDWriteTextLayout> lay;
                     dwrite->CreateTextLayout(row.label,
                         static_cast<UINT32>(std::wcslen(row.label)),
@@ -453,10 +467,13 @@ void SettingsMenu::Draw(
                         lay.GetAddressOf());
                     if (lay) {
                         lay->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-                        Microsoft::WRL::ComPtr<IDWriteInlineObject> trimSign;
-                        m_dwriteEllipsis ? lay->SetTrimming(
-                            &DWRITE_TRIMMING{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0},
-                            m_dwriteEllipsis.Get()) : void();
+                        if (m_dwriteEllipsis) {
+                            DWRITE_TRIMMING trimming{};
+                            trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
+                            trimming.delimiter   = 0;
+                            trimming.delimiterCount = 0;
+                            lay->SetTrimming(&trimming, m_dwriteEllipsis.Get());
+                        }
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                         rt->CreateSolidColorBrush(
                             sel ? Tok::GoldHi(0.96f*ease) : Tok::ChromeHi(0.82f*ease),
@@ -568,7 +585,6 @@ void SettingsMenu::Draw(
     if (dwrite) {
         const float hintY  = py + totalH - hintBarH;
         const float hintCY = hintY + hintBarH * 0.5f;
-        // Separator
         {
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
             rt->CreateSolidColorBrush(Tok::GoldDeep(0.14f * ease), b.GetAddressOf());
