@@ -65,9 +65,16 @@ private:
     [[nodiscard]] bool    IsInteractiveRow(int32_t idx) const noexcept;
 
     static constexpr float kAnimMs      = 160.0f;
-    static constexpr float kSnapFirst   = 0.40f;  // was 0.55
-    static constexpr float kSnapNext    = 0.15f;  // was 0.28
-    static constexpr float kNavDeadzone = 0.45f;  // was 0.50
+    // Magnetic snap timings:
+    // kSnapFirst: initial delay before auto-repeat kicks in.
+    //   Longer = stronger 'magnetic' feel; a tap always moves exactly one step.
+    // kSnapNext:  interval between steps once auto-repeat is active.
+    //   Short enough for fast navigation, long enough to count steps.
+    // kNavDeadzone: analogue stick centre deadzone.
+    //   Raised slightly so a gently resting stick never drifts selection.
+    static constexpr float kSnapFirst   = 0.50f;
+    static constexpr float kSnapNext    = 0.14f;
+    static constexpr float kNavDeadzone = 0.48f;
 
     OnChangedCallback m_onChange;
     std::vector<Row>  m_rows;
