@@ -269,12 +269,6 @@ private:
 
     void SetupRadialMenu() {
         using RM = overlay::RadialMenuItem;
-        // Sector layout (8 sectors, CW from top-right):
-        //  0 Desktop | 1 Files | 2 Settings | 3 Keyboard
-        //  4 Search  | 5 Media | 6 Controls | 7 Exit
-        //
-        // NOTE: Mode toggle moved to LB+RB chord (already implemented) and
-        // tray menu.  Controls sector replaces Mode sector at position 6.
         m_overlay->GetRadialMenu().SetItems({
             RM{ L"Desktop",  L"\U0001F5A5", []{ ShellExecuteW(nullptr, L"open", L"shell:Desktop", nullptr, nullptr, SW_SHOW); } },
             RM{ L"Files",    L"\U0001F4C2", []{ ShellExecuteW(nullptr, L"open", L"explorer.exe", nullptr, nullptr, SW_SHOW); } },
@@ -419,11 +413,12 @@ private:
         const bool kbOpen        = m_overlay->GetVirtualKeyboard().IsOpen();
         const bool controlsOpen  = m_overlay->GetControlsOverlay().IsOpen();
 
-        // Controls overlay: handled entirely inside RenderFrame (Update is driven
-        // from OverlayWindow), but we still need to block all other input while open
-        // and restore mouse when it closes.
+        // ---- Controls overlay: directly drive Update() so it receives real input.
+        // We do NOT return early — fall through to PostState so OverlayWindow
+        // also has the latest state for its own render-thread copy.
         if (controlsOpen) {
-            // Re-enable cursor when controls overlay closes
+            m_overlay->GetControlsOverlay().Update(state, dt * 0.001f);
+            // Restore cursor the moment the overlay finishes closing
             if (!m_overlay->GetControlsOverlay().IsOpen()) {
                 if (m_mode == InputMode::Cursor)
                     m_virtualMouse->SetEnabled(true);
