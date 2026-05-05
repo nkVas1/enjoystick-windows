@@ -28,6 +28,7 @@ namespace enjoystick::overlay {
 //   - DPad navigation for precise single-step movement
 //   - Per-key press pop animation (scale bounce via FloatSpring)
 //   - Thin focus ring matching key shape instead of heavy glow blob
+//   - Direct SendInput per-char so text lands in the focused field
 // ---------------------------------------------------------------------------
 
 class VirtualKeyboard {
@@ -91,21 +92,23 @@ private:
 
     // --------------------------------------------------------------------------
     // Stick navigation timing
-    // kStickRepeatFirst: long initial delay — one deliberate push = exactly 1 key
+    // kStickRepeatFirst: first move fires after this delay — prevents drift
     // kStickRepeatNext:  comfortable auto-repeat after first move
     // kSnapDeadzone:     high threshold creates strong "centre magnet" feel
     // --------------------------------------------------------------------------
     float  m_stickCooldown = 0.0f;
-    static constexpr float kStickRepeatFirst = 0.80f;
-    static constexpr float kStickRepeatNext  = 0.22f;
-    static constexpr float kSnapDeadzone     = 0.55f;
+    static constexpr float kStickRepeatFirst = 0.50f;  // was 0.80
+    static constexpr float kStickRepeatNext  = 0.14f;  // was 0.22
+    static constexpr float kSnapDeadzone     = 0.62f;  // was 0.55
     bool   m_stickActive = false;
 
     // --------------------------------------------------------------------------
-    // DPad navigation timing (separate from stick — clean single-step on press)
+    // DPad navigation timing
+    // kDPadFirst: initial delay before auto-repeat kicks in
+    // kDPadNext:  auto-repeat interval (snappy, not runaway)
     // --------------------------------------------------------------------------
-    static constexpr float kDPadFirst = 0.50f;
-    static constexpr float kDPadNext  = 0.20f;
+    static constexpr float kDPadFirst = 0.35f;  // was 0.50
+    static constexpr float kDPadNext  = 0.12f;  // was 0.20
     bool  m_dpadHeld      = false;
     float m_dpadTimer     = 0.0f;
     int32_t m_dpadDirRow  = 0;
@@ -113,7 +116,7 @@ private:
 
     // state
     State  m_state     = State::Hidden;
-    float  m_glowPhase = 0.0f;
+    float  m_glowPhase = 0.0f;   // re-used for cursor blink only
     Layer  m_layer     = Layer::Alpha;
     bool   m_shift     = false;
     bool   m_caps      = false;
