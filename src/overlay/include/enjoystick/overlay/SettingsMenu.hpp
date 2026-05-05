@@ -64,13 +64,13 @@ private:
 
     static constexpr float kAnimMs = 160.0f;
 
-    // Snap-navigation timing constants.
-    // kSnapFirst: delay before auto-repeat kicks in on a held input.
-    // kSnapNext:  interval between subsequent auto-repeat steps.
-    // kNavDeadzone: left-stick magnitude threshold for vertical row navigation.
-    static constexpr float kSnapFirst   = 0.38f;
-    static constexpr float kSnapNext    = 0.22f;
-    static constexpr float kNavDeadzone = 0.40f;
+    // Snap-navigation timing.
+    // kSnapFirst: long initial pause — one press = exactly one row/column move.
+    // kSnapNext:  comfortable hold-scroll interval.
+    // kNavDeadzone: high stick threshold gives strong "centre magnet" feel.
+    static constexpr float kSnapFirst   = 0.55f;  // was 0.38
+    static constexpr float kSnapNext    = 0.28f;  // was 0.22
+    static constexpr float kNavDeadzone = 0.50f;  // was 0.40
 
     OnChangedCallback m_onChange;
     std::vector<Row>  m_rows;
@@ -84,11 +84,11 @@ private:
     bool  m_stickNavActive   = false;
     float m_stickNavCooldown = 0.0f;
 
-    // DPad vertical navigation (was static-local — bug fix)
+    // DPad vertical navigation
     bool  m_dpadVertHeld  = false;
     float m_dpadVertTimer = 0.0f;
 
-    // DPad horizontal slider adjustment (was static-local — bug fix)
+    // DPad horizontal slider adjustment
     bool  m_dpadHorzHeld  = false;
     float m_dpadHorzTimer = 0.0f;
 
