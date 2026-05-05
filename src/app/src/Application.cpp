@@ -106,10 +106,7 @@ static void SendBrowserTab(bool forward) noexcept {
     if (!forward) SendKey(VK_SHIFT, false);
 }
 
-// Synthesise a proper OS double-click: two down/up pairs spaced within
-// GetDoubleClickTime() so the window manager counts them as one event.
 static void SendDoubleClick(DWORD flags_down, DWORD flags_up) noexcept {
-    // FIX C2782: explicit cast to DWORD so std::min deduces a single _Ty.
     const DWORD gap = std::min(static_cast<DWORD>(GetDoubleClickTime()) / 3u,
                                static_cast<DWORD>(80));
     INPUT inp[2]{};
@@ -272,6 +269,12 @@ private:
 
     void SetupRadialMenu() {
         using RM = overlay::RadialMenuItem;
+        // Sector layout (8 sectors, CW from top-right):
+        //  0 Desktop | 1 Files | 2 Settings | 3 Keyboard
+        //  4 Search  | 5 Media | 6 Controls | 7 Exit
+        //
+        // NOTE: Mode toggle moved to LB+RB chord (already implemented) and
+        // tray menu.  Controls sector replaces Mode sector at position 6.
         m_overlay->GetRadialMenu().SetItems({
             RM{ L"Desktop",  L"\U0001F5A5", []{ ShellExecuteW(nullptr, L"open", L"shell:Desktop", nullptr, nullptr, SW_SHOW); } },
             RM{ L"Files",    L"\U0001F4C2", []{ ShellExecuteW(nullptr, L"open", L"explorer.exe", nullptr, nullptr, SW_SHOW); } },
@@ -279,7 +282,7 @@ private:
             RM{ L"Keyboard", L"\u2328",     [this]{ OpenKeyboard(); } },
             RM{ L"Search",   L"\U0001F50D", []{ keybd_event(VK_LWIN, 0, 0, 0); keybd_event('S', 0, 0, 0); keybd_event('S', 0, KEYEVENTF_KEYUP, 0); keybd_event(VK_LWIN, 0, KEYEVENTF_KEYUP, 0); } },
             RM{ L"Media",    L"\U0001F3B5", []{ keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, 0); keybd_event(VK_MEDIA_PLAY_PAUSE, 0, KEYEVENTF_KEYUP, 0); } },
-            RM{ L"Mode",     L"\U0001F501", [this]{ ToggleInputMode(); } },
+            RM{ L"Controls", L"\U0001F4CB", [this]{ OpenControlsOverlay(); } },
             RM{ L"Exit",     L"\u23F9",     [this]{ Exit(); } },
         });
 
@@ -287,8 +290,13 @@ private:
             m_virtualMouse->SetEnabled(false);
         });
         m_overlay->GetRadialMenu().SetOnClose([this] {
-            if (m_mode == InputMode::Cursor && !m_overlay->GetVirtualKeyboard().IsOpen())
+            const bool controlsOpen = m_overlay->GetControlsOverlay().IsOpen();
+            if (m_mode == InputMode::Cursor
+                && !m_overlay->GetVirtualKeyboard().IsOpen()
+                && !controlsOpen)
+            {
                 m_virtualMouse->SetEnabled(true);
+            }
         });
     }
 
@@ -347,6 +355,13 @@ private:
         m_overlay->ShowToast(L"\u2328  Virtual keyboard \u2014 [\u25B2] submit  [\u25C6] cancel", 3000);
     }
 
+    void OpenControlsOverlay() {
+        m_virtualMouse->SetEnabled(false);
+        m_overlay->GetControlsOverlay().Open();
+        m_overlay->GetRadialMenu().Close();
+        m_overlay->ShowToast(L"\U0001F4CB  Controls reference \u2014 [\u25C4/\u25BA] sections  [\u25C6] close", 3000);
+    }
+
     void SetMode(InputMode newMode) {
         if (m_mode == newMode) return;
         m_mode = newMode;
@@ -354,7 +369,8 @@ private:
         const bool cursor   = (m_mode == InputMode::Cursor);
         const bool menuOpen = m_overlay->GetRadialMenu().IsVisible();
         const bool kbOpen   = m_overlay->GetVirtualKeyboard().IsOpen();
-        m_virtualMouse->SetEnabled(cursor && !menuOpen && !kbOpen);
+        const bool ctrlOpen = m_overlay->GetControlsOverlay().IsOpen();
+        m_virtualMouse->SetEnabled(cursor && !menuOpen && !kbOpen && !ctrlOpen);
         m_keyMapper->SetEnabled(!cursor);
 
         if (m_overlay) {
@@ -398,9 +414,23 @@ private:
             return (currMask & static_cast<uint32_t>(b)) != 0;
         };
 
-        const bool radialOpen   = m_overlay->GetRadialMenu().IsVisible();
-        const bool settingsOpen = m_overlay->GetSettingsMenu().IsOpen();
-        const bool kbOpen       = m_overlay->GetVirtualKeyboard().IsOpen();
+        const bool radialOpen    = m_overlay->GetRadialMenu().IsVisible();
+        const bool settingsOpen  = m_overlay->GetSettingsMenu().IsOpen();
+        const bool kbOpen        = m_overlay->GetVirtualKeyboard().IsOpen();
+        const bool controlsOpen  = m_overlay->GetControlsOverlay().IsOpen();
+
+        // Controls overlay: handled entirely inside RenderFrame (Update is driven
+        // from OverlayWindow), but we still need to block all other input while open
+        // and restore mouse when it closes.
+        if (controlsOpen) {
+            // Re-enable cursor when controls overlay closes
+            if (!m_overlay->GetControlsOverlay().IsOpen()) {
+                if (m_mode == InputMode::Cursor)
+                    m_virtualMouse->SetEnabled(true);
+            }
+            m_prevButtons = state.buttons;
+            return;
+        }
 
         if (kbOpen) {
             m_overlay->GetVirtualKeyboard().Update(state, dt * 0.001f);
@@ -578,6 +608,7 @@ private:
             { modeLabel,          [this]{ ToggleInputMode(); } },
             { L"Open Settings",   [this]{ OpenSettingsMenu(); } },
             { L"Open Keyboard",   [this]{ OpenKeyboard(); } },
+            { L"Controls Reference", [this]{ OpenControlsOverlay(); } },
             { autoLabel, [autoOn]{ if (autoOn) AutoStart::Disable(); else AutoStart::Enable(); } },
             { L"",     {},       true },
             { L"Exit", [this]{ Exit(); } },

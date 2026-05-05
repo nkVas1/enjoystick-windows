@@ -56,6 +56,7 @@ HWND__*           OverlayWindowImpl::GetHWND()           const noexcept { return
 RadialMenu&       OverlayWindowImpl::GetRadialMenu()                    { return m_radialMenu; }
 SettingsMenu&     OverlayWindowImpl::GetSettingsMenu()                  { return m_settingsMenu; }
 VirtualKeyboard&  OverlayWindowImpl::GetVirtualKeyboard()               { return m_keyboard; }
+ControlsOverlay&  OverlayWindowImpl::GetControlsOverlay()               { return m_controlsOverlay; }
 
 void OverlayWindowImpl::SetModeLabel(std::wstring label) {
     std::lock_guard lk(m_modeLabelMutex);
@@ -73,7 +74,7 @@ void OverlayWindowImpl::ShowToast(std::wstring message, uint32_t durationMs) {
     t.message    = std::move(message);
     t.durationMs = durationMs;
     t.elapsed    = 0.0f;
-    t.slideX     = 1.0f;  // starts off-screen right
+    t.slideX     = 1.0f;
     t.slideV     = 0.0f;
     t.category   = DecodeCategory(t.message);
     std::lock_guard lock(m_toastMutex);
@@ -114,7 +115,7 @@ void OverlayWindowImpl::RenderThread() {
                 if (m_activeToasts.size() < 4)
                     m_activeToasts.push_back(std::move(m_pendingToasts.front()));
                 else
-                    m_activeToasts.erase(m_activeToasts.begin()); // drop oldest
+                    m_activeToasts.erase(m_activeToasts.begin());
                 m_pendingToasts.pop();
             }
         }
@@ -303,36 +304,50 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
     rt->BeginDraw();
     rt->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
-    const bool radialActive   = m_radialMenu.IsVisible();
-    const bool keyboardActive = m_keyboard.IsOpen();
-    const bool settingsActive = m_settingsMenu.IsOpen();
+    const bool radialActive    = m_radialMenu.IsVisible();
+    const bool keyboardActive  = m_keyboard.IsOpen();
+    const bool settingsActive  = m_settingsMenu.IsOpen();
+    const bool controlsActive  = m_controlsOverlay.IsOpen();
 
     static const ControllerState kEmpty{};
 
-    if (radialActive) {
+    if (controlsActive) {
+        // Controls overlay gets full exclusive input; all others starved
+        m_radialMenu.Update(kEmpty, deltaSeconds);
+        m_keyboard.Update(kEmpty, deltaSeconds);
+        m_settingsMenu.Update(kEmpty, deltaSeconds);
+        m_controlsOverlay.Update(m_lastState, deltaSeconds);
+    } else if (radialActive) {
         m_radialMenu.Update(m_lastState, deltaSeconds);
         m_keyboard.Update(kEmpty, deltaSeconds);
         m_settingsMenu.Update(kEmpty, deltaSeconds);
+        m_controlsOverlay.Update(kEmpty, deltaSeconds);
     } else if (keyboardActive) {
         m_radialMenu.Update(kEmpty, deltaSeconds);
         m_keyboard.Update(m_lastState, deltaSeconds);
         m_settingsMenu.Update(kEmpty, deltaSeconds);
+        m_controlsOverlay.Update(kEmpty, deltaSeconds);
     } else if (settingsActive) {
         m_radialMenu.Update(kEmpty, deltaSeconds);
         m_keyboard.Update(kEmpty, deltaSeconds);
         m_settingsMenu.Update(m_lastState, deltaSeconds);
+        m_controlsOverlay.Update(kEmpty, deltaSeconds);
     } else {
         m_radialMenu.Update(kEmpty, deltaSeconds);
         m_keyboard.Update(kEmpty, deltaSeconds);
         m_settingsMenu.Update(kEmpty, deltaSeconds);
+        m_controlsOverlay.Update(kEmpty, deltaSeconds);
     }
 
+    // Draw order: radial < settings < keyboard < controls (topmost) < HUD < toasts
     m_radialMenu.Draw(rt, m_dwriteFactory.Get(), m_dpiScale,
                       static_cast<float>(w), static_cast<float>(h));
     m_settingsMenu.Draw(rt, m_dwriteFactory.Get(), m_dpiScale,
                         static_cast<float>(w), static_cast<float>(h));
     m_keyboard.Draw(rt, m_dwriteFactory.Get(), m_dpiScale,
                     static_cast<float>(w), static_cast<float>(h));
+    m_controlsOverlay.Draw(rt, m_dwriteFactory.Get(), m_dpiScale,
+                           static_cast<float>(w), static_cast<float>(h));
     DrawHudMode(rt, deltaSeconds);
     DrawActiveIndicator(rt);
     DrawToasts(rt, deltaSeconds);
@@ -355,7 +370,7 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
 }
 
 // ---------------------------------------------------------------------------
-// DrawActiveIndicator  — triple concentric gold halos
+// DrawActiveIndicator
 // ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::DrawActiveIndicator(ID2D1RenderTarget* rt) {
@@ -395,7 +410,7 @@ void OverlayWindowImpl::DrawActiveIndicator(ID2D1RenderTarget* rt) {
 }
 
 // ---------------------------------------------------------------------------
-// DrawHudMode  — obsidian pill with spring-animated width + real layer badge
+// DrawHudMode
 // ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
@@ -417,7 +432,6 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
     const float bot     = static_cast<float>(m_dibH) - 18.0f * s;
     const float accentW = 3.0f * s;
 
-    // Pulse the border glow when keyboard is active
     m_hudPillPhase += deltaSeconds * (m_keyboard.IsOpen() ? 4.5f : 1.8f);
     if (m_hudPillPhase > 2.0f * kPi) m_hudPillPhase -= 2.0f * kPi;
     const float pulse = 0.5f + 0.5f * std::sin(m_hudPillPhase);
@@ -438,13 +452,11 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
     DWRITE_TEXT_METRICS tm{};
     layout->GetMetrics(&tm);
 
-    // Layer badge — shows SYM / CAPS / ALPHA when keyboard is open
     const bool   kbOpen  = m_keyboard.IsOpen();
     const float  badgeW  = kbOpen ? 54.0f * s : 0.0f;
     const float  badgeGap= kbOpen ?  6.0f * s : 0.0f;
 
     const float rawChipW = tm.width + padX * 2.0f + accentW + badgeW + badgeGap;
-    // Spring-animate chip width
     m_hudPillWidthSpring.SetTarget(rawChipW);
     m_hudPillWidthSpring.Step(deltaSeconds);
     const float chipW = std::max(rawChipW * 0.4f, m_hudPillWidthSpring.value);
@@ -454,7 +466,6 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
     const float chipY = bot - chipH;
     const float r     = chipH * 0.38f;
 
-    // Fill  (canonical token: Tok::SurfaceSunken — deepest surface tier)
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.88f), b.GetAddressOf());
@@ -465,7 +476,6 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
             rt->FillRoundedRectangle(rr, b.Get());
         }
     }
-    // Left accent bar (pulsing brightness when kb active)
     {
         const float accentAlpha = kbOpen ? (0.70f + 0.28f * pulse) : 0.90f;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
@@ -478,7 +488,6 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
             rt->FillRoundedRectangle(bar, b.Get());
         }
     }
-    // Border
     {
         const float borderAlpha = kbOpen ? (0.28f + 0.18f * pulse) : 0.40f;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
@@ -491,7 +500,6 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
             rt->DrawRoundedRectangle(rr, b.Get(), 0.8f);
         }
     }
-    // Label text  (canonical token: Tok::ChromeHi — primary text on dark)
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::ChromeHi(0.92f), b.GetAddressOf());
@@ -500,16 +508,12 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
                 D2D1::Point2F(chipX + accentW + padX, chipY + padY),
                 layout.Get(), b.Get());
     }
-    // Layer badge (right side of pill) — reads live layer from VirtualKeyboard
     if (kbOpen && badgeW > 0.0f) {
         const float bx = chipX + chipW - badgeW - padX * 0.5f;
         const float by = chipY + (chipH - chipH * 0.55f) * 0.5f;
         const float bh = chipH * 0.55f;
 
-        // GetLayerName() returns L"SYM", L"CAPS", or L"ALPHA"
         const wchar_t* badgeText = m_keyboard.GetLayerName();
-
-        // Badge fill: gold for SYM, amber for CAPS, muted for ALPHA
         const VirtualKeyboard::Layer layer = m_keyboard.GetLayer();
         const bool isCaps = m_keyboard.GetCaps();
         const D2D1_COLOR_F fillCol =
@@ -541,8 +545,7 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
 }
 
 // ---------------------------------------------------------------------------
-// DrawToasts  — stacked (up to 4), slide-in from right, category icon
-// Categories: [OK] success/gold, [WARN] warning/amber, [ERR] error/red, default info/chrome
+// DrawToasts
 // ---------------------------------------------------------------------------
 
 void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
@@ -556,7 +559,6 @@ void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
     const float baseX = static_cast<float>(m_dibW) - pw - 20.0f * s;
     const float baseY = static_cast<float>(m_dibH) - 120.0f * s;
 
-    // Step spring + elapsed for each toast; collect expired ones
     std::vector<size_t> expired;
     for (size_t i = 0; i < m_activeToasts.size(); ++i) {
         auto& t = m_activeToasts[i];
@@ -570,7 +572,6 @@ void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
 
     if (m_activeToasts.empty()) return;
 
-    // Draw from bottom to top (newest last = topmost visually)
     const size_t n = m_activeToasts.size();
     for (size_t i = 0; i < n; ++i) {
         const auto& t = m_activeToasts[i];
@@ -580,20 +581,16 @@ void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
         else if (frac < 0.06f) opacity = frac / 0.06f;
         opacity = std::max(0.0f, opacity);
 
-        // Stack index from bottom
         const float py = baseY - static_cast<float>(i) * (ph + gap);
-        // Spring slide offset (right edge overshoot)
         const float slideOff = t.slideX * (pw + 40.0f * s);
         const float px = baseX + slideOff;
 
-        // Panel fill
         {
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
             rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.93f * opacity), b.GetAddressOf());
             if (b) { D2D1_ROUNDED_RECT pill{D2D1::RectF(px,py,px+pw,py+ph),rr,rr};
                      rt->FillRoundedRectangle(pill, b.Get()); }
         }
-        // Top highlight line (category-tinted)
         {
             D2D1_COLOR_F lineCol;
             switch (t.category) {
@@ -605,37 +602,23 @@ void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
             rt->CreateSolidColorBrush(lineCol, b.GetAddressOf());
             if (b) rt->DrawLine(
-                D2D1::Point2F(px + rr,       py + 0.9f),
-                D2D1::Point2F(px + pw - rr,  py + 0.9f),
+                D2D1::Point2F(px + rr, py + 0.9f),
+                D2D1::Point2F(px + pw - rr, py + 0.9f),
                 b.Get(), 1.2f * s);
         }
-        // Border
         {
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
             rt->CreateSolidColorBrush(Tok::GoldDeep(0.35f * opacity), b.GetAddressOf());
             if (b) { D2D1_ROUNDED_RECT pill{D2D1::RectF(px+0.5f,py+0.5f,px+pw-0.5f,py+ph-0.5f),rr,rr};
                      rt->DrawRoundedRectangle(pill, b.Get(), 0.8f); }
         }
-        // Category icon
         const wchar_t* icon;
         D2D1_COLOR_F   iconCol;
         switch (t.category) {
-            case ToastCategory::Success:
-                icon    = L"\u2713";
-                iconCol = Tok::GoldHi(0.90f * opacity);
-                break;
-            case ToastCategory::Warning:
-                icon    = L"\u26A0";
-                iconCol = Tok::AmberWarm(0.90f * opacity);
-                break;
-            case ToastCategory::Error:
-                icon    = L"\u2715";
-                iconCol = D2D1::ColorF(0.92f, 0.30f, 0.26f, 0.95f * opacity);
-                break;
-            default:
-                icon    = L"\u2139";
-                iconCol = Tok::ChromeMid(0.70f * opacity);
-                break;
+            case ToastCategory::Success: icon = L"\u2713"; iconCol = Tok::GoldHi(0.90f*opacity);    break;
+            case ToastCategory::Warning: icon = L"\u26A0"; iconCol = Tok::AmberWarm(0.90f*opacity); break;
+            case ToastCategory::Error:   icon = L"\u2715"; iconCol = D2D1::ColorF(0.92f,0.30f,0.26f,0.95f*opacity); break;
+            default:                     icon = L"\u2139"; iconCol = Tok::ChromeMid(0.70f*opacity);  break;
         }
         if (m_dwriteFactory) {
             const float iconW = 32.0f * s;
@@ -649,10 +632,9 @@ void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> ib;
                 rt->CreateSolidColorBrush(iconCol, ib.GetAddressOf());
                 if (ib) rt->DrawText(icon, 1, iconf.Get(),
-                    D2D1::RectF(px, py, px + iconW, py + ph), ib.Get());
+                    D2D1::RectF(px, py, px+iconW, py+ph), ib.Get());
             }
         }
-        // Message text (strip prefix tag if present)
         if (m_dwriteFactory) {
             std::wstring msg = t.message;
             if (msg.size() > 4 && msg[0] == L'[') {
@@ -673,8 +655,7 @@ void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
                 const float iconW = 32.0f * s;
                 if (tb) rt->DrawText(
                     msg.c_str(), static_cast<UINT32>(msg.size()),
-                    tf.Get(),
-                    D2D1::RectF(px + iconW + 4.0f*s, py, px + pw - 8.0f*s, py + ph),
+                    tf.Get(), D2D1::RectF(px+iconW+4.0f*s, py, px+pw-8.0f*s, py+ph),
                     tb.Get());
             }
         }
