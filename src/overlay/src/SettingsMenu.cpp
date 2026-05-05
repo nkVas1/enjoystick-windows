@@ -13,6 +13,7 @@
 #ifndef M_PI
 static constexpr double M_PI = 3.14159265358979323846;
 #endif
+static constexpr float kPif = static_cast<float>(M_PI);
 
 namespace enjoystick::overlay {
 
@@ -63,6 +64,14 @@ int32_t SettingsMenu::NextInteractiveRow(int32_t from, int32_t dir) const noexce
     return from;
 }
 
+// Called whenever we navigate to a new row
+void SettingsMenu::OnRowChanged(int32_t newRow) {
+    m_prevRow    = m_selectedRow;
+    m_trailAlpha = 1.0f;   // will decay in UpdateAnimation
+    m_selAnimT   = 0.0f;   // will animate toward 1
+    m_selectedRow = newRow;
+}
+
 void SettingsMenu::Open(const Values& current) {
     m_values       = current;
     BuildRows();
@@ -70,15 +79,19 @@ void SettingsMenu::Open(const Values& current) {
     m_state        = State::Opening;
     m_animProgress = 0.0f;
     m_repeatTimer  = 0.0f;
+    m_prevRow      = -1;
+    m_trailAlpha   = 0.0f;
+    m_selAnimT     = 1.0f;
 
-    m_stickNavActive   = false;
-    m_stickNavCooldown = 0.0f;
-    m_stickLxActive    = false;
-    m_stickLxCooldown  = 0.0f;
-    m_dpadVertHeld     = false;
-    m_dpadVertTimer    = 0.0f;
-    m_dpadHorzHeld     = false;
-    m_dpadHorzTimer    = 0.0f;
+    m_stickNavActive    = false;
+    m_stickNavCooldown  = 0.0f;
+    m_stickNavHoldTime  = 0.0f;
+    m_stickLxActive     = false;
+    m_stickLxCooldown   = 0.0f;
+    m_dpadVertHeld      = false;
+    m_dpadVertTimer     = 0.0f;
+    m_dpadHorzHeld      = false;
+    m_dpadHorzTimer     = 0.0f;
 
     m_prevSouth = m_prevEast = m_prevNorth =
     m_prevDUp = m_prevDDown = m_prevDLeft = m_prevDRight = false;
@@ -88,14 +101,15 @@ void SettingsMenu::Close() {
     if (m_state == State::Hidden) return;
     m_state = State::Closing;
 
-    m_stickNavActive   = false;
-    m_stickNavCooldown = 0.0f;
-    m_stickLxActive    = false;
-    m_stickLxCooldown  = 0.0f;
-    m_dpadVertHeld     = false;
-    m_dpadVertTimer    = 0.0f;
-    m_dpadHorzHeld     = false;
-    m_dpadHorzTimer    = 0.0f;
+    m_stickNavActive    = false;
+    m_stickNavCooldown  = 0.0f;
+    m_stickNavHoldTime  = 0.0f;
+    m_stickLxActive     = false;
+    m_stickLxCooldown   = 0.0f;
+    m_dpadVertHeld      = false;
+    m_dpadVertTimer     = 0.0f;
+    m_dpadHorzHeld      = false;
+    m_dpadHorzTimer     = 0.0f;
 }
 
 bool SettingsMenu::IsOpen() const noexcept { return m_state != State::Hidden; }
@@ -104,6 +118,9 @@ void SettingsMenu::ResetToDefaults() {
     m_values = Values{};
     BuildRows();
     m_selectedRow = NextInteractiveRow(-1, 1);
+    m_prevRow     = -1;
+    m_trailAlpha  = 0.0f;
+    m_selAnimT    = 1.0f;
     CommitChange();
 }
 
@@ -123,7 +140,8 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
     if (north && !m_prevNorth) { ResetToDefaults(); goto done; }
 
     // -----------------------------------------------------------------------
-    // DPad vertical — navigate rows
+    // DPad vertical — navigate rows (single step per press; no accel needed
+    // since DPad is already inherently single-fire per press)
     // -----------------------------------------------------------------------
     {
         const bool dVert = dUp || dDown;
@@ -131,14 +149,14 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
             if (!m_dpadVertHeld) {
                 m_dpadVertHeld  = true;
                 m_dpadVertTimer = kSnapFirst;
-                if (dUp)   m_selectedRow = NextInteractiveRow(m_selectedRow, -1);
-                if (dDown) m_selectedRow = NextInteractiveRow(m_selectedRow,  1);
+                const int32_t next = NextInteractiveRow(m_selectedRow, dUp ? -1 : 1);
+                if (next != m_selectedRow) OnRowChanged(next);
             } else {
                 m_dpadVertTimer -= dt;
                 if (m_dpadVertTimer <= 0.0f) {
                     m_dpadVertTimer = kSnapNext;
-                    if (dUp)   m_selectedRow = NextInteractiveRow(m_selectedRow, -1);
-                    if (dDown) m_selectedRow = NextInteractiveRow(m_selectedRow,  1);
+                    const int32_t next = NextInteractiveRow(m_selectedRow, dUp ? -1 : 1);
+                    if (next != m_selectedRow) OnRowChanged(next);
                 }
             }
         } else {
@@ -181,9 +199,7 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
     }
 
     // -----------------------------------------------------------------------
-    // Left Stick — Y navigates rows, X fine-tunes slider.
-    // Mutual exclusion: whichever axis fires first owns the stick until
-    // both axes return inside the deadzone.
+    // Left Stick — Y navigates rows (with velocity accel curve), X fine-tunes
     // -----------------------------------------------------------------------
     {
         const float ly = state.leftStick.y;
@@ -191,26 +207,36 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
         const bool  lyActive = std::abs(ly) > kNavDeadzone;
         const bool  lxActive = std::abs(lx) > 0.25f;
 
-        // Once Y engages, block X until stick centres on both axes
         if (lyActive && !m_stickLxActive) {
             const int dir = (ly > 0.0f) ? 1 : -1;
             if (!m_stickNavActive) {
+                // First step
                 m_stickNavActive   = true;
                 m_stickNavCooldown = kSnapFirst;
-                m_selectedRow = NextInteractiveRow(m_selectedRow, dir);
+                m_stickNavHoldTime = 0.0f;
+                const int32_t next = NextInteractiveRow(m_selectedRow, dir);
+                if (next != m_selectedRow) OnRowChanged(next);
             } else {
+                m_stickNavHoldTime += dt;
                 m_stickNavCooldown -= dt;
                 if (m_stickNavCooldown <= 0.0f) {
-                    m_stickNavCooldown = kSnapNext;
-                    m_selectedRow = NextInteractiveRow(m_selectedRow, dir);
+                    // Velocity blend: t=0 at accelStart → kSnapNext
+                    //                 t=1 at accelStart+accelRange → kSnapFast
+                    const float accelT   = std::max(0.0f,
+                        (m_stickNavHoldTime - kNavAccelStart) / kNavAccelRange);
+                    const float blend    = std::min(1.0f, accelT * accelT); // ease-in quad
+                    const float interval = kSnapNext + (kSnapFast - kSnapNext) * blend;
+                    m_stickNavCooldown = interval;
+                    const int32_t next = NextInteractiveRow(m_selectedRow, dir);
+                    if (next != m_selectedRow) OnRowChanged(next);
                 }
             }
         } else if (!lyActive) {
             m_stickNavActive   = false;
             m_stickNavCooldown = 0.0f;
+            m_stickNavHoldTime = 0.0f;
         }
 
-        // Once X engages (and Y is not driving), fine-tune slider with cooldown
         if (lxActive && !m_stickNavActive) {
             if (!m_stickLxActive) {
                 m_stickLxActive   = true;
@@ -248,6 +274,7 @@ done:
 }
 
 void SettingsMenu::UpdateAnimation(float dt) {
+    // Panel open/close
     const float step = dt * 1000.0f / kAnimMs;
     switch (m_state) {
     case State::Opening:
@@ -259,6 +286,18 @@ void SettingsMenu::UpdateAnimation(float dt) {
         if (m_animProgress <= 0.0f) m_state = State::Hidden;
         break;
     default: break;
+    }
+
+    // Trail alpha decay
+    if (m_trailAlpha > 0.0f) {
+        m_trailAlpha -= dt * 1000.0f / kTrailDecayMs;
+        if (m_trailAlpha < 0.0f) m_trailAlpha = 0.0f;
+    }
+
+    // Selection pop animation (0 → 1 overshoot spring-like)
+    if (m_selAnimT < 1.0f) {
+        m_selAnimT += dt * kSelAnimSpeed;
+        if (m_selAnimT > 1.0f) m_selAnimT = 1.0f;
     }
 }
 
@@ -277,6 +316,17 @@ void SettingsMenu::CommitChange() { if (m_onChange) m_onChange(m_values); }
 // Draw helpers
 // ---------------------------------------------------------------------------
 namespace {
+
+// Bounce overshoot: returns a scale factor >1 near t~0.3 then settles to 1.
+// Used to animate the selection highlight popping in.
+static float SelPopScale(float t) noexcept {
+    // Simple under-damped spring approximation: 1 + A*e^(-k*t)*cos(w*t)
+    if (t >= 1.0f) return 1.0f;
+    const float A = 0.14f;
+    const float k = 10.0f;
+    const float w = 18.0f;
+    return 1.0f + A * std::exp(-k * t) * std::cos(w * t);
+}
 
 static void DrawPanelChrome(
     ID2D1RenderTarget* rt, ID2D1Factory* fac,
@@ -343,10 +393,8 @@ void SettingsMenu::Draw(
     auto* rt     = static_cast<ID2D1RenderTarget*>(renderTargetPtr);
     auto* dwrite = static_cast<IDWriteFactory*>(dwriteFactoryPtr);
 
-    // Lazy-init ellipsis trimming sign (mutable, created once per factory)
     if (dwrite && !m_dwriteEllipsis) {
         dwrite->CreateEllipsisTrimmingSign(
-            // Need any text format as prototype — create a throwaway one
             [&]() -> IDWriteTextFormat* {
                 IDWriteTextFormat* proto = nullptr;
                 dwrite->CreateTextFormat(L"Segoe UI", nullptr,
@@ -411,8 +459,9 @@ void SettingsMenu::Draw(
     float ry = py + padY + accentH;
     for (int32_t i = 0; i < static_cast<int32_t>(m_rows.size()); ++i) {
         const auto& row = m_rows[static_cast<size_t>(i)];
-        const bool  sel = (i == m_selectedRow);
-        const float rh  = (row.type == RowType::SectionHeader) ? ph_hdr : ph_row;
+        const bool  sel  = (i == m_selectedRow);
+        const bool  prev = (i == m_prevRow);  // was selected just before us
+        const float rh   = (row.type == RowType::SectionHeader) ? ph_hdr : ph_row;
 
         if (row.type == RowType::SectionHeader) {
             if (dwrite && row.label) {
@@ -439,11 +488,42 @@ void SettingsMenu::Draw(
                     b.Get(), 0.8f);
             }
         } else {
+            // -----------------------------------------------------------------
+            // Trail highlight: draw behind selected highlight, fading out
+            // -----------------------------------------------------------------
+            if (prev && m_trailAlpha > 0.0f) {
+                // Ease the trail alpha for smoother feel
+                const float ta = m_trailAlpha * m_trailAlpha * ease; // ease-in decay
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> tb;
+                rt->CreateSolidColorBrush(Tok::GoldMid(0.55f * ta), tb.GetAddressOf());
+                if (tb) {
+                    D2D1_ROUNDED_RECT rr{
+                        D2D1::RectF(px+8.0f*s, ry+1.0f*s, px+pw-8.0f*s, ry+rh-1.0f*s),
+                        7.0f*s, 7.0f*s };
+                    rt->FillRoundedRectangle(rr, tb.Get());
+                }
+                // Gold border that quickly fades
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> gb;
+                rt->CreateSolidColorBrush(Tok::GoldHi(0.65f * ta), gb.GetAddressOf());
+                if (gb) {
+                    D2D1_ROUNDED_RECT rr{
+                        D2D1::RectF(px+8.0f*s, ry+1.0f*s, px+pw-8.0f*s, ry+rh-1.0f*s),
+                        7.0f*s, 7.0f*s };
+                    rt->DrawRoundedRectangle(rr, gb.Get(), 1.2f*s);
+                }
+            }
+
             if (sel) {
+                // Pop-scale driven by m_selAnimT
+                const float popSc  = SelPopScale(m_selAnimT);
+                const float inset  = (1.0f - popSc) * ph_row * 0.5f; // shrink symmetrically when >1
+                const float selTop = ry + 1.0f*s + inset;
+                const float selBot = ry + rh - 1.0f*s - inset;
+
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                 rt->CreateSolidColorBrush(Tok::SurfaceRaised(0.80f * ease), b.GetAddressOf());
                 if (b) { D2D1_ROUNDED_RECT rr{
-                    D2D1::RectF(px+8.0f*s, ry+1.0f*s, px+pw-8.0f*s, ry+rh-1.0f*s),
+                    D2D1::RectF(px+8.0f*s, selTop, px+pw-8.0f*s, selBot),
                     7.0f*s, 7.0f*s};
                     rt->FillRoundedRectangle(rr, b.Get()); }
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> ab;
@@ -616,6 +696,7 @@ void SettingsMenu::Draw(
             L"\u25C4\u25BA  Adjust value",
             Tok::GoldMid(0.55f * ease), Tok::GoldBright(0.95f * ease), fnt);
     }
+    (void)kPif;
 }
 
 } // namespace enjoystick::overlay

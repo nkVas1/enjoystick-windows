@@ -62,6 +62,8 @@ private:
     void AdjustSelected(float direction, bool repeat);
     void CommitChange();
     void UpdateAnimation(float dt);
+    // Called whenever m_selectedRow changes to update trail state
+    void OnRowChanged(int32_t newRow);
 
     OnChangedCallback m_onChange;
     Values m_values;
@@ -75,24 +77,30 @@ private:
     // -----------------------------------------------------------------------
     // Navigation timing (all in seconds)
     //
-    // kSnapFirst: hold duration before auto-repeat begins.
-    //   Must be long enough that a light single flick moves exactly one row.
-    // kSnapNext:  auto-repeat step interval.
-    // kNavDeadzone: stick deflection required to start navigating.
+    // kSnapFirst     : hold duration before auto-repeat begins.
+    // kSnapNext      : base auto-repeat interval (springy phase).
+    // kSnapFast      : minimum repeat interval after kNavAccelStart of hold.
+    // kNavAccelStart : seconds of hold before interval starts shrinking.
+    // kNavAccelRange : range over which it blends to kSnapFast.
+    // kNavDeadzone   : stick deflection required to start navigating.
     // -----------------------------------------------------------------------
-    static constexpr float kSnapFirst  = 0.55f;  // bumped 0.38->0.55
-    static constexpr float kSnapNext   = 0.16f;  // bumped 0.14->0.16
-    static constexpr float kNavDeadzone= 0.55f;
-    static constexpr float kAnimMs     = 220.0f;
+    static constexpr float kSnapFirst      = 0.62f;
+    static constexpr float kSnapNext       = 0.20f;
+    static constexpr float kSnapFast       = 0.055f;
+    static constexpr float kNavAccelStart  = 1.0f;
+    static constexpr float kNavAccelRange  = 0.80f;
+    static constexpr float kNavDeadzone    = 0.55f;
+    static constexpr float kAnimMs         = 220.0f;
 
-    bool  m_stickNavActive   = false;
-    float m_stickNavCooldown = 0.0f;
-    bool  m_stickLxActive    = false;
-    float m_stickLxCooldown  = 0.0f;
-    bool  m_dpadVertHeld     = false;
-    float m_dpadVertTimer    = 0.0f;
-    bool  m_dpadHorzHeld     = false;
-    float m_dpadHorzTimer    = 0.0f;
+    bool  m_stickNavActive    = false;
+    float m_stickNavCooldown  = 0.0f;
+    float m_stickNavHoldTime  = 0.0f;   // accumulated hold time for accel
+    bool  m_stickLxActive     = false;
+    float m_stickLxCooldown   = 0.0f;
+    bool  m_dpadVertHeld      = false;
+    float m_dpadVertTimer     = 0.0f;
+    bool  m_dpadHorzHeld      = false;
+    float m_dpadHorzTimer     = 0.0f;
 
     bool m_prevSouth = false, m_prevEast  = false, m_prevNorth = false;
     bool m_prevDUp   = false, m_prevDDown = false;
@@ -101,17 +109,19 @@ private:
     // -----------------------------------------------------------------------
     // Trail / transition animation state.
     //
-    // m_prevRow:    the row we were on before the last navigation step.
-    // m_trailAlpha: 0..1, decays to 0 over kTrailDecayMs after each hop.
-    //   Used to draw a fading semi-transparent highlight on the previous
+    // m_prevRow    : the row we were on before the last navigation step.
+    // m_trailAlpha : 0..1, decays to 0 over kTrailDecayMs after each hop.
+    //   Used to draw a fading semi-transparent gold highlight on the previous
     //   row, giving the 'items stick to each other briefly' visual.
-    // m_selAnimT:   0..1 spring-like progress since last hop, drives the
+    // m_selAnimT   : 0..1 spring-like progress since last hop, drives the
     //   scale-in pop of the new selection highlight.
+    //   It starts at 0 on each hop and advances toward 1 at kSelAnimSpeed.
     // -----------------------------------------------------------------------
-    static constexpr float kTrailDecayMs = 160.0f;
+    static constexpr float kTrailDecayMs  = 160.0f;
+    static constexpr float kSelAnimSpeed  = 8.0f;  // 1/s  (reaches ~1 in ~0.18 s)
     mutable int32_t m_prevRow    = -1;
     mutable float   m_trailAlpha = 0.0f;
-    mutable float   m_selAnimT   = 1.0f;  // 1=settled, <1=animating
+    mutable float   m_selAnimT   = 1.0f;  // 1 = settled, <1 = animating
 
     // DWrite ellipsis for text overflow trimming (mutable = lazy-init in Draw)
     mutable Microsoft::WRL::ComPtr<IDWriteInlineObject> m_dwriteEllipsis;
