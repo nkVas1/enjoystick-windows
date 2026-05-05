@@ -48,8 +48,6 @@ static constexpr float kAccentH_base = 3.0f;
 // ---------------------------------------------------------------------------
 void VirtualKeyboard::BuildLayout() {
     m_rows.clear();
-    // Each Key: { latin-lower, latin-upper, sym, cyr-lower, cyr-upper }
-    // widthMul, isSpecial come after.
     m_rows.push_back({
         {L"1",L"!",L"\u00B1",L"1",L"!"},
         {L"2",L"@",L"\u00B2",L"2",L"@"},
@@ -181,6 +179,7 @@ void VirtualKeyboard::Open(const std::wstring& seed) {
     m_glowPhase     = 0.0f;
     m_state         = State::Opening;
     m_stickCooldown = 0.0f; m_stickActive = false;
+    m_stickHoldTime = 0.0f;
     m_dpadHeld      = false; m_dpadTimer = 0.0f;
     m_dpadDirRow    = 0; m_dpadDirCol = 0;
     m_typeDebounce  = 0.0f;
@@ -194,16 +193,13 @@ void VirtualKeyboard::Open(const std::wstring& seed) {
     m_panelSpring.Snap(0.0f);
     m_panelSpring.SetTarget(1.0f);
 
-    // Main cursor spring: responsive + bouncy
     m_cursorSpringX.stiffness = 480.0f; m_cursorSpringX.damping = 26.0f;
     m_cursorSpringY.stiffness = 480.0f; m_cursorSpringY.damping = 26.0f;
     m_cursorScaleSpring.stiffness = 600.0f; m_cursorScaleSpring.damping = 28.0f;
     m_cursorScaleSpring.Snap(1.0f);
 
-    // Trail (ghost) springs: low stiffness = sluggish, creates lag
     m_trailSpringX.stiffness = 80.0f;  m_trailSpringX.damping = 12.0f;
     m_trailSpringY.stiffness = 80.0f;  m_trailSpringY.damping = 12.0f;
-    // Will be snapped to cursor position on first Draw frame
 }
 void VirtualKeyboard::Close() {
     if (m_state == State::Hidden || m_state == State::Closing) return;
@@ -265,7 +261,6 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     m_trailSpringY.Step(dt);
     m_cursorScaleSpring.Step(dt);
 
-    // Tick debounce timers
     auto tickMs = [&](float& v) {
         if (v > 0.0f) { v -= dtMs; if (v < 0.0f) v = 0.0f; }
     };
@@ -288,7 +283,9 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     if (east  && !m_prevEast)  { Close(); goto done; }
     if (north && !m_prevNorth) { if (m_onSubmit) m_onSubmit(m_text); Close(); goto done; }
 
-    // Backspace — West (X), debounced
+    // -------------------------------------------------------------------------
+    // Backspace — West (X) direct press, debounced with westDebounce
+    // -------------------------------------------------------------------------
     if (west && !m_prevWest && m_westDebounce <= 0.0f) {
         if (!m_text.empty()) m_text.pop_back();
         SendBackspaceDirect();
@@ -308,15 +305,31 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     }
     if (rb && !m_prevRB) { m_layer = Layer::Alpha; goto done; }
 
-    // Type key with debounce
-    if (south && !m_prevSouth && m_typeDebounce <= 0.0f) {
+    // -------------------------------------------------------------------------
+    // Type key — South press
+    // For the ⌫ special key, use westDebounce (longer) to prevent multi-delete.
+    // For all other keys, use typeDebounce.
+    // -------------------------------------------------------------------------
+    if (south && !m_prevSouth) {
         if (const Key* k = CurrentKey()) {
-            TypeKey(*k);
-            m_typeDebounce = kTypeDebounceMs;
-            // Pop scale animation (type press)
-            m_cursorScaleSpring.value    = 1.12f;
-            m_cursorScaleSpring.velocity = 0.0f;
-            m_cursorScaleSpring.SetTarget(1.0f);
+            const bool isBackspace = k->isSpecial && (k->label == L"\u232B");
+            if (isBackspace) {
+                // Use the heavier westDebounce guard
+                if (m_westDebounce <= 0.0f) {
+                    TypeKey(*k);
+                    m_westDebounce = kWestDebounceMs;
+                    // Pop scale animation
+                    m_cursorScaleSpring.value    = 1.12f;
+                    m_cursorScaleSpring.velocity = 0.0f;
+                    m_cursorScaleSpring.SetTarget(1.0f);
+                }
+            } else if (m_typeDebounce <= 0.0f) {
+                TypeKey(*k);
+                m_typeDebounce = kTypeDebounceMs;
+                m_cursorScaleSpring.value    = 1.12f;
+                m_cursorScaleSpring.velocity = 0.0f;
+                m_cursorScaleSpring.SetTarget(1.0f);
+            }
         }
         goto done;
     }
@@ -349,7 +362,7 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     }
 
     // -------------------------------------------------------------------------
-    // Left-stick navigation
+    // Left-stick navigation  (slow first → springy → fast on long hold)
     // -------------------------------------------------------------------------
     {
         const float lx = state.leftStick.x;
@@ -359,19 +372,33 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
         const bool  hy = std::abs(ly) > dz;
         if (hx || hy) {
             if (!m_stickActive) {
+                // First step
                 m_stickActive   = true;
+                m_stickHoldTime = 0.0f;
                 m_stickCooldown = kStickRepeatFirst;
                 if (hx) NavigateTo(m_row, m_col + (lx > 0 ? 1 : -1));
                 else    NavigateTo(m_row + (ly > 0 ? 1 : -1), m_col);
             } else {
+                m_stickHoldTime += dt;
                 m_stickCooldown -= dt;
                 if (m_stickCooldown <= 0.0f) {
-                    m_stickCooldown = kStickRepeatNext;
+                    // Compute blended repeat interval:
+                    // t=0 at accelStart → kStickRepeatNext
+                    // t=1 at accelStart+accelRange → kStickRepeatFast
+                    const float accelT = std::max(0.0f,
+                        (m_stickHoldTime - kStickRepeatAccelStart) / kStickRepeatAccelRange);
+                    const float blend  = std::min(1.0f, accelT * accelT); // ease-in quad
+                    const float interval = kStickRepeatNext + (kStickRepeatFast - kStickRepeatNext) * blend;
+                    m_stickCooldown = interval;
                     if (hx) NavigateTo(m_row, m_col + (lx > 0 ? 1 : -1));
                     else    NavigateTo(m_row + (ly > 0 ? 1 : -1), m_col);
                 }
             }
-        } else { m_stickActive = false; m_stickCooldown = 0.0f; }
+        } else {
+            m_stickActive   = false;
+            m_stickCooldown = 0.0f;
+            m_stickHoldTime = 0.0f;
+        }
     }
 
 done:
@@ -381,27 +408,27 @@ done:
     m_prevLS    = ls;
 }
 
-void VirtualKeyboard::TypeKey(const Key& k) {
+bool VirtualKeyboard::TypeKey(const Key& k) {
     if (k.isSpecial) {
         if (k.label == L"\u232B") {
             if (!m_text.empty()) m_text.pop_back();
             SendBackspaceDirect();
-            return;
+            return true;  // caller should use westDebounce
         }
         if (k.label == L"\u23CE") {
             m_text += L'\n';
             SendCharDirect(L'\n');
             if (m_onChar) m_onChar(L'\n');
-            return;
+            return false;
         }
-        if (k.label == L"\u21E7") { m_shift = !m_shift; return; }
+        if (k.label == L"\u21E7") { m_shift = !m_shift; return false; }
         if (k.label == L"\u2423") {
             m_text += L' ';
             SendCharDirect(L' ');
             if (m_onChar) m_onChar(L' ');
-            return;
+            return false;
         }
-        return;
+        return false;
     }
     const std::wstring d = KeyDisplay(k);
     if (d.size() == 1) {
@@ -410,6 +437,7 @@ void VirtualKeyboard::TypeKey(const Key& k) {
         if (m_onChar) m_onChar(d[0]);
     }
     if (m_shift && !m_caps) m_shift = false;
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -602,7 +630,6 @@ void VirtualKeyboard::Draw(
             if (b) rt->DrawText(display.c_str(), static_cast<UINT32>(display.size()),
                 fmt.Get(), D2D1::RectF(tbX0+12.0f*s, tbY, tbX1-12.0f*s, tbY+kTbH), b.Get());
         }
-        // Blinking cursor
         { const float blink  = 0.5f + 0.5f * std::sin(m_glowPhase * 2.0f);
           const float tw = MeasureTextWidth(dwrite, display.c_str(),
               static_cast<UINT32>(display.size()),
@@ -639,7 +666,6 @@ void VirtualKeyboard::Draw(
             L"\u25C6  Cancel",
             Tok::SurfaceRaised(0.90f * ease), Tok::ChromeMid(0.80f * ease), fnt);
         hx += 88.0f*s + chipGap;
-        // Layer badge
         {
             const wchar_t* badge = GetLayerName();
             const bool isCyr  = (m_layer == Layer::Cyr);
@@ -666,10 +692,8 @@ void VirtualKeyboard::Draw(
     const Vec2 selCentre = KeyCentrePixel(m_row, m_col, s, screenW, screenH);
     m_cursorSpringX.target = selCentre.x;
     m_cursorSpringY.target = selCentre.y;
-    // Trail spring chases cursor spring
     m_trailSpringX.target = m_cursorSpringX.value;
     m_trailSpringY.target = m_cursorSpringY.value;
-    // Snap cursor on first frame
     if (m_cursorSpringX.value == 0.0f && m_cursorSpringY.value == 0.0f) {
         m_cursorSpringX.Snap(selCentre.x);
         m_cursorSpringY.Snap(selCentre.y);
@@ -691,13 +715,9 @@ void VirtualKeyboard::Draw(
         const float dist = std::sqrt(dx*dx + dy*dy);
 
         if (dist > 4.0f * s) {
-            // Trail alpha fades with distance: strong near trail end, zero near cursor
-            // Cap at reasonable amount so it doesn’t look too garish
             const float maxDist = kKeyW * 3.0f;
             const float trailAlpha = std::min(1.0f, dist / maxDist) * 0.22f * ease;
 
-            // Draw a stretched rounded rect along the trail vector
-            // We compute a bounding box that covers both points with some padding
             const float minX = std::min(tx, cx2) - kKeyW * 0.38f;
             const float maxX = std::max(tx, cx2) + kKeyW * 0.38f;
             const float minY = std::min(ty, cy2) - kKeyH * 0.38f;
@@ -711,7 +731,6 @@ void VirtualKeyboard::Draw(
                     kKeyH * 0.5f, kKeyH * 0.5f };
                 rt->FillRoundedRectangle(rr, tb.Get());
             }
-            // Inner stronger glow spot at trail origin
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> gb;
             rt->CreateSolidColorBrush(Tok::GoldShadow(trailAlpha * 0.55f), gb.GetAddressOf());
             if (gb) rt->FillEllipse(
@@ -740,14 +759,12 @@ void VirtualKeyboard::Draw(
             const float sRy = kCy - skh * 0.5f;
             const float cr  = kCorner * sc2;
 
-            // Key body
             { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
               rt->CreateSolidColorBrush(
                   sel ? Tok::SurfaceRaised(0.97f * ease) : Tok::SurfaceSunken(0.90f * ease),
                   b.GetAddressOf());
               if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh), cr, cr};
                        rt->FillRoundedRectangle(rr, b.Get()); } }
-            // Inner bevel
             { const float ins = 2.4f * s;
               Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
               rt->CreateSolidColorBrush(
@@ -757,7 +774,6 @@ void VirtualKeyboard::Draw(
                   D2D1::RectF(sRx+ins, sRy+ins, sRx+skw-ins, sRy+skh-ins*1.4f),
                   std::max(cr-ins,0.0f), std::max(cr-ins,0.0f)};
                   rt->FillRoundedRectangle(rr, b.Get()); } }
-            // Focus ring
             if (sel) {
                 { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                   rt->CreateSolidColorBrush(Tok::GoldHi(0.90f * ease), b.GetAddressOf());
@@ -775,7 +791,6 @@ void VirtualKeyboard::Draw(
                 if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh), cr, cr};
                          rt->DrawRoundedRectangle(rr, b.Get(), 0.7f); }
             }
-            // Inner shadow
             { const float bi = 1.0f;
               Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
               rt->CreateSolidColorBrush(

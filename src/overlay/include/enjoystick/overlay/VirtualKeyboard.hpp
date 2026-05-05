@@ -89,11 +89,22 @@ private:
     int32_t m_row = 0;
     int32_t m_col = 0;
 
-    // Slow first step, then springy auto-repeat.
-    float  m_stickCooldown = 0.0f;
-    static constexpr float kStickRepeatFirst = 0.82f;
-    static constexpr float kStickRepeatNext  = 0.14f;
-    static constexpr float kSnapDeadzone     = 0.74f;
+    // -------------------------------------------------------------------------
+    // Left-stick navigation timing
+    //
+    // Phase 1 — first step: kStickRepeatFirst (very long — single flick = 1 move)
+    // Phase 2 — slow repeat: kStickRepeatNext  (springy feel)
+    // Phase 3 — fast repeat: kStickRepeatFast  (only after kStickRepeatAccelStart
+    //            seconds of continuous hold; blends exponentially)
+    // -------------------------------------------------------------------------
+    float  m_stickCooldown    = 0.0f;
+    float  m_stickHoldTime    = 0.0f;  // accumulated hold duration for accel
+    static constexpr float kStickRepeatFirst     = 0.82f;
+    static constexpr float kStickRepeatNext      = 0.18f;
+    static constexpr float kStickRepeatFast      = 0.055f;
+    static constexpr float kStickRepeatAccelStart= 1.10f;  // hold this long → start speeding up
+    static constexpr float kStickRepeatAccelRange= 0.80f;  // over this range → reach kStickRepeatFast
+    static constexpr float kSnapDeadzone         = 0.74f;
     bool   m_stickActive = false;
 
     static constexpr float kDPadFirst = 0.52f;
@@ -103,6 +114,13 @@ private:
     int32_t m_dpadDirRow  = 0;
     int32_t m_dpadDirCol  = 0;
 
+    // -------------------------------------------------------------------------
+    // Debounce timers (milliseconds, count down to 0)
+    //
+    // kTypeDebounceMs  – South on normal key
+    // kWestDebounceMs  – West (X) direct press  AND  South on the ⌫ key
+    // kLbDebounceMs    – LB layer-switch
+    // -------------------------------------------------------------------------
     static constexpr float kTypeDebounceMs  = 180.0f;
     static constexpr float kWestDebounceMs  = 320.0f;
     static constexpr float kLbDebounceMs    = 320.0f;
@@ -138,7 +156,8 @@ private:
 
     [[nodiscard]] const Key* CurrentKey() const noexcept;
     [[nodiscard]] std::wstring KeyDisplay(const Key& k) const;
-    void TypeKey(const Key& k);
+    // Returns true if the key was a backspace action (caller should use westDebounce)
+    bool TypeKey(const Key& k);
     void NavigateTo(int32_t row, int32_t col);
     [[nodiscard]] int32_t RowKeyCount(int32_t row) const noexcept;
     [[nodiscard]] Vec2    KeyCentrePixel(int32_t row, int32_t col,
