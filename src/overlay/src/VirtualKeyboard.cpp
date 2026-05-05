@@ -22,20 +22,20 @@ static constexpr float kPi = static_cast<float>(M_PI);
 namespace enjoystick::overlay {
 
 // ---------------------------------------------------------------------------
-// Layout constants (DPI-independent base values at 96 dpi)
+// Layout constants — larger keys for far-field readability
 // ---------------------------------------------------------------------------
-static constexpr float kKeyW_base   = 68.0f;
-static constexpr float kKeyH_base   = 60.0f;
-static constexpr float kGap_base    =  6.0f;
-static constexpr float kCorner_base =  9.0f;
+static constexpr float kKeyW_base   = 80.0f;  // was 68
+static constexpr float kKeyH_base   = 68.0f;  // was 60
+static constexpr float kGap_base    =  7.0f;  // was 6
+static constexpr float kCorner_base = 11.0f;  // was 9
 static constexpr float kPadX_base   = 24.0f;
 static constexpr float kPadY_base   = 18.0f;
 static constexpr float kTbH_base    = 52.0f;
 static constexpr float kHintH_base  = 26.0f;
-static constexpr float kFKey_base   = 19.0f;
-static constexpr float kFSpec_base  = 17.0f;
+static constexpr float kFKey_base   = 21.0f;  // was 19
+static constexpr float kFSpec_base  = 20.0f;  // was 17
 static constexpr float kFText_base  = 17.0f;
-static constexpr float kFHint_base  = 12.0f;
+static constexpr float kFHint_base  = 13.5f;  // was 12
 static constexpr float kFBadge_base = 11.0f;
 static constexpr float kAccentH_base = 3.0f;
 
@@ -44,7 +44,6 @@ static constexpr float kAccentH_base = 3.0f;
 // ---------------------------------------------------------------------------
 void VirtualKeyboard::BuildLayout() {
     m_rows.clear();
-    // Row 0 — digits + backspace
     m_rows.push_back({
         {L"1",L"!",L"\u00B1"}, {L"2",L"@",L"\u00B2"}, {L"3",L"#",L"\u00B3"},
         {L"4",L"$",L"\u00A3"}, {L"5",L"%",L"\u20AC"}, {L"6",L"^",L"\u00B6"},
@@ -52,21 +51,18 @@ void VirtualKeyboard::BuildLayout() {
         {L"0",L")",L"\u2019"},
         {L"\u232B",L"\u232B",L"\u232B", 1.5f, true},
     });
-    // Row 1 — QWERTY
     m_rows.push_back({
         {L"q",L"Q",L"-"}, {L"w",L"W",L"_"}, {L"e",L"E",L"="},
         {L"r",L"R",L"+"}, {L"t",L"T",L"["}, {L"y",L"Y",L"]"},
         {L"u",L"U",L"{"}, {L"i",L"I",L"}"}, {L"o",L"O",L"\\\\"},
         {L"p",L"P",L"|"},
     });
-    // Row 2 — ASDF
     m_rows.push_back({
         {L"a",L"A",L"~"}, {L"s",L"S",L"`"}, {L"d",L"D",L"<"},
         {L"f",L"F",L">"}, {L"g",L"G",L","}, {L"h",L"H",L"."},
         {L"j",L"J",L"\u2026"}, {L"k",L"K",L"\u2014"}, {L"l",L"L",L":"},
         {L"\u23CE",L"\u23CE",L"\u23CE", 1.5f, true},
     });
-    // Row 3 — ZXCV + space
     m_rows.push_back({
         {L"\u21E7",L"\u21E7",L"\u21E7", 1.5f, true},
         {L"z",L"Z",L"/"}, {L"x",L"X",L"?"}, {L"c",L"C",L"\'"},
@@ -144,12 +140,14 @@ void VirtualKeyboard::Open(const std::wstring& seed) {
     if (m_state == State::Visible || m_state == State::Opening) return;
     BuildLayout();
     m_text          = seed;
-    m_row           = 3; m_col = 9;  // space key
+    m_row           = 3; m_col = 9;
     m_layer         = Layer::Alpha;
     m_shift         = false; m_caps = false;
     m_glowPhase     = 0.0f;
     m_state         = State::Opening;
     m_stickCooldown = 0.0f; m_stickActive = false;
+    m_dpadHeld      = false; m_dpadTimer = 0.0f;
+    m_dpadDirRow    = 0; m_dpadDirCol = 0;
     m_prevSouth = m_prevEast = m_prevWest = m_prevNorth =
     m_prevLB    = m_prevRB  = m_prevLS   = false;
 
@@ -204,6 +202,10 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     const bool lb    = HasButton(state.buttons, Button::LB);
     const bool rb    = HasButton(state.buttons, Button::RB);
     const bool ls    = HasButton(state.buttons, Button::LS);
+    const bool dUp   = HasButton(state.buttons, Button::DPadUp);
+    const bool dDown = HasButton(state.buttons, Button::DPadDown);
+    const bool dLeft = HasButton(state.buttons, Button::DPadLeft);
+    const bool dRight= HasButton(state.buttons, Button::DPadRight);
 
     if (east  && !m_prevEast)  { Close(); goto done; }
     if (north && !m_prevNorth) { if (m_onSubmit) m_onSubmit(m_text); Close(); goto done; }
@@ -214,7 +216,6 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     if (south && !m_prevSouth) {
         if (const Key* k = CurrentKey()) {
             TypeKey(*k);
-            // Trigger scale pop animation on key press
             m_cursorScaleSpring.value    = 1.18f;
             m_cursorScaleSpring.velocity = 0.0f;
             m_cursorScaleSpring.SetTarget(1.0f);
@@ -222,12 +223,39 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
         goto done;
     }
 
+    // -------------------------------------------------------------------------
+    // DPad navigation — single-step on press, slow auto-repeat
+    // -------------------------------------------------------------------------
+    {
+        const int32_t dr = dDown ? 1 : (dUp   ? -1 : 0);
+        const int32_t dc = dRight? 1 : (dLeft ? -1 : 0);
+        const bool dAny  = (dr != 0 || dc != 0);
+        if (dAny) {
+            if (!m_dpadHeld) {
+                m_dpadHeld   = true;
+                m_dpadTimer  = kDPadFirst;
+                m_dpadDirRow = dr;
+                m_dpadDirCol = dc;
+                NavigateTo(m_row + dr, m_col + dc);
+            } else {
+                m_dpadTimer -= dt;
+                if (m_dpadTimer <= 0.0f) {
+                    m_dpadTimer = kDPadNext;
+                    NavigateTo(m_row + m_dpadDirRow, m_col + m_dpadDirCol);
+                }
+            }
+        } else {
+            m_dpadHeld = false;
+            m_dpadTimer = 0.0f;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Left-stick navigation — magnetic snap
+    // -------------------------------------------------------------------------
     {
         const float lx = state.leftStick.x;
         const float ly = state.leftStick.y;
-        // kSnapDeadzone: high threshold for deliberate magnetic snap.
-        // At 0.50 the stick must move clearly off-centre to jump to the next key,
-        // giving a satisfying "lock onto key" feel when released back to centre.
         const float dz = kSnapDeadzone;
         const bool  hx = std::abs(lx) > dz;
         const bool  hy = std::abs(ly) > dz;
@@ -347,8 +375,7 @@ static void DrawHintChip(
 } // anon
 
 // ---------------------------------------------------------------------------
-// Draw  — Futurist Glamour v6
-// Selection indicator: two thin elegant rings instead of heavy glow blob.
+// Draw
 // ---------------------------------------------------------------------------
 void VirtualKeyboard::Draw(
     void*  renderTargetPtr,
@@ -393,20 +420,19 @@ void VirtualKeyboard::Draw(
                         + static_cast<float>(m_rows.size()) * (kKeyH + kGap) - kGap
                         + kHintH + kPadY;
 
-    const float targetY = screenH - kPanelH - 20.0f * s;
-    const float panelY  = targetY + (1.0f - panelVal) * (screenH - targetY + 20.0f * s);
+    const float targetY = screenH - kPanelH - 28.0f * s;  // was 20
+    const float panelY  = targetY + (1.0f - panelVal) * (screenH - targetY + 28.0f * s);
     const float panelX  = (screenW - kPanelW) * 0.5f;
     const float panelR  = 14.0f * s;
 
-    // ---- Panel fill ----------------------------------------------------------
+    // ---- Panel fill
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::SurfaceBase(0.96f * ease), b.GetAddressOf());
         if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX, panelY, panelX+kPanelW, panelY+kPanelH), panelR, panelR};
                  rt->FillRoundedRectangle(rr, b.Get()); }
     }
-
-    // ---- Gold accent bar at top (rounded cap, then re-mask) ------------------
+    // ---- Gold accent bar at top
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldMid(0.88f * ease), b.GetAddressOf());
@@ -425,8 +451,7 @@ void VirtualKeyboard::Draw(
         if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX, panelY + kAccH, panelX+kPanelW, panelY+kPanelH), panelR, panelR};
                  rt->FillRoundedRectangle(rr, b.Get()); }
     }
-
-    // ---- Panel border --------------------------------------------------------
+    // ---- Panel border
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldShadow(0.35f * ease), b.GetAddressOf());
@@ -434,7 +459,7 @@ void VirtualKeyboard::Draw(
                  rt->DrawRoundedRectangle(rr, b.Get(), 0.9f); }
     }
 
-    // ---- Text bar ------------------------------------------------------------
+    // ---- Text bar
     const float tbX0 = panelX + kPadX;
     const float tbX1 = panelX + kPanelW - kPadX;
     const float tbY  = panelY + kAccH + kPadY;
@@ -480,7 +505,7 @@ void VirtualKeyboard::Draw(
             b.Get(), 1.8f * s);
     }
 
-    // ---- Hint bar ------------------------------------------------------------
+    // ---- Hint bar
     {
         const float hy  = panelY + kPanelH - kHintH - kPadY * 0.55f;
         const float hcy = hy + kHintH * 0.5f;
@@ -512,7 +537,7 @@ void VirtualKeyboard::Draw(
         }
     }
 
-    // ---- Keys ---------------------------------------------------------------
+    // ---- Keys
     const float keysTop     = panelY + kAccH + kPadY + kTbH + 8.0f * s;
     const float glowBreathe = 0.5f + 0.5f * std::sin(m_glowPhase);
 
@@ -525,38 +550,9 @@ void VirtualKeyboard::Draw(
         m_cursorSpringY.Snap(selCentre.y);
     }
 
-    const float cursorGlowX = m_cursorSpringX.value;
-    const float cursorGlowY = m_cursorSpringY.value + panelY;
-    const float scl         = m_cursorScaleSpring.value;
+    const float scl = m_cursorScaleSpring.value;
 
-    // ---- Selection indicator: two thin rings (replaces heavy glow blob) -----
-    // The key's half-extents, scaled by the press spring.
-    const float keyWidthMul = (m_col >= 0 && m_col < RowKeyCount(m_row))
-        ? m_rows[static_cast<size_t>(m_row)][static_cast<size_t>(m_col)].widthMul : 1.0f;
-    const float gW = kKeyW * 0.52f * scl * keyWidthMul;
-    const float gH = kKeyH * 0.52f * scl;
-
-    // Outer breath ring — soft gold, pulses with glowBreathe
-    {
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g;
-        rt->CreateSolidColorBrush(
-            Tok::GoldGlow((0.20f + 0.08f * glowBreathe) * ease), g.GetAddressOf());
-        if (g) rt->DrawEllipse(
-            D2D1::Ellipse(D2D1::Point2F(cursorGlowX, cursorGlowY),
-                          gW * 1.10f, gH * 1.10f),
-            g.Get(), 1.8f * s);
-    }
-    // Inner crisp ring — steady gold, slightly inside key
-    {
-        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> g;
-        rt->CreateSolidColorBrush(Tok::GoldGlow(0.09f * ease), g.GetAddressOf());
-        if (g) rt->DrawEllipse(
-            D2D1::Ellipse(D2D1::Point2F(cursorGlowX, cursorGlowY),
-                          gW * 0.70f, gH * 0.70f),
-            g.Get(), 0.9f * s);
-    }
-
-    // ---- Per-key rendering --------------------------------------------------
+    // ---- Per-key rendering
     for (int32_t ri = 0; ri < static_cast<int32_t>(m_rows.size()); ++ri) {
         const auto& row = m_rows[static_cast<size_t>(ri)];
         const float ry  = keysTop + static_cast<float>(ri) * (kKeyH + kGap);
@@ -571,13 +567,14 @@ void VirtualKeyboard::Draw(
             const bool  sel = (ri == m_row && ci == m_col);
             const float kCx = rx + kw * 0.5f;
             const float kCy = ry + kKeyH * 0.5f;
-            const float sc2 = sel ? m_cursorScaleSpring.value : 1.0f;
+            const float sc2 = sel ? scl : 1.0f;
             const float skw = kw    * sc2;
             const float skh = kKeyH * sc2;
             const float sRx = kCx - skw * 0.5f;
             const float sRy = kCy - skh * 0.5f;
             const float cr  = kCorner * sc2;
 
+            // Key body
             { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
               rt->CreateSolidColorBrush(
                   sel ? Tok::SurfaceRaised(0.97f * ease) : Tok::SurfaceSunken(0.90f * ease),
@@ -585,6 +582,7 @@ void VirtualKeyboard::Draw(
               if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh), cr, cr};
                        rt->FillRoundedRectangle(rr, b.Get()); } }
 
+            // Inner bevel
             { const float ins = 2.4f * s;
               Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
               rt->CreateSolidColorBrush(
@@ -595,14 +593,15 @@ void VirtualKeyboard::Draw(
                   std::max(cr-ins, 0.0f), std::max(cr-ins, 0.0f) };
                   rt->FillRoundedRectangle(rr, b.Get()); } }
 
-            // Key border — selected: crisp gold; unselected: dim
+            // Key border — selected: crisp thick gold rect; unselected: dim thin
             { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
               rt->CreateSolidColorBrush(
-                  sel ? Tok::GoldHi(0.88f * ease) : Tok::InkLine(0.80f * ease),
+                  sel ? Tok::GoldHi((0.82f + 0.10f * glowBreathe) * ease) : Tok::InkLine(0.80f * ease),
                   b.GetAddressOf());
               if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh), cr, cr};
-                       rt->DrawRoundedRectangle(rr, b.Get(), sel ? 1.4f : 0.75f); } }
+                       rt->DrawRoundedRectangle(rr, b.Get(), sel ? 2.0f : 0.75f); } }
 
+            // Inner shadow ring
             { const float bi = 1.0f;
               Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
               rt->CreateSolidColorBrush(

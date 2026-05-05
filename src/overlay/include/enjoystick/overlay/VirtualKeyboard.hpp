@@ -13,21 +13,21 @@ namespace enjoystick::overlay {
 // VirtualKeyboard  (Steam-quality UX target)
 //
 // Controls:
-//   Left stick       - move cursor; magnetically snaps to keys
-//   South (A/Cross)  - type highlighted key
-//   West  (X/Square) - backspace
-//   East  (B/Circle) - close / cancel
-//   North (Y/Tri)    - confirm / submit text
-//   LB               - toggle symbol layer
-//   RB               - return to alpha layer
-//   L3 (click)       - toggle Caps Lock
+//   Left stick / DPad  - move cursor; magnetically snaps to keys
+//   South (A/Cross)    - type highlighted key
+//   West  (X/Square)   - backspace
+//   East  (B/Circle)   - close / cancel
+//   North (Y/Tri)      - confirm / submit text
+//   LB                 - toggle symbol layer
+//   RB                 - return to alpha layer
+//   L3 (click)         - toggle Caps Lock
 //
-// UX goals matching Steam keyboard:
-//   - Large, clear panel at bottom of screen
+// UX goals:
+//   - Large, clear panel at bottom of screen with big readable keys
 //   - Snap-to-key magnetic cursor (spring-interpolated, never drifts)
+//   - DPad navigation for precise single-step movement
 //   - Per-key press pop animation (scale bounce via FloatSpring)
-//   - Thin focus ring instead of heavy glow blob
-//   - Characters injected live via OnChar as typed
+//   - Thin focus ring matching key shape instead of heavy glow blob
 // ---------------------------------------------------------------------------
 
 class VirtualKeyboard {
@@ -89,17 +89,27 @@ private:
     int32_t m_row = 0;
     int32_t m_col = 0;
 
-    // Navigation timing.
-    // kStickRepeatFirst: initial delay before auto-repeat kicks in on held stick.
-    //   Kept deliberately long so a single deliberate push moves exactly 1 key.
-    // kStickRepeatNext:  interval for subsequent repeats (comfortable hold-scroll).
-    // kSnapDeadzone:     stick magnitude threshold. High value (0.50) forces
-    //   intentional pushes and creates a magnetic "rest in deadzone" feel.
+    // --------------------------------------------------------------------------
+    // Stick navigation timing
+    // kStickRepeatFirst: long initial delay — one deliberate push = exactly 1 key
+    // kStickRepeatNext:  comfortable auto-repeat after first move
+    // kSnapDeadzone:     high threshold creates strong "centre magnet" feel
+    // --------------------------------------------------------------------------
     float  m_stickCooldown = 0.0f;
-    static constexpr float kStickRepeatFirst = 0.62f;
-    static constexpr float kStickRepeatNext  = 0.17f;
-    static constexpr float kSnapDeadzone     = 0.50f;
+    static constexpr float kStickRepeatFirst = 0.80f;
+    static constexpr float kStickRepeatNext  = 0.22f;
+    static constexpr float kSnapDeadzone     = 0.55f;
     bool   m_stickActive = false;
+
+    // --------------------------------------------------------------------------
+    // DPad navigation timing (separate from stick — clean single-step on press)
+    // --------------------------------------------------------------------------
+    static constexpr float kDPadFirst = 0.50f;
+    static constexpr float kDPadNext  = 0.20f;
+    bool  m_dpadHeld      = false;
+    float m_dpadTimer     = 0.0f;
+    int32_t m_dpadDirRow  = 0;
+    int32_t m_dpadDirCol  = 0;
 
     // state
     State  m_state     = State::Hidden;
@@ -112,7 +122,7 @@ private:
     mutable FloatSpring m_panelSpring;
     mutable FloatSpring m_cursorSpringX;
     mutable FloatSpring m_cursorSpringY;
-    mutable FloatSpring m_cursorScaleSpring; // pressed key scale pop (1.0 -> 1.12 -> 1.0)
+    mutable FloatSpring m_cursorScaleSpring;
 
     // accumulated text
     std::wstring m_text;
