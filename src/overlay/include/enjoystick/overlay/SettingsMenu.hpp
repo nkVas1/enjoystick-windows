@@ -43,6 +43,9 @@ public:
     [[nodiscard]] const Values& GetValues() const noexcept { return m_values; }
     void ResetToDefaults();
 
+    // Set (or replace) the on-changed callback after construction.
+    void SetOnChanged(OnChangedCallback cb) { m_onChange = std::move(cb); }
+
 private:
     enum class RowType  : uint8_t { SectionHeader, FloatSlider, BoolToggle };
     enum class State    : uint8_t { Hidden, Opening, Visible, Closing };
