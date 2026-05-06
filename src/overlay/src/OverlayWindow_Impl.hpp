@@ -81,6 +81,7 @@ private:
     void DrawActiveIndicator(ID2D1RenderTarget* rt);
     void DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds);
     void DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds);
+    void DrawStickViz(ID2D1RenderTarget* rt, float pillRight, float pillCy) const;
 
     // Decode category from message prefix [OK], [WARN], [ERR] etc.
     static ToastCategory DecodeCategory(const std::wstring& msg) noexcept;
@@ -123,6 +124,17 @@ private:
     // HUD pill spring: animates width/position when label changes
     FloatSpring m_hudPillWidthSpring;  // tracks target chip pixel width
     float       m_hudPillPhase = 0.0f; // pulse phase for border glow
+
+    // HUD cross-dissolve: when the mode label changes, old fades out and new fades in.
+    // m_hudCrossT: 0.0 = showing prev, 1.0 = fully showing current
+    // Duration = kHudCrossDuration seconds
+    static constexpr float kHudCrossDuration = 0.160f;
+    std::wstring m_hudPrevLabel;       // label that is fading out
+    float        m_hudCrossT   = 1.0f; // 1.0 = fully settled on current label
+    bool         m_hudCrossDir = true; // true = fading from prev->cur (not used, kept for clarity)
+
+    // Mini left-stick visualizer alpha (fades in when stick is deflected)
+    FloatSpring  m_stickVizSpring;     // value = alpha 0..1
 
     std::thread        m_renderThread;
     std::atomic<bool>  m_running{false};

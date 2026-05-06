@@ -30,6 +30,10 @@ OverlayWindowImpl::OverlayWindowImpl(Config config)
     m_hudPillWidthSpring.stiffness = 280.0f;
     m_hudPillWidthSpring.damping   = 20.0f;
     m_hudPillWidthSpring.Snap(0.0f);
+
+    m_stickVizSpring.stiffness = 220.0f;
+    m_stickVizSpring.damping   = 16.0f;
+    m_stickVizSpring.Snap(0.0f);
 }
 
 OverlayWindowImpl::~OverlayWindowImpl() {
@@ -60,7 +64,12 @@ ControlsOverlay&  OverlayWindowImpl::GetControlsOverlay()               { return
 
 void OverlayWindowImpl::SetModeLabel(std::wstring label) {
     std::lock_guard lk(m_modeLabelMutex);
-    m_modeLabel = std::move(label);
+    if (label != m_modeLabel) {
+        m_hudPrevLabel = m_modeLabel;  // save outgoing label
+        m_modeLabel    = std::move(label);
+        m_hudCrossT    = 0.0f;         // restart cross-dissolve
+        m_hudCrossDir  = true;
+    }
 }
 
 void OverlayWindowImpl::PostState(const ControllerState& state) {
@@ -338,6 +347,15 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
         m_controlsOverlay.Update(kEmpty, deltaSeconds);
     }
 
+    // Advance stick-viz alpha spring
+    {
+        const float lx  = m_lastState.leftStick.x;
+        const float ly  = m_lastState.leftStick.y;
+        const float mag = std::sqrt(lx*lx + ly*ly);
+        m_stickVizSpring.SetTarget(mag > 0.06f ? 1.0f : 0.0f);
+        m_stickVizSpring.Step(deltaSeconds);
+    }
+
     m_radialMenu.Draw(rt, m_dwriteFactory.Get(), m_dpiScale,
                       static_cast<float>(w), static_cast<float>(h));
     m_settingsMenu.Draw(rt, m_dwriteFactory.Get(), m_dpiScale,
@@ -408,6 +426,57 @@ void OverlayWindowImpl::DrawActiveIndicator(ID2D1RenderTarget* rt) {
 }
 
 // ---------------------------------------------------------------------------
+// DrawStickViz
+// ---------------------------------------------------------------------------
+
+void OverlayWindowImpl::DrawStickViz(ID2D1RenderTarget* rt, float pillRight, float pillCy) const {
+    const float alpha = std::max(0.0f, std::min(1.0f, m_stickVizSpring.value));
+    if (alpha < 0.01f) return;
+
+    const float s    = m_dpiScale;
+    const float r    = 14.0f * s;  // ring radius
+    const float gap  =  8.0f * s;  // gap between pill right edge and ring centre
+    const float cx   = pillRight + gap + r;
+    const float cy   = pillCy;
+
+    // Outer ring
+    {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+        rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.72f * alpha), b.GetAddressOf());
+        if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), b.Get());
+    }
+    {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+        rt->CreateSolidColorBrush(Tok::GoldShadow(0.45f * alpha), b.GetAddressOf());
+        if (b) rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), b.Get(), 1.0f * s);
+    }
+
+    // Stick dot
+    const float lx  = m_lastState.leftStick.x;
+    const float ly  = m_lastState.leftStick.y;  // XInput: +y = up in physical world
+    const float mag = std::sqrt(lx*lx + ly*ly);
+    const float travelR = r - 4.0f * s;
+    const float dx  = lx * travelR;
+    const float dy  = -ly * travelR;  // flip Y: screen Y increases downward
+    const float dotR = 2.0f * s + (mag * 3.0f * s);  // lerp dot size with stick magnitude
+    {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+        rt->CreateSolidColorBrush(Tok::GoldHi(0.92f * alpha), b.GetAddressOf());
+        if (b) rt->FillEllipse(
+            D2D1::Ellipse(D2D1::Point2F(cx + dx, cy + dy), dotR, dotR), b.Get());
+    }
+    // Small specular on the dot
+    {
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+        rt->CreateSolidColorBrush(Tok::White(0.45f * alpha), b.GetAddressOf());
+        if (b) rt->FillEllipse(
+            D2D1::Ellipse(
+                D2D1::Point2F(cx + dx - dotR * 0.25f, cy + dy - dotR * 0.30f),
+                dotR * 0.38f, dotR * 0.38f), b.Get());
+    }
+}
+
+// ---------------------------------------------------------------------------
 // DrawHudMode
 // ---------------------------------------------------------------------------
 
@@ -415,12 +484,23 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
     if (!m_config.showActiveIndicator) return;
     if (!m_dwriteFactory) return;
 
-    std::wstring label;
+    std::wstring label, prevLabel;
+    float crossT;
     {
         std::lock_guard lk(m_modeLabelMutex);
-        label = m_modeLabel;
+        label     = m_modeLabel;
+        prevLabel = m_hudPrevLabel;
+        crossT    = m_hudCrossT;
     }
-    if (label.empty()) return;
+    if (label.empty() && prevLabel.empty()) return;
+
+    // Advance cross-dissolve timer (outside the mutex)
+    if (crossT < 1.0f) {
+        crossT += deltaSeconds / kHudCrossDuration;
+        if (crossT > 1.0f) crossT = 1.0f;
+        std::lock_guard lk(m_modeLabelMutex);
+        m_hudCrossT = crossT;
+    }
 
     const float s       = m_dpiScale;
     const float padX    = 14.0f * s;
@@ -434,6 +514,7 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
     if (m_hudPillPhase > 2.0f * kPi) m_hudPillPhase -= 2.0f * kPi;
     const float pulse = 0.5f + 0.5f * std::sin(m_hudPillPhase);
 
+    // Create text layout for current label
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
     m_dwriteFactory->CreateTextFormat(
         L"Segoe UI", nullptr,
@@ -442,13 +523,20 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
     if (!fmt) return;
 
     Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
-    m_dwriteFactory->CreateTextLayout(
-        label.c_str(), static_cast<UINT32>(label.size()),
-        fmt.Get(), 420.0f * s, 40.0f * s, layout.GetAddressOf());
-    if (!layout) return;
+    if (!label.empty())
+        m_dwriteFactory->CreateTextLayout(
+            label.c_str(), static_cast<UINT32>(label.size()),
+            fmt.Get(), 420.0f * s, 40.0f * s, layout.GetAddressOf());
+
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> prevLayout;
+    if (!prevLabel.empty() && crossT < 1.0f)
+        m_dwriteFactory->CreateTextLayout(
+            prevLabel.c_str(), static_cast<UINT32>(prevLabel.size()),
+            fmt.Get(), 420.0f * s, 40.0f * s, prevLayout.GetAddressOf());
 
     DWRITE_TEXT_METRICS tm{};
-    layout->GetMetrics(&tm);
+    if (layout) layout->GetMetrics(&tm);
+    else if (prevLayout) prevLayout->GetMetrics(&tm);
 
     // Determine active mode badge
     struct BadgeInfo { const wchar_t* text; D2D1_COLOR_F fill; D2D1_COLOR_F textCol; bool pulse; };
@@ -489,6 +577,7 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
     const float chipY = bot - chipH;
     const float r     = chipH * 0.38f;
 
+    // Pill background
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.88f), b.GetAddressOf());
@@ -499,6 +588,7 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
             rt->FillRoundedRectangle(rr, b.Get());
         }
     }
+    // Gold accent bar
     {
         const float accentAlpha = (showBadge && badge.pulse) ? (0.70f + 0.28f * pulse) : 0.90f;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
@@ -511,6 +601,7 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
             rt->FillRoundedRectangle(bar, b.Get());
         }
     }
+    // Border
     {
         const float borderAlpha = (showBadge && badge.pulse) ? (0.28f + 0.18f * pulse) : 0.40f;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
@@ -523,14 +614,30 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
             rt->DrawRoundedRectangle(rr, b.Get(), 0.8f);
         }
     }
-    {
+
+    // Prev label fading out
+    if (prevLayout && crossT < 1.0f) {
+        const float prevAlpha = 1.0f - crossT;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::ChromeHi(0.92f), b.GetAddressOf());
+        rt->CreateSolidColorBrush(Tok::ChromeHi(0.92f * prevAlpha), b.GetAddressOf());
+        if (b)
+            rt->DrawTextLayout(
+                D2D1::Point2F(chipX + accentW + padX, chipY + padY),
+                prevLayout.Get(), b.Get());
+    }
+
+    // Current label fading in
+    if (layout) {
+        const float curAlpha = crossT;   // 0..1 as dissolve progresses
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+        rt->CreateSolidColorBrush(Tok::ChromeHi(0.92f * curAlpha), b.GetAddressOf());
         if (b)
             rt->DrawTextLayout(
                 D2D1::Point2F(chipX + accentW + padX, chipY + padY),
                 layout.Get(), b.Get());
     }
+
+    // Mode badge
     if (showBadge && badgeW > 0.0f) {
         const float bx = chipX + chipW - badgeW - padX * 0.5f;
         const float by = chipY + (chipH - chipH * 0.55f) * 0.5f;
@@ -558,6 +665,10 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
             }
         }
     }
+
+    // Mini stick visualizer
+    const float pillCy = chipY + chipH * 0.5f;
+    DrawStickViz(rt, chipX + chipW, pillCy);
 }
 
 // ---------------------------------------------------------------------------
