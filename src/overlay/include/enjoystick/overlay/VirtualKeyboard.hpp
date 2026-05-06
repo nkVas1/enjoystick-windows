@@ -23,10 +23,9 @@ namespace enjoystick::overlay {
 //   RB                 - return to Alpha layer
 //   L3 (click)         - toggle Caps Lock
 //
-// Layers:
-//   ALPHA  - Latin lowercase / uppercase
-//   CYR    - Russian (Cyrillic) layout
-//   SYM    - Symbols and punctuation
+// Axis convention (XInput):
+//   lx > 0 = right, lx < 0 = left
+//   ly > 0 = UP,    ly < 0 = DOWN
 // ---------------------------------------------------------------------------
 
 class VirtualKeyboard {
@@ -96,21 +95,21 @@ private:
 
     // -------------------------------------------------------------------------
     // Left-stick navigation timing (seconds)
-    // Phase 1: first step fires immediately on edge (single step guaranteed)
-    // Phase 2: slow repeat kStickRepeatNext — only starts after kStickRepeatFirst hold
-    // Phase 3: fast repeat kStickRepeatFast after kStickRepeatAccelStart of total hold
     //
-    // kSnapDeadzone raised to 0.88 so a brief flick that barely exceeds
-    // deadzone does NOT navigate — only intentional deflection does.
+    // kSnapDeadzone 0.88: only deliberate deflection past 88% registers.
+    //
+    // kStickRepeatFirst 1.50s: a short flick ALWAYS moves exactly one key.
+    // kStickRepeatNext  0.40s: slow repeat cadence for weighty magnet feel.
+    // kStickRepeatFast  0.075s: maximum repeat rate after long hold.
     // -------------------------------------------------------------------------
     float  m_stickCooldown    = 0.0f;
     float  m_stickHoldTime    = 0.0f;
-    static constexpr float kStickRepeatFirst      = 1.20f;
-    static constexpr float kStickRepeatNext       = 0.26f;
+    static constexpr float kStickRepeatFirst      = 1.50f;   // was 1.20
+    static constexpr float kStickRepeatNext       = 0.40f;   // was 0.26
     static constexpr float kStickRepeatFast       = 0.075f;
     static constexpr float kStickRepeatAccelStart = 1.60f;
     static constexpr float kStickRepeatAccelRange = 0.80f;
-    static constexpr float kSnapDeadzone          = 0.88f;  // was 0.78
+    static constexpr float kSnapDeadzone          = 0.88f;
     bool   m_stickActive = false;
 
     static constexpr float kDPadFirst = 0.70f;
@@ -120,55 +119,35 @@ private:
     int32_t m_dpadDirRow  = 0;
     int32_t m_dpadDirCol  = 0;
 
-    // -------------------------------------------------------------------------
-    // Hold-to-repeat for South (type) and West (backspace)
-    //
-    // Single-press path (kXxxDebounceMs):
-    //   The debounce window is the minimum time between two consecutive
-    //   independent presses.  Raised from 160/280 to 220/380 ms to prevent
-    //   double-input on a quick single tap.
-    //
-    // Hardware-bounce guard (kButtonBounceGuardMs):
-    //   After a button is released, no new initial-edge is accepted for
-    //   kButtonBounceGuardMs ms.  This absorbs the micro-glitch re-press
-    //   that some cheap controllers emit on release.
-    //
-    // Hold-to-repeat path (kXxxHoldFirstMs):
-    //   The user must hold the button for this long before auto-repeat
-    //   starts.  Raised from 600/500 to 900/800 ms so an accidental
-    //   slightly-long press never triggers repeat.
-    // -------------------------------------------------------------------------
-    static constexpr float kButtonBounceGuardMs = 80.0f;   // release bounce guard
+    static constexpr float kButtonBounceGuardMs = 80.0f;
 
-    static constexpr float kTypeHoldFirstMs    = 900.0f;   // was 600
+    static constexpr float kTypeHoldFirstMs    = 900.0f;
     static constexpr float kTypeHoldRepeatMs   = 120.0f;
     static constexpr float kTypeHoldFastMs     =  55.0f;
     static constexpr float kTypeHoldAccelStart =   1.2f;
     static constexpr float kTypeHoldAccelRange =   0.8f;
     float  m_southHeldMs      = 0.0f;
     float  m_southRepeatCd    = 0.0f;
-    float  m_southReleaseGuard= 0.0f;  // hardware-bounce guard countdown (ms)
+    float  m_southReleaseGuard= 0.0f;
     bool   m_southInRepeat    = false;
 
-    static constexpr float kWestHoldFirstMs    = 800.0f;   // was 500
+    static constexpr float kWestHoldFirstMs    = 800.0f;
     static constexpr float kWestHoldRepeatMs   = 110.0f;
     static constexpr float kWestHoldFastMs     =  50.0f;
     static constexpr float kWestHoldAccelStart =   1.0f;
     static constexpr float kWestHoldAccelRange =   0.7f;
     float  m_westHeldMs       = 0.0f;
     float  m_westRepeatCd     = 0.0f;
-    float  m_westReleaseGuard = 0.0f;  // hardware-bounce guard countdown (ms)
+    float  m_westReleaseGuard = 0.0f;
     bool   m_westInRepeat     = false;
 
-    // One-shot debounce timers (initial edge guard):
-    static constexpr float kTypeDebounceMs  = 220.0f;  // was 160
-    static constexpr float kWestDebounceMs  = 380.0f;  // was 280
-    static constexpr float kLbDebounceMs    = 400.0f;  // was 320
+    static constexpr float kTypeDebounceMs  = 220.0f;
+    static constexpr float kWestDebounceMs  = 380.0f;
+    static constexpr float kLbDebounceMs    = 400.0f;
     float m_typeDebounce = 0.0f;
     float m_westDebounce = 0.0f;
     float m_lbDebounce   = 0.0f;
 
-    // ---- Right-stick proximity hover ----------------------------------------
     static constexpr float kRightStickDz       = 0.25f;
     static constexpr float kProximityRadius    = 120.0f;
     mutable float m_screenW = 1920.0f;
