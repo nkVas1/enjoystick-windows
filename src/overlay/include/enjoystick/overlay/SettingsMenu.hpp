@@ -1,7 +1,6 @@
 #pragma once
 
 #include <enjoystick/shared/Types.hpp>
-#include <enjoystick/overlay/Overlay_SpringAnim.hpp>
 #include <functional>
 #include <string>
 #include <vector>
@@ -71,7 +70,6 @@ private:
     void FireHaptic(HapticType type);
     void UpdateAnimation(float dt);
     void OnRowChanged(int32_t newRow);
-    void SyncToggleSprings();  // snap springs to current bool values
 
     OnChangedCallback m_onChange;
     OnHapticCallback  m_onHaptic;
@@ -79,10 +77,6 @@ private:
     std::vector<Row> m_rows;
     int32_t m_selectedRow  = 0;
     int32_t m_scrollOffset = 0;
-
-    // One spring per row — only BoolToggle rows actually use theirs.
-    // Indexed in parallel with m_rows.  Rebuilt in BuildRows() / Open().
-    mutable std::vector<FloatSpring> m_toggleKnobPositions;
 
     static constexpr int32_t kVisibleRows = 10;
 
@@ -92,6 +86,18 @@ private:
 
     // -----------------------------------------------------------------------
     // Navigation timing
+    //
+    // kNavDeadzone 0.72: only intentional deflection past 72% registers.
+    //
+    // kSnapFirst 1.50 s: hold threshold before auto-repeat begins.
+    // This makes single-item navigation feel heavy and deliberate:
+    // a short flick always moves exactly one item, never two.
+    //
+    // kSnapNext / kSnapFast: slightly slower repeat cadence for
+    // weighty "magnet" feel when scrolling through many items.
+    //
+    // kAnimMs 160 ms: the selection pop-scale animation resolves quickly
+    // so the bounce is perceptible but does not delay input.
     // -----------------------------------------------------------------------
     static constexpr float kSnapFirst      = 1.50f;
     static constexpr float kSnapNext       = 0.40f;
