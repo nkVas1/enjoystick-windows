@@ -62,7 +62,7 @@ void ControlsOverlay::BuildSections() {
     {
         Section s;
         s.icon  = L"\u2B06";
-        s.title = L"Navigate Mode";
+        s.title = L"Navigate";
         s.bindings = {
             { L"LB + RB",                  L"Toggle Cursor / Navigate mode" },
             { L"Left Stick",               L"Keyboard arrow keys" },
@@ -82,7 +82,7 @@ void ControlsOverlay::BuildSections() {
     {
         Section s;
         s.icon  = L"\u25CE";
-        s.title = L"Radial Menu";
+        s.title = L"Radial";
         s.bindings = {
             { L"Guide button",             L"Toggle radial menu open / close" },
             { L"Right Stick",              L"Point to sector" },
@@ -103,7 +103,7 @@ void ControlsOverlay::BuildSections() {
     {
         Section s;
         s.icon  = L"\u2328";
-        s.title = L"Virtual Keyboard";
+        s.title = L"Keyboard";
         s.bindings = {
             { L"Left Stick / DPad",        L"Move cursor to key" },
             { L"Right Stick",              L"Proximity hover (nearest key)" },
@@ -121,7 +121,7 @@ void ControlsOverlay::BuildSections() {
     {
         Section s;
         s.icon  = L"\u2699";
-        s.title = L"Settings Menu";
+        s.title = L"Settings";
         s.bindings = {
             { L"Guide + Start",            L"Toggle settings menu" },
             { L"Tray icon dbl-click",       L"Open settings menu" },
@@ -138,7 +138,7 @@ void ControlsOverlay::BuildSections() {
     {
         Section s;
         s.icon  = L"\u2731";
-        s.title = L"Global Combos";
+        s.title = L"Combos";
         s.bindings = {
             { L"Guide",                    L"Open / close radial menu" },
             { L"Guide + Start",            L"Open / close settings menu" },
@@ -283,8 +283,6 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
     }
 
     // ---- Scroll binding list (DPad Up / Down)
-    // dUp = scroll list upward (show earlier entries = decrease offset)
-    // dDown = scroll list downward (show later entries = increase offset)
     {
         const bool dVert = dUp || dDown;
         if (dVert) {
@@ -316,8 +314,6 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
     }
 
     // ---- Scroll binding list (Right Stick Y)
-    // XInput: ry > 0 = stick up = scroll list UP = decrease offset
-    //         ry < 0 = stick down = scroll list DOWN = increase offset
     {
         const float ry = state.rightStick.y;
         if (std::abs(ry) > kScrollRyDz) {
@@ -326,7 +322,6 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
                 m_scrollRyCooldown = kScrollFirst;
                 const int32_t total = m_sectionIdx < static_cast<int32_t>(m_sections.size())
                     ? static_cast<int32_t>(m_sections[static_cast<size_t>(m_sectionIdx)].bindings.size()) : 0;
-                // FIX: ry > 0 = up = decrease scroll offset
                 if (ry > 0 && m_scrollOffset > 0)       --m_scrollOffset;
                 if (ry < 0 && m_scrollOffset < total-1) ++m_scrollOffset;
             } else {
@@ -475,6 +470,33 @@ void ControlsOverlay::Draw(
 
     const float hdrY  = panelY + accH + 14.0f * s;
     const float padX  = 28.0f * s;
+
+    // ---- Page counter badge  (e.g. "2 / 6" top-right)
+    if (dwrite && !m_sections.empty()) {
+        wchar_t pageBuf[16];
+        std::swprintf(pageBuf, 16, L"%d / %d",
+            m_sectionIdx + 1, static_cast<int32_t>(m_sections.size()));
+        Microsoft::WRL::ComPtr<IDWriteTextFormat> pf;
+        dwrite->CreateTextFormat(L"Segoe UI", nullptr,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, 11.0f * s, L"en-us", pf.GetAddressOf());
+        if (pf) {
+            pf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            pf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            const float bW = 54.0f * s, bH = 20.0f * s;
+            const float bX = panelX + panelW - padX - bW;
+            const float bY = hdrY + 8.0f * s;
+            { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+              rt->CreateSolidColorBrush(Tok::SurfaceRaised(0.80f * ease), b.GetAddressOf());
+              if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(bX, bY, bX+bW, bY+bH), 5.0f*s, 5.0f*s};
+                       rt->FillRoundedRectangle(rr, b.Get()); } }
+            { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+              rt->CreateSolidColorBrush(Tok::GoldMid(0.60f * ease), b.GetAddressOf());
+              if (b) rt->DrawText(pageBuf, static_cast<UINT32>(std::wcslen(pageBuf)),
+                  pf.Get(), D2D1::RectF(bX, bY, bX+bW, bY+bH), b.Get()); }
+        }
+    }
+
     if (dwrite && m_sectionIdx < static_cast<int32_t>(m_sections.size())) {
         const auto& sec = m_sections[static_cast<size_t>(m_sectionIdx)];
         { Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
@@ -539,6 +561,7 @@ void ControlsOverlay::Draw(
         const float maxY     = panelY + panelH - 54.0f * s;
         const int32_t total  = static_cast<int32_t>(bindings.size());
 
+        // Clamp scrollOffset so it never exceeds last visible item
         const int32_t safeOffset = std::min(m_scrollOffset, std::max(0, total - 1));
 
         const bool canScrollUp   = safeOffset > 0;
@@ -616,8 +639,9 @@ void ControlsOverlay::Draw(
 
     // ---- Section tab bar
     {
-        const float tabBarY  = panelY + panelH - 42.0f * s;
-        const float tabBarH  = 42.0f * s;
+        // Tab bar is taller now to fit icon + label text
+        const float tabBarY  = panelY + panelH - 52.0f * s;
+        const float tabBarH  = 52.0f * s;
         {
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
             rt->CreateSolidColorBrush(Tok::GoldDeep(0.30f * ease), b.GetAddressOf());
@@ -637,15 +661,16 @@ void ControlsOverlay::Draw(
             const float dist  = std::abs(static_cast<float>(i) - tabSprV);
             const float blend = std::max(0.0f, 1.0f - dist);
 
+            // ---- Icon
             if (dwrite && i < static_cast<int32_t>(m_sections.size())) {
                 Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
                 dwrite->CreateTextFormat(L"Segoe UI Emoji", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
                     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                    14.0f * s, L"en-us", fmt.GetAddressOf());
+                    13.0f * s, L"en-us", fmt.GetAddressOf());
                 if (fmt) {
                     fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
                     fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-                    const auto& icon = m_sections[static_cast<size_t>(i)].icon;
+                    const auto& icon  = m_sections[static_cast<size_t>(i)].icon;
                     const float alpha = isSel
                         ? (0.60f + 0.40f * blend) * ease
                         : 0.38f * ease;
@@ -653,12 +678,35 @@ void ControlsOverlay::Draw(
                     rt->CreateSolidColorBrush(
                         isSel ? Tok::GoldHi(alpha) : Tok::ChromeMute(alpha), b.GetAddressOf());
                     if (b) rt->DrawText(icon.c_str(), static_cast<UINT32>(icon.size()),
-                        fmt.Get(), D2D1::RectF(tx, tabBarY+2.0f*s, tx+tabW, tabBarY+tabBarH), b.Get());
+                        fmt.Get(), D2D1::RectF(tx, tabBarY+2.0f*s, tx+tabW, tabBarY+22.0f*s), b.Get());
                 }
             }
 
+            // ---- Label text under icon
+            if (dwrite && i < static_cast<int32_t>(m_sections.size())) {
+                Microsoft::WRL::ComPtr<IDWriteTextFormat> lf;
+                dwrite->CreateTextFormat(L"Segoe UI", nullptr,
+                    isSel ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL,
+                    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                    9.5f * s, L"en-us", lf.GetAddressOf());
+                if (lf) {
+                    lf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                    lf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                    const auto& title = m_sections[static_cast<size_t>(i)].title;
+                    const float lalpha = isSel
+                        ? (0.70f + 0.28f * blend) * ease
+                        : 0.28f * ease;
+                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> lb;
+                    rt->CreateSolidColorBrush(
+                        isSel ? Tok::GoldHi(lalpha) : Tok::ChromeMute(lalpha), lb.GetAddressOf());
+                    if (lb) rt->DrawText(title.c_str(), static_cast<UINT32>(title.size()),
+                        lf.Get(), D2D1::RectF(tx, tabBarY+22.0f*s, tx+tabW, tabBarY+tabBarH-8.0f*s), lb.Get());
+                }
+            }
+
+            // ---- Active underline
             if (isSel) {
-                const float ulW = tabW * 0.55f * blend + tabW * 0.45f;
+                const float ulW = tabW * 0.45f + tabW * 0.40f * blend;
                 const float ulX = tx + (tabW - ulW) * 0.5f;
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                 rt->CreateSolidColorBrush(Tok::GoldHi(0.80f * ease), b.GetAddressOf());
@@ -685,6 +733,7 @@ void ControlsOverlay::Draw(
             }
         }
     }
+    (void)EaseInCubic;
 }
 
 } // namespace enjoystick::overlay
