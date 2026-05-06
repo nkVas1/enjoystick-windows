@@ -79,24 +79,27 @@ private:
     float m_repeatTimer  = 0.0f;
 
     // -----------------------------------------------------------------------
-    // Navigation timing  (all times in seconds unless noted)
+    // Navigation timing
     //
-    // kNavDeadzone 0.72 → 0.78: deliberate intent gate; brief flicks
-    //   that barely clear 72% won't trigger navigation anymore.
+    // kNavDeadzone 0.72: only intentional deflection past 72% registers.
     //
-    // kSnapFirst 1.10 → 1.40 s: longer hold required before auto-repeat
-    //   starts, completely eliminating accidental multi-step jumps.
+    // kSnapFirst 1.50 s: hold threshold before auto-repeat begins.
+    // This makes single-item navigation feel heavy and deliberate:
+    // a short flick always moves exactly one item, never two.
     //
-    // kSelAnimSpeed 8 → 6: slower spring-settle = longer visible bounce.
-    // kTrailDecayMs 160 → 220 ms: previous-row ghost lingers longer.
+    // kSnapNext / kSnapFast: slightly slower repeat cadence for
+    // weighty "magnet" feel when scrolling through many items.
+    //
+    // kAnimMs 160 ms: the selection pop-scale animation resolves quickly
+    // so the bounce is perceptible but does not delay input.
     // -----------------------------------------------------------------------
-    static constexpr float kSnapFirst      = 1.40f;   // was 1.10
-    static constexpr float kSnapNext       = 0.32f;
+    static constexpr float kSnapFirst      = 1.50f;   // was 1.10
+    static constexpr float kSnapNext       = 0.40f;   // was 0.32
     static constexpr float kSnapFast       = 0.085f;
-    static constexpr float kNavAccelStart  = 1.4f;
+    static constexpr float kNavAccelStart  = 1.6f;
     static constexpr float kNavAccelRange  = 0.80f;
-    static constexpr float kNavDeadzone    = 0.78f;   // was 0.72
-    static constexpr float kAnimMs         = 220.0f;
+    static constexpr float kNavDeadzone    = 0.72f;
+    static constexpr float kAnimMs         = 160.0f;  // was 220
 
     bool  m_stickNavActive    = false;
     float m_stickNavCooldown  = 0.0f;
@@ -112,8 +115,8 @@ private:
     bool m_prevDUp   = false, m_prevDDown = false;
     bool m_prevDLeft = false, m_prevDRight= false;
 
-    static constexpr float kTrailDecayMs  = 220.0f;  // was 160
-    static constexpr float kSelAnimSpeed  = 6.0f;    // was 8
+    static constexpr float kTrailDecayMs  = 160.0f;
+    static constexpr float kSelAnimSpeed  = 10.0f;   // was 8
     mutable int32_t m_prevRow    = -1;
     mutable float   m_trailAlpha = 0.0f;
     mutable float   m_selAnimT   = 1.0f;
