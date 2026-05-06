@@ -170,7 +170,6 @@ void ControlsOverlay::Open() {
 
     m_openMask = Button::None;
 
-    // South is intentionally NOT listed here — we never close on South.
     m_prevEast = m_prevDLeft = m_prevDRight =
     m_prevDUp  = m_prevDDown = false;
 
@@ -231,7 +230,6 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
     const bool dUp    = btn(Button::DPadUp);
     const bool dDown  = btn(Button::DPadDown);
 
-    // Only East (B) closes the controls overlay; South (A) is intentionally ignored.
     if (east && !m_prevEast) {
         Close();
         goto done;
@@ -285,13 +283,15 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
     }
 
     // ---- Scroll binding list (DPad Up / Down)
+    // dUp = scroll list upward (show earlier entries = decrease offset)
+    // dDown = scroll list downward (show later entries = increase offset)
     {
         const bool dVert = dUp || dDown;
         if (dVert) {
             if (!m_scrollDpadHeld) {
                 m_scrollDpadHeld  = true;
                 m_scrollDpadTimer = kScrollFirst;
-                if (dUp   && m_scrollOffset > 0) --m_scrollOffset;
+                if (dUp && m_scrollOffset > 0) --m_scrollOffset;
                 if (dDown) {
                     const int32_t total = m_sectionIdx < static_cast<int32_t>(m_sections.size())
                         ? static_cast<int32_t>(m_sections[static_cast<size_t>(m_sectionIdx)].bindings.size()) : 0;
@@ -301,7 +301,7 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
                 m_scrollDpadTimer -= dt;
                 if (m_scrollDpadTimer <= 0.0f) {
                     m_scrollDpadTimer = kScrollNext;
-                    if (dUp   && m_scrollOffset > 0) --m_scrollOffset;
+                    if (dUp && m_scrollOffset > 0) --m_scrollOffset;
                     if (dDown) {
                         const int32_t total = m_sectionIdx < static_cast<int32_t>(m_sections.size())
                             ? static_cast<int32_t>(m_sections[static_cast<size_t>(m_sectionIdx)].bindings.size()) : 0;
@@ -316,6 +316,8 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
     }
 
     // ---- Scroll binding list (Right Stick Y)
+    // XInput: ry > 0 = stick up = scroll list UP = decrease offset
+    //         ry < 0 = stick down = scroll list DOWN = increase offset
     {
         const float ry = state.rightStick.y;
         if (std::abs(ry) > kScrollRyDz) {
@@ -324,16 +326,17 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
                 m_scrollRyCooldown = kScrollFirst;
                 const int32_t total = m_sectionIdx < static_cast<int32_t>(m_sections.size())
                     ? static_cast<int32_t>(m_sections[static_cast<size_t>(m_sectionIdx)].bindings.size()) : 0;
-                if (ry < 0 && m_scrollOffset > 0)       --m_scrollOffset;
-                if (ry > 0 && m_scrollOffset < total-1) ++m_scrollOffset;
+                // FIX: ry > 0 = up = decrease scroll offset
+                if (ry > 0 && m_scrollOffset > 0)       --m_scrollOffset;
+                if (ry < 0 && m_scrollOffset < total-1) ++m_scrollOffset;
             } else {
                 m_scrollRyCooldown -= dt;
                 if (m_scrollRyCooldown <= 0.0f) {
                     m_scrollRyCooldown = kScrollNext;
                     const int32_t total = m_sectionIdx < static_cast<int32_t>(m_sections.size())
                         ? static_cast<int32_t>(m_sections[static_cast<size_t>(m_sectionIdx)].bindings.size()) : 0;
-                    if (ry < 0 && m_scrollOffset > 0)       --m_scrollOffset;
-                    if (ry > 0 && m_scrollOffset < total-1) ++m_scrollOffset;
+                    if (ry > 0 && m_scrollOffset > 0)       --m_scrollOffset;
+                    if (ry < 0 && m_scrollOffset < total-1) ++m_scrollOffset;
                 }
             }
         } else {
@@ -498,7 +501,6 @@ void ControlsOverlay::Draw(
                   fmt.Get(), D2D1::RectF(panelX+padX+42.0f*s, hdrY, panelX+panelW-padX, hdrY+36.0f*s), b.Get());
           }
         }
-        // Header hint: only East (B) closes
         { Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
           dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
               DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
@@ -525,7 +527,7 @@ void ControlsOverlay::Draw(
             b.Get(), 0.8f);
     }
 
-    // ---- Bindings list (with scroll offset)
+    // ---- Bindings list
     if (m_sectionIdx < static_cast<int32_t>(m_sections.size())) {
         const auto& bindings = m_sections[static_cast<size_t>(m_sectionIdx)].bindings;
         const float listTop  = divY + 10.0f * s;
