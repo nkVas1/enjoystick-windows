@@ -98,14 +98,21 @@ private:
     float m_repeatTimer  = 0.0f;
 
     // -----------------------------------------------------------------------
-    // Navigation timing
+    // Navigation timing  –  "heavy magnetic" feel
+    //
+    //  kSnapFirst 2.20s : a short flick always moves exactly ONE row,
+    //                     no matter how long the stick is held casually.
+    //  kSnapNext  0.55s : slow repeat once the user clearly holds the stick,
+    //                     giving a weighty, deliberate cadence.
+    //  kSnapFast  0.075s: top speed only after ~1.6s of continuous hold.
+    //  kNavDeadzone 0.82: require a confident deflection to start moving.
     // -----------------------------------------------------------------------
-    static constexpr float kSnapFirst      = 1.50f;
-    static constexpr float kSnapNext       = 0.40f;
-    static constexpr float kSnapFast       = 0.085f;
-    static constexpr float kNavAccelStart  = 1.6f;
-    static constexpr float kNavAccelRange  = 0.80f;
-    static constexpr float kNavDeadzone    = 0.72f;
+    static constexpr float kSnapFirst      = 2.20f;   // was 1.50 – much heavier
+    static constexpr float kSnapNext       = 0.55f;   // was 0.40
+    static constexpr float kSnapFast       = 0.075f;
+    static constexpr float kNavAccelStart  = 1.8f;    // was 1.6
+    static constexpr float kNavAccelRange  = 1.00f;   // was 0.80
+    static constexpr float kNavDeadzone    = 0.82f;   // was 0.72  (more deliberate)
     static constexpr float kAnimMs         = 160.0f;
 
     bool  m_stickNavActive    = false;
@@ -122,6 +129,14 @@ private:
     bool m_prevDUp   = false, m_prevDDown = false;
     bool m_prevDLeft = false, m_prevDRight= false;
 
+    // -----------------------------------------------------------------------
+    // Selection cursor spring  – drives the animated row-highlight position
+    //   stiffness=600, damping=30  → snappy overshoot that "bounces" onto
+    //   the new row, exactly the magnetic pogo feeling requested.
+    // -----------------------------------------------------------------------
+    mutable FloatSpring m_selCursorSpring;   // value = logical Y pixel of selection bar
+    mutable bool        m_selCursorInit = false;
+
     static constexpr float kTrailDecayMs  = 160.0f;
     static constexpr float kSelAnimSpeed  = 10.0f;
     mutable int32_t m_prevRow    = -1;
@@ -129,7 +144,6 @@ private:
     mutable float   m_selAnimT   = 1.0f;
 
     // Toggle knob spring: one per row, sized lazily in RebuildToggleSprings().
-    // value=0 → knob at off position, value=1 → knob at on position.
     mutable std::vector<FloatSpring> m_toggleSprings;
 
     // ActionButton press flash (alpha 0..1, decays each frame)

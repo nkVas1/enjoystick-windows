@@ -94,22 +94,23 @@ private:
     int32_t m_col = 0;
 
     // -------------------------------------------------------------------------
-    // Left-stick navigation timing (seconds)
+    // Left-stick navigation timing (seconds)  –  "heavy magnetic" feel
     //
-    // kSnapDeadzone 0.88: only deliberate deflection past 88% registers.
+    // kSnapDeadzone 0.90: require a very deliberate stick push (90% axis).
     //
-    // kStickRepeatFirst 1.50s: a short flick ALWAYS moves exactly one key.
-    // kStickRepeatNext  0.40s: slow repeat cadence for weighty magnet feel.
-    // kStickRepeatFast  0.075s: maximum repeat rate after long hold.
+    // kStickRepeatFirst 2.20s: a short flick ALWAYS moves exactly one key;
+    //   the cursor pops/bounces onto the target via the cursor spring.
+    // kStickRepeatNext  0.55s: slow repeat cadence for weighty magnet feel.
+    // kStickRepeatFast  0.075s: maximum repeat rate only after long hold.
     // -------------------------------------------------------------------------
     float  m_stickCooldown    = 0.0f;
     float  m_stickHoldTime    = 0.0f;
-    static constexpr float kStickRepeatFirst      = 1.50f;   // was 1.20
-    static constexpr float kStickRepeatNext       = 0.40f;   // was 0.26
+    static constexpr float kStickRepeatFirst      = 2.20f;   // was 1.50
+    static constexpr float kStickRepeatNext       = 0.55f;   // was 0.40
     static constexpr float kStickRepeatFast       = 0.075f;
-    static constexpr float kStickRepeatAccelStart = 1.60f;
-    static constexpr float kStickRepeatAccelRange = 0.80f;
-    static constexpr float kSnapDeadzone          = 0.88f;
+    static constexpr float kStickRepeatAccelStart = 1.80f;   // was 1.60
+    static constexpr float kStickRepeatAccelRange = 1.00f;   // was 0.80
+    static constexpr float kSnapDeadzone          = 0.90f;   // was 0.88
     bool   m_stickActive = false;
 
     static constexpr float kDPadFirst = 0.70f;
