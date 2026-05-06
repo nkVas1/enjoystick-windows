@@ -81,7 +81,9 @@ private:
     void DrawActiveIndicator(ID2D1RenderTarget* rt);
     void DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds);
     void DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds);
-    void DrawStickViz(ID2D1RenderTarget* rt, float pillRight, float pillCy) const;
+    // stickSource: stick coordinates to visualize
+    void DrawStickViz(ID2D1RenderTarget* rt, float pillRight, float pillCy,
+                      Vec2 stickSource) const;
 
     // Decode category from message prefix [OK], [WARN], [ERR] etc.
     static ToastCategory DecodeCategory(const std::wstring& msg) noexcept;
@@ -133,8 +135,11 @@ private:
     float        m_hudCrossT   = 1.0f; // 1.0 = fully settled on current label
     bool         m_hudCrossDir = true; // true = fading from prev->cur (not used, kept for clarity)
 
-    // Mini left-stick visualizer alpha (fades in when stick is deflected)
+    // Mini stick visualizer:
+    //   - alpha spring fades in when stick is deflected
+    //   - m_stickVizUseRight: when true, shows right stick (e.g. during RadialMenu)
     FloatSpring  m_stickVizSpring;     // value = alpha 0..1
+    bool         m_stickVizUseRight = false;
 
     std::thread        m_renderThread;
     std::atomic<bool>  m_running{false};
