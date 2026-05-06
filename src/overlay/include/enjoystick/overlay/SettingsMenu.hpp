@@ -30,9 +30,14 @@ public:
         float dzInner           = 0.12f;
         float dzOuter           = 0.92f;
     };
+
+    // Action IDs fired via OnAction callback
+    enum class ActionId : uint8_t { SaveProfile, LoadProfile };
+
     using OnChangedCallback  = std::function<void(const Values&)>;
     using OnNavigateCallback = std::function<void()>;  // fired on every row hop
     using OnAdjustCallback   = std::function<void()>;  // fired on every slider nudge
+    using OnActionCallback   = std::function<void(ActionId)>;  // fired on Save/Load
 
     explicit SettingsMenu(OnChangedCallback onChange = nullptr);
 
@@ -50,9 +55,10 @@ public:
     void SetOnChanged (OnChangedCallback  cb) { m_onChange   = std::move(cb); }
     void SetOnNavigate(OnNavigateCallback cb) { m_onNavigate = std::move(cb); }
     void SetOnAdjust  (OnAdjustCallback   cb) { m_onAdjust   = std::move(cb); }
+    void SetOnAction  (OnActionCallback   cb) { m_onAction   = std::move(cb); }
 
 private:
-    enum class RowType  : uint8_t { SectionHeader, FloatSlider, BoolToggle };
+    enum class RowType  : uint8_t { SectionHeader, FloatSlider, BoolToggle, ActionButton };
     enum class State    : uint8_t { Hidden, Opening, Visible, Closing };
 
     struct Row {
@@ -62,6 +68,7 @@ private:
         float*         fTarget = nullptr;
         bool*          bTarget = nullptr;
         const wchar_t* unit    = nullptr;
+        ActionId       actionId = ActionId::SaveProfile;
     };
 
     void BuildRows();
@@ -69,6 +76,7 @@ private:
     int32_t NextInteractiveRow(int32_t from, int32_t dir) const noexcept;
     void AdjustSelected(float direction, bool repeat);
     void CommitChange();
+    void ActivateSelected();       // fires ActionButton or toggles Bool
     void UpdateAnimation(float dt);
     void OnRowChanged(int32_t newRow);
     void RebuildToggleSprings();
@@ -76,6 +84,7 @@ private:
     OnChangedCallback  m_onChange;
     OnNavigateCallback m_onNavigate;
     OnAdjustCallback   m_onAdjust;
+    OnActionCallback   m_onAction;
 
     Values m_values;
     std::vector<Row> m_rows;
@@ -122,6 +131,10 @@ private:
     // Toggle knob spring: one per row, sized lazily in RebuildToggleSprings().
     // value=0 → knob at off position, value=1 → knob at on position.
     mutable std::vector<FloatSpring> m_toggleSprings;
+
+    // ActionButton press flash (alpha 0..1, decays each frame)
+    mutable float m_actionFlashAlpha = 0.0f;
+    mutable int32_t m_actionFlashRow = -1;
 
     mutable Microsoft::WRL::ComPtr<IDWriteInlineObject> m_dwriteEllipsis;
 };
