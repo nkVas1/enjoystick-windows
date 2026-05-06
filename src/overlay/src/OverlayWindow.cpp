@@ -318,6 +318,9 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
     const bool settingsActive  = m_settingsMenu.IsOpen();
     const bool controlsActive  = m_controlsOverlay.IsOpen();
 
+    // RadialMenu is driven by right stick, everything else uses left stick.
+    m_stickVizUseRight = radialActive;
+
     static const ControllerState kEmpty{};
 
     if (controlsActive) {
@@ -347,10 +350,11 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
         m_controlsOverlay.Update(kEmpty, deltaSeconds);
     }
 
-    // Advance stick-viz alpha spring
+    // Advance stick-viz alpha spring using the source stick magnitude
     {
-        const float lx  = m_lastState.leftStick.x;
-        const float ly  = m_lastState.leftStick.y;
+        const Vec2  stick = m_stickVizUseRight ? m_lastState.rightStick : m_lastState.leftStick;
+        const float lx  = stick.x;
+        const float ly  = stick.y;
         const float mag = std::sqrt(lx*lx + ly*ly);
         m_stickVizSpring.SetTarget(mag > 0.06f ? 1.0f : 0.0f);
         m_stickVizSpring.Step(deltaSeconds);
@@ -429,7 +433,8 @@ void OverlayWindowImpl::DrawActiveIndicator(ID2D1RenderTarget* rt) {
 // DrawStickViz
 // ---------------------------------------------------------------------------
 
-void OverlayWindowImpl::DrawStickViz(ID2D1RenderTarget* rt, float pillRight, float pillCy) const {
+void OverlayWindowImpl::DrawStickViz(ID2D1RenderTarget* rt, float pillRight, float pillCy,
+                                     Vec2 stickSource) const {
     const float alpha = std::max(0.0f, std::min(1.0f, m_stickVizSpring.value));
     if (alpha < 0.01f) return;
 
@@ -452,8 +457,8 @@ void OverlayWindowImpl::DrawStickViz(ID2D1RenderTarget* rt, float pillRight, flo
     }
 
     // Stick dot
-    const float lx  = m_lastState.leftStick.x;
-    const float ly  = m_lastState.leftStick.y;  // XInput: +y = up in physical world
+    const float lx  = stickSource.x;
+    const float ly  = stickSource.y;  // XInput: +y = up in physical world
     const float mag = std::sqrt(lx*lx + ly*ly);
     const float travelR = r - 4.0f * s;
     const float dx  = lx * travelR;
@@ -666,9 +671,10 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
         }
     }
 
-    // Mini stick visualizer
+    // Mini stick visualizer: pass the correct stick source
     const float pillCy = chipY + chipH * 0.5f;
-    DrawStickViz(rt, chipX + chipW, pillCy);
+    const Vec2 vizStick = m_stickVizUseRight ? m_lastState.rightStick : m_lastState.leftStick;
+    DrawStickViz(rt, chipX + chipW, pillCy, vizStick);
 }
 
 // ---------------------------------------------------------------------------
