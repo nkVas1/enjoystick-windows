@@ -6,11 +6,11 @@
 #include <vector>
 #include <wrl/client.h>
 
+#include "Overlay_SpringAnim.hpp"
+
 interface IDWriteInlineObject;
 
 namespace enjoystick::overlay {
-
-enum class HapticType : uint8_t;
 
 // ---------------------------------------------------------------------------
 // SettingsMenu
@@ -30,8 +30,9 @@ public:
         float dzInner           = 0.12f;
         float dzOuter           = 0.92f;
     };
-    using OnChangedCallback = std::function<void(const Values&)>;
-    using OnHapticCallback  = std::function<void(HapticType)>;
+    using OnChangedCallback  = std::function<void(const Values&)>;
+    using OnNavigateCallback = std::function<void()>;  // fired on every row hop
+    using OnAdjustCallback   = std::function<void()>;  // fired on every slider nudge
 
     explicit SettingsMenu(OnChangedCallback onChange = nullptr);
 
@@ -46,8 +47,9 @@ public:
     [[nodiscard]] const Values& GetValues() const noexcept { return m_values; }
     void ResetToDefaults();
 
-    void SetOnChanged(OnChangedCallback cb) { m_onChange = std::move(cb); }
-    void SetOnHaptic (OnHapticCallback  cb) { m_onHaptic = std::move(cb); }
+    void SetOnChanged (OnChangedCallback  cb) { m_onChange   = std::move(cb); }
+    void SetOnNavigate(OnNavigateCallback cb) { m_onNavigate = std::move(cb); }
+    void SetOnAdjust  (OnAdjustCallback   cb) { m_onAdjust   = std::move(cb); }
 
 private:
     enum class RowType  : uint8_t { SectionHeader, FloatSlider, BoolToggle };
@@ -67,12 +69,14 @@ private:
     int32_t NextInteractiveRow(int32_t from, int32_t dir) const noexcept;
     void AdjustSelected(float direction, bool repeat);
     void CommitChange();
-    void FireHaptic(HapticType type);
     void UpdateAnimation(float dt);
     void OnRowChanged(int32_t newRow);
+    void RebuildToggleSprings();
 
-    OnChangedCallback m_onChange;
-    OnHapticCallback  m_onHaptic;
+    OnChangedCallback  m_onChange;
+    OnNavigateCallback m_onNavigate;
+    OnAdjustCallback   m_onAdjust;
+
     Values m_values;
     std::vector<Row> m_rows;
     int32_t m_selectedRow  = 0;
@@ -86,18 +90,6 @@ private:
 
     // -----------------------------------------------------------------------
     // Navigation timing
-    //
-    // kNavDeadzone 0.72: only intentional deflection past 72% registers.
-    //
-    // kSnapFirst 1.50 s: hold threshold before auto-repeat begins.
-    // This makes single-item navigation feel heavy and deliberate:
-    // a short flick always moves exactly one item, never two.
-    //
-    // kSnapNext / kSnapFast: slightly slower repeat cadence for
-    // weighty "magnet" feel when scrolling through many items.
-    //
-    // kAnimMs 160 ms: the selection pop-scale animation resolves quickly
-    // so the bounce is perceptible but does not delay input.
     // -----------------------------------------------------------------------
     static constexpr float kSnapFirst      = 1.50f;
     static constexpr float kSnapNext       = 0.40f;
@@ -126,6 +118,10 @@ private:
     mutable int32_t m_prevRow    = -1;
     mutable float   m_trailAlpha = 0.0f;
     mutable float   m_selAnimT   = 1.0f;
+
+    // Toggle knob spring: one per row, sized lazily in RebuildToggleSprings().
+    // value=0 → knob at off position, value=1 → knob at on position.
+    mutable std::vector<FloatSpring> m_toggleSprings;
 
     mutable Microsoft::WRL::ComPtr<IDWriteInlineObject> m_dwriteEllipsis;
 };
