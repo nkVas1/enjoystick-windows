@@ -26,7 +26,7 @@ SettingsMenu::SettingsMenu(OnChangedCallback onChange)
 // ---------------------------------------------------------------------------
 void SettingsMenu::BuildRows() {
     m_rows.clear();
-    m_rows.reserve(16);
+    m_rows.reserve(20);
 
     m_rows.push_back({ L"Cursor",                  RowType::SectionHeader });
     m_rows.push_back({ L"Cursor speed",             RowType::FloatSlider, 1.0f,   20.0f,  0.5f,  &m_values.cursorSpeed,       nullptr,                    L" px/ms" });
@@ -46,6 +46,12 @@ void SettingsMenu::BuildRows() {
     m_rows.push_back({ L"Advanced",                 RowType::SectionHeader });
     m_rows.push_back({ L"Deadzone inner",           RowType::FloatSlider, 0.02f,  0.40f,  0.01f, &m_values.dzInner,           nullptr,                    L""       });
     m_rows.push_back({ L"Deadzone outer",           RowType::FloatSlider, 0.50f,  1.00f,  0.01f, &m_values.dzOuter,           nullptr,                    L""       });
+
+    m_rows.push_back({ L"Profile",                  RowType::SectionHeader });
+    Row saveRow; saveRow.label = L"\U0001F4BE  Save profile"; saveRow.type = RowType::ActionButton; saveRow.actionId = ActionId::SaveProfile;
+    Row loadRow; loadRow.label = L"\U0001F4C2  Load profile"; loadRow.type = RowType::ActionButton; loadRow.actionId = ActionId::LoadProfile;
+    m_rows.push_back(saveRow);
+    m_rows.push_back(loadRow);
 }
 
 void SettingsMenu::RebuildToggleSprings() {
@@ -105,6 +111,8 @@ void SettingsMenu::Open(const Values& current) {
     m_prevRow      = -1;
     m_trailAlpha   = 0.0f;
     m_selAnimT     = 1.0f;
+    m_actionFlashAlpha = 0.0f;
+    m_actionFlashRow   = -1;
 
     m_stickNavActive    = false;
     m_stickNavCooldown  = 0.0f;
@@ -149,6 +157,20 @@ void SettingsMenu::ResetToDefaults() {
     CommitChange();
 }
 
+void SettingsMenu::ActivateSelected() {
+    if (!IsInteractiveRow(m_selectedRow)) return;
+    const auto& row = m_rows[static_cast<size_t>(m_selectedRow)];
+
+    if (row.type == RowType::BoolToggle && row.bTarget) {
+        *row.bTarget = !(*row.bTarget);
+        CommitChange();
+    } else if (row.type == RowType::ActionButton) {
+        m_actionFlashAlpha = 1.0f;
+        m_actionFlashRow   = m_selectedRow;
+        if (m_onAction) m_onAction(row.actionId);
+    }
+}
+
 void SettingsMenu::Update(const ControllerState& state, float dt) {
     // Advance toggle knob springs every frame
     {
@@ -159,6 +181,14 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
                 m_toggleSprings[i].SetTarget(*row.bTarget ? 1.0f : 0.0f);
                 m_toggleSprings[i].Step(dt);
             }
+        }
+    }
+    // Decay action flash
+    if (m_actionFlashAlpha > 0.0f) {
+        m_actionFlashAlpha -= dt * 3.5f;
+        if (m_actionFlashAlpha < 0.0f) {
+            m_actionFlashAlpha = 0.0f;
+            m_actionFlashRow   = -1;
         }
     }
 
@@ -175,6 +205,11 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
 
     if (east  && !m_prevEast)  { Close(); goto done; }
     if (north && !m_prevNorth) { ResetToDefaults(); goto done; }
+
+    // South activates: toggle bool, or fire action button
+    if (south && !m_prevSouth) {
+        ActivateSelected();
+    }
 
     // ---- DPad vertical: navigate rows
     {
@@ -199,16 +234,7 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
         }
     }
 
-    if (south && !m_prevSouth) {
-        const auto& row = m_rows[static_cast<size_t>(m_selectedRow)];
-        if (row.type == RowType::BoolToggle && row.bTarget) {
-            *row.bTarget = !(*row.bTarget);
-            // Spring will auto-update target on next Update() tick
-            CommitChange();
-        }
-    }
-
-    // ---- DPad horizontal: adjust selected slider
+    // ---- DPad horizontal: adjust selected slider (not applicable to ActionButton)
     {
         const bool hHorz = dLeft || dRight;
         if (hHorz) {
@@ -450,7 +476,9 @@ void SettingsMenu::Draw(
     const float sbPad   =  6.0f  * s;
 
     const int32_t totalRows   = static_cast<int32_t>(m_rows.size());
-    const int32_t numHeaders  = 4;
+    // Count section headers
+    int32_t numHeaders = 0;
+    for (const auto& r : m_rows) if (r.type == RowType::SectionHeader) ++numHeaders;
     const int32_t numData     = totalRows - numHeaders;
     const int32_t visData     = std::min(numData, kVisibleRows);
     const float   listH       = static_cast<float>(visData) * (ph_row + gap)
@@ -570,8 +598,13 @@ void SettingsMenu::Draw(
                 const float selTop = ry + 1.0f*s + inset;
                 const float selBot = ry + rh - 1.0f*s - inset;
 
+                // ActionButton: golden fill for selection
+                const D2D1_COLOR_F selFill = (row.type == RowType::ActionButton)
+                    ? Tok::GoldDeep(0.55f * ease)
+                    : Tok::SurfaceRaised(0.80f * ease);
+
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                rt->CreateSolidColorBrush(Tok::SurfaceRaised(0.80f * ease), b.GetAddressOf());
+                rt->CreateSolidColorBrush(selFill, b.GetAddressOf());
                 if (b) { D2D1_ROUNDED_RECT rr{
                     D2D1::RectF(px+8.0f*s, selTop, px+pw-8.0f*s, selBot),
                     7.0f*s, 7.0f*s};
@@ -583,39 +616,65 @@ void SettingsMenu::Draw(
                     1.5f*s, 1.5f*s};
                     rt->FillRoundedRectangle(rr, ab.Get()); }
             }
+
+            // ActionButton press flash overlay
+            if (row.type == RowType::ActionButton
+                && i == m_actionFlashRow
+                && m_actionFlashAlpha > 0.0f)
+            {
+                const float fa = m_actionFlashAlpha * ease;
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fb;
+                rt->CreateSolidColorBrush(Tok::GoldBright(0.72f * fa), fb.GetAddressOf());
+                if (fb) {
+                    D2D1_ROUNDED_RECT rr{
+                        D2D1::RectF(px+8.0f*s, ry+1.0f*s, px+pw-8.0f*s, ry+rh-1.0f*s),
+                        7.0f*s, 7.0f*s };
+                    rt->FillRoundedRectangle(rr, fb.Get());
+                }
+            }
+
             if (dwrite && row.label) {
+                // ActionButton: centre-aligned, slightly larger
+                const bool isAction = (row.type == RowType::ActionButton);
+                const float lblFontSz = isAction ? 14.5f * s : 13.5f * s;
                 Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
                 dwrite->CreateTextFormat(L"Segoe UI", nullptr,
-                    DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
-                    DWRITE_FONT_STRETCH_NORMAL, 13.5f * s, L"en-us", fmt.GetAddressOf());
+                    isAction ? DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                    DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL, lblFontSz, L"en-us", fmt.GetAddressOf());
                 if (fmt) {
                     fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                    if (isAction) fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+
                     Microsoft::WRL::ComPtr<IDWriteTextLayout> lay;
+                    const float maxW = isAction ? (pw - padX * 2.0f) : (pw * 0.5f - padX - 8.0f * s);
                     dwrite->CreateTextLayout(row.label,
                         static_cast<UINT32>(std::wcslen(row.label)),
-                        fmt.Get(), pw * 0.5f - padX - 8.0f * s, ph_row,
+                        fmt.Get(), maxW, ph_row,
                         lay.GetAddressOf());
                     if (lay) {
                         lay->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-                        if (m_dwriteEllipsis) {
+                        if (!isAction && m_dwriteEllipsis) {
                             DWRITE_TRIMMING trimming{};
                             trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
-                            trimming.delimiter   = 0;
-                            trimming.delimiterCount = 0;
                             lay->SetTrimming(&trimming, m_dwriteEllipsis.Get());
                         }
+                        const D2D1_COLOR_F lblCol = isAction
+                            ? (sel ? Tok::GoldBright(0.98f*ease) : Tok::GoldMid(0.80f*ease))
+                            : (sel  ? Tok::GoldHi(0.96f*ease)    : Tok::ChromeHi(0.82f*ease));
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                        rt->CreateSolidColorBrush(
-                            sel ? Tok::GoldHi(0.96f*ease) : Tok::ChromeHi(0.82f*ease),
-                            b.GetAddressOf());
+                        rt->CreateSolidColorBrush(lblCol, b.GetAddressOf());
+                        const float originX = isAction
+                            ? px + padX
+                            : px + padX + 6.0f * s;
                         if (b) rt->DrawTextLayout(
-                            D2D1::Point2F(px+padX+6.0f*s, ry + (ph_row - 13.5f*s*1.4f)*0.5f),
+                            D2D1::Point2F(originX, ry + (ph_row - lblFontSz * 1.4f) * 0.5f),
                             lay.Get(), b.Get());
                     }
                 }
             }
 
-            // ---- Value widget (right half)
+            // ---- Value widget (right half, only for sliders and toggles)
             const float wx   = px + pw * 0.5f;
             const float wx1  = px + pw - cr - sbW - sbPad;
 
@@ -686,7 +745,6 @@ void SettingsMenu::Draw(
                 const float th  = 22.0f * s;
                 // Track
                 {
-                    // Interpolate track color: off=SurfaceSunken, on=GoldDeep
                     const D2D1_COLOR_F offCol = Tok::SurfaceSunken(0.88f * ease);
                     const D2D1_COLOR_F onCol  = Tok::GoldDeep(0.72f * ease);
                     const D2D1_COLOR_F trackCol = D2D1::ColorF(
@@ -709,7 +767,6 @@ void SettingsMenu::Draw(
                         th*0.5f, th*0.5f};
                         rt->DrawRoundedRectangle(rr, b.Get(), 1.1f*s); }
                 }
-                // Animated knob: lerp between off and on X positions using spring value
                 {
                     const float offKnobX = tcx - tw*0.5f + th*0.5f;
                     const float onKnobX  = tcx + tw*0.5f - th*0.5f;
@@ -725,7 +782,6 @@ void SettingsMenu::Draw(
                     rt->CreateSolidColorBrush(knobCol, b.GetAddressOf());
                     if (b) rt->FillEllipse(
                         D2D1::Ellipse(D2D1::Point2F(kx2,tcy), th*0.44f, th*0.44f), b.Get());
-                    // Specular highlight on knob
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sb;
                     rt->CreateSolidColorBrush(Tok::White(0.30f * ease), sb.GetAddressOf());
                     if (sb) rt->FillEllipse(
@@ -792,9 +848,9 @@ void SettingsMenu::Draw(
         float hx = px + padX;
 
         DrawHintChip(rt, dwrite, hx, hintCY, s, ease,
-            L"\u25CF  Toggle",
+            L"\u25CF  Toggle / Activate",
             Tok::GoldDeep(0.70f * ease), Tok::GoldHi(0.92f * ease), fnt);
-        hx += 90.0f * s + chipGap;
+        hx += 130.0f * s + chipGap;
 
         DrawHintChip(rt, dwrite, hx, hintCY, s, ease,
             L"\u25C6  Close",
