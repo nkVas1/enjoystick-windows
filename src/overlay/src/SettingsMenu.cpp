@@ -85,17 +85,24 @@ int32_t SettingsMenu::NextInteractiveRow(int32_t from, int32_t dir) const noexce
 }
 
 void SettingsMenu::OnRowChanged(int32_t newRow) {
-    m_prevRow    = m_selectedRow;
-    m_trailAlpha = 1.0f;
-    m_selAnimT   = 0.0f;
+    m_prevRow     = m_selectedRow;
+    m_trailAlpha  = 1.0f;
+    m_selAnimT    = 0.0f;
     m_selectedRow = newRow;
+    // Kick the selection cursor spring toward the new row index
+    // (pixel target is resolved each Draw frame; here we just mark dirty
+    //  by nudging velocity to ensure a visible bounce)
+    m_selCursorSpring.velocity += 320.0f *
+        (newRow > m_prevRow ? 1.0f : -1.0f);
+
     const int32_t total = static_cast<int32_t>(m_rows.size());
     if (m_selectedRow < m_scrollOffset) {
         m_scrollOffset = m_selectedRow;
     } else if (m_selectedRow >= m_scrollOffset + kVisibleRows) {
         m_scrollOffset = m_selectedRow - kVisibleRows + 1;
     }
-    m_scrollOffset = std::max(0, std::min(m_scrollOffset, std::max(0, total - kVisibleRows)));
+    m_scrollOffset = std::max(0, std::min(m_scrollOffset,
+        std::max(0, total - kVisibleRows)));
     if (m_onNavigate) m_onNavigate();
 }
 
@@ -113,6 +120,13 @@ void SettingsMenu::Open(const Values& current) {
     m_selAnimT     = 1.0f;
     m_actionFlashAlpha = 0.0f;
     m_actionFlashRow   = -1;
+
+    // Reset selection cursor spring
+    m_selCursorInit = false;
+    m_selCursorSpring.stiffness = 600.0f;
+    m_selCursorSpring.damping   = 30.0f;
+    m_selCursorSpring.value     = 0.0f;
+    m_selCursorSpring.velocity  = 0.0f;
 
     m_stickNavActive    = false;
     m_stickNavCooldown  = 0.0f;
@@ -183,6 +197,9 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
             }
         }
     }
+    // Selection cursor spring steps every frame
+    m_selCursorSpring.Step(dt);
+
     // Decay action flash
     if (m_actionFlashAlpha > 0.0f) {
         m_actionFlashAlpha -= dt * 3.5f;
@@ -234,7 +251,7 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
         }
     }
 
-    // ---- DPad horizontal: adjust selected slider (not applicable to ActionButton)
+    // ---- DPad horizontal: adjust selected slider
     {
         const bool hHorz = dLeft || dRight;
         if (hHorz) {
@@ -462,33 +479,42 @@ void SettingsMenu::Draw(
     Microsoft::WRL::ComPtr<ID2D1Factory> fac;
     rt->GetFactory(fac.GetAddressOf());
 
-    const float s       = dpiScale;
-    const float pw      = 580.0f * s;
-    const float ph_row  = 44.0f  * s;
-    const float ph_hdr  = 28.0f  * s;
-    const float padX    = 28.0f  * s;
-    const float padY    = 20.0f  * s;
-    const float gap     =  4.0f  * s;
-    const float cr      = 14.0f  * s;
-    const float accentH =  3.0f  * s;
-    const float hintBarH= 36.0f  * s;
-    const float sbW     =  6.0f  * s;
-    const float sbPad   =  6.0f  * s;
+    const float s        = dpiScale;
+    const float pw       = 580.0f * s;
+    const float ph_row   = 44.0f  * s;
+    const float ph_hdr   = 28.0f  * s;
+    const float padX     = 28.0f  * s;
+    const float padY     = 20.0f  * s;
+    const float gap      =  4.0f  * s;
+    const float cr       = 14.0f  * s;
+    const float accentH  =  3.0f  * s;
+    const float hintBarH = 36.0f  * s;
+    const float sbW      =  5.0f  * s;
+    // Scrollbar sits flush inside the right rounded corner, with a small inset
+    const float sbPadR   = cr + 4.0f * s;  // distance from panel right edge
+    const float sbPadV   =  8.0f  * s;     // vertical inset from list area edges
 
-    const int32_t totalRows   = static_cast<int32_t>(m_rows.size());
-    // Count section headers
+    const int32_t totalRows = static_cast<int32_t>(m_rows.size());
+
+    // Count section headers and data rows
     int32_t numHeaders = 0;
     for (const auto& r : m_rows) if (r.type == RowType::SectionHeader) ++numHeaders;
-    const int32_t numData     = totalRows - numHeaders;
-    const int32_t visData     = std::min(numData, kVisibleRows);
-    const float   listH       = static_cast<float>(visData) * (ph_row + gap)
-                              + static_cast<float>(numHeaders) * (ph_hdr + gap)
-                              - gap;
+    const int32_t numData = totalRows - numHeaders;
+
+    // listH: height needed to show ALL rows (headers + kVisibleRows data rows)
+    const int32_t visData = std::min(numData, kVisibleRows);
+    const float   listH   = static_cast<float>(visData)   * (ph_row + gap)
+                          + static_cast<float>(numHeaders) * (ph_hdr + gap)
+                          - gap;
 
     const float totalH = padY * 2.0f + accentH + hintBarH + listH;
 
     const float px = (screenW - pw) * 0.5f;
     const float py = (screenH - totalH) * 0.5f;
+
+    // List area bounds (used for scrollbar placement)
+    const float listAreaTop = py + padY + accentH;
+    const float listAreaBot = listAreaTop + listH;
 
     // ---- Scrim
     {
@@ -517,8 +543,42 @@ void SettingsMenu::Draw(
     }
     if (fac) DrawPanelChrome(rt, fac.Get(), px, py, pw, totalH, cr, s, ease);
 
+    // ---- Selection cursor spring: compute the Y pixel target for m_selectedRow
+    //      and snap/drive the spring toward it each Draw call (Draw is const,
+    //      but m_selCursorSpring is mutable).
+    {
+        // Walk rows to find the Y centre of the selected row inside the panel
+        float walkY   = listAreaTop;
+        float selPixY = listAreaTop + ph_row * 0.5f;  // fallback
+        int32_t dataSeen = 0;
+        for (int32_t i = 0; i < totalRows; ++i) {
+            const auto& r = m_rows[static_cast<size_t>(i)];
+            const float rh = (r.type == RowType::SectionHeader) ? ph_hdr : ph_row;
+            bool rowVisible = false;
+            if (r.type == RowType::SectionHeader) {
+                rowVisible = true;  // headers always occupy vertical space
+            } else {
+                rowVisible = (dataSeen >= m_scrollOffset &&
+                              dataSeen < m_scrollOffset + kVisibleRows);
+                ++dataSeen;
+            }
+            if (rowVisible) {
+                if (i == m_selectedRow) {
+                    selPixY = walkY + rh * 0.5f;
+                }
+                walkY += rh + gap;
+            }
+        }
+        if (!m_selCursorInit) {
+            m_selCursorSpring.Snap(selPixY);
+            m_selCursorInit = true;
+        }
+        m_selCursorSpring.SetTarget(selPixY);
+    }
+    const float cursorY = m_selCursorSpring.value;
+
     // ---- Rows
-    float ry = py + padY + accentH;
+    float ry = listAreaTop;
     int32_t dataRowsSeen = 0;
     for (int32_t i = 0; i < totalRows; ++i) {
         const auto& row = m_rows[static_cast<size_t>(i)];
@@ -533,6 +593,7 @@ void SettingsMenu::Draw(
             }
             ++dataRowsSeen;
         } else {
+            // Determine if this header has any visible data rows below it
             int32_t nextData = dataRowsSeen;
             bool headerVisible = false;
             for (int32_t j = i + 1; j < totalRows; ++j) {
@@ -571,7 +632,7 @@ void SettingsMenu::Draw(
                     b.Get(), 0.8f);
             }
         } else {
-            // Trail highlight
+            // Trail highlight (previous row ghost)
             if (prev && m_trailAlpha > 0.0f) {
                 const float ta = m_trailAlpha * m_trailAlpha * ease;
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> tb;
@@ -592,13 +653,15 @@ void SettingsMenu::Draw(
                 }
             }
 
+            // Animated selection highlight driven by m_selCursorSpring
             if (sel) {
+                // The highlight follows the spring Y position, not the literal row Y.
+                // This creates the "bouncing magnet" snap effect.
                 const float popSc  = SelPopScale(m_selAnimT);
-                const float inset  = (1.0f - popSc) * ph_row * 0.5f;
-                const float selTop = ry + 1.0f*s + inset;
-                const float selBot = ry + rh - 1.0f*s - inset;
+                const float halfH  = ph_row * 0.5f * popSc;
+                const float selTop = cursorY - halfH + 1.0f * s;
+                const float selBot = cursorY + halfH - 1.0f * s;
 
-                // ActionButton: golden fill for selection
                 const D2D1_COLOR_F selFill = (row.type == RowType::ActionButton)
                     ? Tok::GoldDeep(0.55f * ease)
                     : Tok::SurfaceRaised(0.80f * ease);
@@ -609,10 +672,13 @@ void SettingsMenu::Draw(
                     D2D1::RectF(px+8.0f*s, selTop, px+pw-8.0f*s, selBot),
                     7.0f*s, 7.0f*s};
                     rt->FillRoundedRectangle(rr, b.Get()); }
+
+                // Left accent bar
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> ab;
                 rt->CreateSolidColorBrush(Tok::GoldHi(0.85f * ease), ab.GetAddressOf());
                 if (ab) { D2D1_ROUNDED_RECT rr{
-                    D2D1::RectF(px+8.0f*s, ry+6.0f*s, px+11.5f*s, ry+rh-6.0f*s),
+                    D2D1::RectF(px+8.0f*s, cursorY-ph_row*0.5f+6.0f*s,
+                                px+11.5f*s, cursorY+ph_row*0.5f-6.0f*s),
                     1.5f*s, 1.5f*s};
                     rt->FillRoundedRectangle(rr, ab.Get()); }
             }
@@ -634,7 +700,6 @@ void SettingsMenu::Draw(
             }
 
             if (dwrite && row.label) {
-                // ActionButton: centre-aligned, slightly larger
                 const bool isAction = (row.type == RowType::ActionButton);
                 const float lblFontSz = isAction ? 14.5f * s : 13.5f * s;
                 Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
@@ -647,11 +712,13 @@ void SettingsMenu::Draw(
                     if (isAction) fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
 
                     Microsoft::WRL::ComPtr<IDWriteTextLayout> lay;
-                    const float maxW = isAction ? (pw - padX * 2.0f) : (pw * 0.5f - padX - 8.0f * s);
+                    // Slider label uses only left half; Action uses full width
+                    const float maxW = isAction
+                        ? (pw - padX * 2.0f)
+                        : (pw * 0.5f - padX - 8.0f * s);
                     dwrite->CreateTextLayout(row.label,
                         static_cast<UINT32>(std::wcslen(row.label)),
-                        fmt.Get(), maxW, ph_row,
-                        lay.GetAddressOf());
+                        fmt.Get(), maxW, ph_row, lay.GetAddressOf());
                     if (lay) {
                         lay->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                         if (!isAction && m_dwriteEllipsis) {
@@ -661,12 +728,10 @@ void SettingsMenu::Draw(
                         }
                         const D2D1_COLOR_F lblCol = isAction
                             ? (sel ? Tok::GoldBright(0.98f*ease) : Tok::GoldMid(0.80f*ease))
-                            : (sel  ? Tok::GoldHi(0.96f*ease)    : Tok::ChromeHi(0.82f*ease));
+                            : (sel ? Tok::GoldHi  (0.96f*ease)   : Tok::ChromeHi(0.82f*ease));
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                         rt->CreateSolidColorBrush(lblCol, b.GetAddressOf());
-                        const float originX = isAction
-                            ? px + padX
-                            : px + padX + 6.0f * s;
+                        const float originX = isAction ? px + padX : px + padX + 6.0f * s;
                         if (b) rt->DrawTextLayout(
                             D2D1::Point2F(originX, ry + (ph_row - lblFontSz * 1.4f) * 0.5f),
                             lay.Get(), b.Get());
@@ -674,48 +739,41 @@ void SettingsMenu::Draw(
                 }
             }
 
-            // ---- Value widget (right half, only for sliders and toggles)
-            const float wx   = px + pw * 0.5f;
-            const float wx1  = px + pw - cr - sbW - sbPad;
+            // ---- Value widget (right half: sliders and toggles only)
+            // wx1 must not reach into the scrollbar lane
+            const float wx  = px + pw * 0.5f;
+            const float wx1 = px + pw - sbPadR - sbW - 4.0f * s;
 
             if (row.type == RowType::FloatSlider && row.fTarget) {
                 const float t   = std::clamp((*row.fTarget - row.min) / (row.max - row.min + 0.0001f), 0.0f, 1.0f);
                 const float bcy = ry + rh * 0.5f;
                 const float bh2 = 5.0f * s;
-                {
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                    rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.90f * ease), b.GetAddressOf());
-                    if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(wx,bcy-bh2,wx1,bcy+bh2),bh2,bh2};
-                             rt->FillRoundedRectangle(rr, b.Get()); }
-                }
-                {
-                    const float fillX = wx + (wx1-wx)*t;
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                    rt->CreateSolidColorBrush(
-                        sel ? Tok::GoldMid(0.88f*ease) : Tok::GoldDeep(0.60f*ease),
-                        b.GetAddressOf());
-                    if (b && fillX > wx) { D2D1_ROUNDED_RECT rr{D2D1::RectF(wx,bcy-bh2,fillX,bcy+bh2),bh2,bh2};
-                                           rt->FillRoundedRectangle(rr, b.Get()); }
-                }
-                {
-                    const float tx2 = wx + (wx1-wx)*t;
-                    const float tr = 8.0f * s;
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                    rt->CreateSolidColorBrush(
-                        sel ? Tok::GoldBright(0.97f*ease) : Tok::GoldMid(0.60f*ease),
-                        b.GetAddressOf());
-                    if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(tx2,bcy),tr,tr), b.Get());
-                }
+                { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+                  rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.90f * ease), b.GetAddressOf());
+                  if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(wx,bcy-bh2,wx1,bcy+bh2),bh2,bh2};
+                           rt->FillRoundedRectangle(rr, b.Get()); } }
+                { const float fillX = wx + (wx1-wx)*t;
+                  Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+                  rt->CreateSolidColorBrush(
+                      sel ? Tok::GoldMid(0.88f*ease) : Tok::GoldDeep(0.60f*ease), b.GetAddressOf());
+                  if (b && fillX > wx) { D2D1_ROUNDED_RECT rr{D2D1::RectF(wx,bcy-bh2,fillX,bcy+bh2),bh2,bh2};
+                                         rt->FillRoundedRectangle(rr, b.Get()); } }
+                { const float tx2 = wx + (wx1-wx)*t;
+                  const float tr = 8.0f * s;
+                  Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+                  rt->CreateSolidColorBrush(
+                      sel ? Tok::GoldBright(0.97f*ease) : Tok::GoldMid(0.60f*ease), b.GetAddressOf());
+                  if (b) rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(tx2,bcy),tr,tr), b.Get()); }
                 if (sel) {
                     const float tx2 = wx + (wx1-wx)*t;
                     const float tr = 8.0f * s;
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> rb;
                     rt->CreateSolidColorBrush(Tok::GoldHi(0.55f*ease), rb.GetAddressOf());
                     if (rb) rt->DrawEllipse(
-                        D2D1::Ellipse(D2D1::Point2F(tx2,bcy), tr+1.5f*s, tr+1.5f*s),
+                        D2D1::Ellipse(D2D1::Point2F(tx2,bcy),tr+1.5f*s,tr+1.5f*s),
                         rb.Get(), 1.2f*s);
                 }
-                if (dwrite && row.fTarget) {
+                if (dwrite) {
                     wchar_t buf[32];
                     std::swprintf(buf, 32, L"%.2f%ls", *row.fTarget, row.unit ? row.unit : L"");
                     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
@@ -734,7 +792,6 @@ void SettingsMenu::Draw(
                     }
                 }
             } else if (row.type == RowType::BoolToggle && row.bTarget) {
-                // Use spring value for animated knob position
                 const float springVal = (static_cast<size_t>(i) < m_toggleSprings.size())
                     ? std::clamp(m_toggleSprings[static_cast<size_t>(i)].value, 0.0f, 1.0f)
                     : (*row.bTarget ? 1.0f : 0.0f);
@@ -743,91 +800,81 @@ void SettingsMenu::Draw(
                 const float tcy = ry + rh * 0.5f;
                 const float tw  = 42.0f * s;
                 const float th  = 22.0f * s;
-                // Track
-                {
-                    const D2D1_COLOR_F offCol = Tok::SurfaceSunken(0.88f * ease);
-                    const D2D1_COLOR_F onCol  = Tok::GoldDeep(0.72f * ease);
-                    const D2D1_COLOR_F trackCol = D2D1::ColorF(
-                        offCol.r + (onCol.r - offCol.r) * springVal,
-                        offCol.g + (onCol.g - offCol.g) * springVal,
-                        offCol.b + (onCol.b - offCol.b) * springVal,
-                        offCol.a + (onCol.a - offCol.a) * springVal);
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                    rt->CreateSolidColorBrush(trackCol, b.GetAddressOf());
-                    if (b) { D2D1_ROUNDED_RECT rr{
-                        D2D1::RectF(tcx-tw*0.5f,tcy-th*0.5f,tcx+tw*0.5f,tcy+th*0.5f),
-                        th*0.5f, th*0.5f};
-                        rt->FillRoundedRectangle(rr, b.Get()); }
-                }
-                if (sel) {
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                    rt->CreateSolidColorBrush(Tok::GoldMid(0.45f*ease), b.GetAddressOf());
-                    if (b) { D2D1_ROUNDED_RECT rr{
-                        D2D1::RectF(tcx-tw*0.5f,tcy-th*0.5f,tcx+tw*0.5f,tcy+th*0.5f),
-                        th*0.5f, th*0.5f};
-                        rt->DrawRoundedRectangle(rr, b.Get(), 1.1f*s); }
-                }
-                {
-                    const float offKnobX = tcx - tw*0.5f + th*0.5f;
-                    const float onKnobX  = tcx + tw*0.5f - th*0.5f;
-                    const float kx2 = offKnobX + (onKnobX - offKnobX) * springVal;
-                    const D2D1_COLOR_F offKnob = Tok::ChromeMute(0.60f * ease);
-                    const D2D1_COLOR_F onKnob  = Tok::GoldBright(0.97f * ease);
-                    const D2D1_COLOR_F knobCol = D2D1::ColorF(
-                        offKnob.r + (onKnob.r - offKnob.r) * springVal,
-                        offKnob.g + (onKnob.g - offKnob.g) * springVal,
-                        offKnob.b + (onKnob.b - offKnob.b) * springVal,
-                        offKnob.a + (onKnob.a - offKnob.a) * springVal);
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                    rt->CreateSolidColorBrush(knobCol, b.GetAddressOf());
-                    if (b) rt->FillEllipse(
-                        D2D1::Ellipse(D2D1::Point2F(kx2,tcy), th*0.44f, th*0.44f), b.Get());
-                    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sb;
-                    rt->CreateSolidColorBrush(Tok::White(0.30f * ease), sb.GetAddressOf());
-                    if (sb) rt->FillEllipse(
-                        D2D1::Ellipse(
-                            D2D1::Point2F(kx2 - th*0.10f, tcy - th*0.12f),
-                            th*0.18f, th*0.15f), sb.Get());
-                    (void)on;
-                }
+                { const D2D1_COLOR_F offCol = Tok::SurfaceSunken(0.88f * ease);
+                  const D2D1_COLOR_F onCol  = Tok::GoldDeep(0.72f * ease);
+                  const D2D1_COLOR_F trackCol = D2D1::ColorF(
+                      offCol.r+(onCol.r-offCol.r)*springVal, offCol.g+(onCol.g-offCol.g)*springVal,
+                      offCol.b+(onCol.b-offCol.b)*springVal, offCol.a+(onCol.a-offCol.a)*springVal);
+                  Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+                  rt->CreateSolidColorBrush(trackCol, b.GetAddressOf());
+                  if (b) { D2D1_ROUNDED_RECT rr{
+                      D2D1::RectF(tcx-tw*0.5f,tcy-th*0.5f,tcx+tw*0.5f,tcy+th*0.5f),
+                      th*0.5f, th*0.5f};
+                      rt->FillRoundedRectangle(rr, b.Get()); } }
+                if (sel) { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+                  rt->CreateSolidColorBrush(Tok::GoldMid(0.45f*ease), b.GetAddressOf());
+                  if (b) { D2D1_ROUNDED_RECT rr{
+                      D2D1::RectF(tcx-tw*0.5f,tcy-th*0.5f,tcx+tw*0.5f,tcy+th*0.5f),
+                      th*0.5f,th*0.5f};
+                      rt->DrawRoundedRectangle(rr, b.Get(), 1.1f*s); } }
+                { const float offKnobX = tcx - tw*0.5f + th*0.5f;
+                  const float onKnobX  = tcx + tw*0.5f - th*0.5f;
+                  const float kx2 = offKnobX + (onKnobX-offKnobX)*springVal;
+                  const D2D1_COLOR_F offK = Tok::ChromeMute(0.60f*ease);
+                  const D2D1_COLOR_F onK  = Tok::GoldBright(0.97f*ease);
+                  const D2D1_COLOR_F knobCol = D2D1::ColorF(
+                      offK.r+(onK.r-offK.r)*springVal, offK.g+(onK.g-offK.g)*springVal,
+                      offK.b+(onK.b-offK.b)*springVal, offK.a+(onK.a-offK.a)*springVal);
+                  Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+                  rt->CreateSolidColorBrush(knobCol, b.GetAddressOf());
+                  if (b) rt->FillEllipse(
+                      D2D1::Ellipse(D2D1::Point2F(kx2,tcy),th*0.44f,th*0.44f), b.Get());
+                  Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sb;
+                  rt->CreateSolidColorBrush(Tok::White(0.30f*ease), sb.GetAddressOf());
+                  if (sb) rt->FillEllipse(
+                      D2D1::Ellipse(D2D1::Point2F(kx2-th*0.10f,tcy-th*0.12f),
+                                    th*0.18f,th*0.15f), sb.Get());
+                  (void)on; }
             }
         }
         ry += rh + gap;
     }
 
     // ---- Scrollbar
+    // The scrollbar is STRICTLY contained inside the panel list area.
+    // sbX is calculated so the bar sits inside the right rounded corner.
     {
-        const int32_t numInteractive = numData;
-        if (numInteractive > kVisibleRows) {
-            const float listTop2  = py + padY + accentH;
-            const float listBot2  = listTop2 + listH;
-            const float trackTop  = listTop2 + 4.0f * s;
-            const float trackBot  = listBot2 - 4.0f * s;
-            const float trackH    = trackBot - trackTop;
-            const float sbX       = px + pw - cr - sbW - sbPad;
+        if (numData > kVisibleRows) {
+            // Track spans the list area, inset by sbPadV on each end
+            const float trackTop = listAreaTop + sbPadV;
+            const float trackBot = listAreaBot - sbPadV;   // never exceeds panel body
+            const float trackH   = trackBot - trackTop;
+            // Horizontal position: inside the panel, right of the content area
+            const float sbX      = px + pw - sbPadR - sbW;
 
-            {
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.60f * ease), b.GetAddressOf());
-                if (b) { D2D1_ROUNDED_RECT rr{ D2D1::RectF(sbX, trackTop, sbX+sbW, trackBot),
-                    sbW*0.5f, sbW*0.5f };
-                    rt->FillRoundedRectangle(rr, b.Get()); }
-            }
+            // Track background
+            { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+              rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.55f * ease), b.GetAddressOf());
+              if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sbX, trackTop, sbX+sbW, trackBot),
+                  sbW*0.5f, sbW*0.5f};
+                  rt->FillRoundedRectangle(rr, b.Get()); } }
 
-            const float maxOffset  = static_cast<float>(numInteractive - kVisibleRows);
-            const float thumbRatio = static_cast<float>(kVisibleRows) / static_cast<float>(numInteractive);
-            const float thumbH     = std::max(24.0f * s, trackH * thumbRatio);
+            const float maxOffset  = static_cast<float>(numData - kVisibleRows);
+            const float thumbRatio = static_cast<float>(kVisibleRows) / static_cast<float>(numData);
+            const float thumbH     = std::max(20.0f * s, trackH * thumbRatio);
             const float scrollT    = (maxOffset > 0.0f)
-                ? static_cast<float>(m_scrollOffset) / maxOffset
-                : 0.0f;
-            const float thumbTop   = trackTop + scrollT * (trackH - thumbH);
-            {
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                rt->CreateSolidColorBrush(Tok::GoldMid(0.65f * ease), b.GetAddressOf());
-                if (b) { D2D1_ROUNDED_RECT rr{ D2D1::RectF(sbX, thumbTop, sbX+sbW, thumbTop+thumbH),
-                    sbW*0.5f, sbW*0.5f };
-                    rt->FillRoundedRectangle(rr, b.Get()); }
-            }
+                ? static_cast<float>(m_scrollOffset) / maxOffset : 0.0f;
+            // Clamp thumb so it never exceeds track bounds
+            const float thumbTop   = std::clamp(
+                trackTop + scrollT * (trackH - thumbH),
+                trackTop, trackBot - thumbH);
+
+            { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+              rt->CreateSolidColorBrush(Tok::GoldMid(0.65f * ease), b.GetAddressOf());
+              if (b) { D2D1_ROUNDED_RECT rr{
+                  D2D1::RectF(sbX, thumbTop, sbX+sbW, thumbTop+thumbH),
+                  sbW*0.5f, sbW*0.5f};
+                  rt->FillRoundedRectangle(rr, b.Get()); } }
         }
     }
 
@@ -835,33 +882,27 @@ void SettingsMenu::Draw(
     if (dwrite) {
         const float hintY  = py + totalH - hintBarH;
         const float hintCY = hintY + hintBarH * 0.5f;
-        {
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-            rt->CreateSolidColorBrush(Tok::GoldDeep(0.14f * ease), b.GetAddressOf());
-            if (b) rt->DrawLine(
-                D2D1::Point2F(px + padX, hintY),
-                D2D1::Point2F(px + pw - padX, hintY),
-                b.Get(), 0.6f);
-        }
+        { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+          rt->CreateSolidColorBrush(Tok::GoldDeep(0.14f * ease), b.GetAddressOf());
+          if (b) rt->DrawLine(
+              D2D1::Point2F(px + padX, hintY),
+              D2D1::Point2F(px + pw - padX, hintY),
+              b.Get(), 0.6f); }
         const float fnt    = 11.0f * s;
         const float chipGap = 10.0f * s;
         float hx = px + padX;
-
         DrawHintChip(rt, dwrite, hx, hintCY, s, ease,
             L"\u25CF  Toggle / Activate",
             Tok::GoldDeep(0.70f * ease), Tok::GoldHi(0.92f * ease), fnt);
         hx += 130.0f * s + chipGap;
-
         DrawHintChip(rt, dwrite, hx, hintCY, s, ease,
             L"\u25C6  Close",
             Tok::SurfaceRaised(0.90f * ease), Tok::ChromeMid(0.80f * ease), fnt);
         hx += 82.0f * s + chipGap;
-
         DrawHintChip(rt, dwrite, hx, hintCY, s, ease,
             L"\u25B2  Reset defaults",
             Tok::SurfaceRaised(0.90f * ease), Tok::ChromeMid(0.80f * ease), fnt);
         hx += 130.0f * s + chipGap;
-
         DrawHintChip(rt, dwrite, hx, hintCY, s, ease,
             L"\u25C4\u25BA  Adjust value",
             Tok::GoldMid(0.55f * ease), Tok::GoldBright(0.95f * ease), fnt);
