@@ -1,6 +1,7 @@
 #pragma once
 
 #include <enjoystick/shared/Types.hpp>
+#include <enjoystick/overlay/Overlay_SpringAnim.hpp>
 #include <functional>
 #include <string>
 #include <vector>
@@ -9,6 +10,8 @@
 interface IDWriteInlineObject;
 
 namespace enjoystick::overlay {
+
+enum class HapticType : uint8_t;
 
 // ---------------------------------------------------------------------------
 // SettingsMenu
@@ -29,6 +32,7 @@ public:
         float dzOuter           = 0.92f;
     };
     using OnChangedCallback = std::function<void(const Values&)>;
+    using OnHapticCallback  = std::function<void(HapticType)>;
 
     explicit SettingsMenu(OnChangedCallback onChange = nullptr);
 
@@ -44,6 +48,7 @@ public:
     void ResetToDefaults();
 
     void SetOnChanged(OnChangedCallback cb) { m_onChange = std::move(cb); }
+    void SetOnHaptic (OnHapticCallback  cb) { m_onHaptic = std::move(cb); }
 
 private:
     enum class RowType  : uint8_t { SectionHeader, FloatSlider, BoolToggle };
@@ -63,14 +68,21 @@ private:
     int32_t NextInteractiveRow(int32_t from, int32_t dir) const noexcept;
     void AdjustSelected(float direction, bool repeat);
     void CommitChange();
+    void FireHaptic(HapticType type);
     void UpdateAnimation(float dt);
     void OnRowChanged(int32_t newRow);
+    void SyncToggleSprings();  // snap springs to current bool values
 
     OnChangedCallback m_onChange;
+    OnHapticCallback  m_onHaptic;
     Values m_values;
     std::vector<Row> m_rows;
     int32_t m_selectedRow  = 0;
     int32_t m_scrollOffset = 0;
+
+    // One spring per row — only BoolToggle rows actually use theirs.
+    // Indexed in parallel with m_rows.  Rebuilt in BuildRows() / Open().
+    mutable std::vector<FloatSpring> m_toggleKnobPositions;
 
     static constexpr int32_t kVisibleRows = 10;
 
@@ -80,26 +92,14 @@ private:
 
     // -----------------------------------------------------------------------
     // Navigation timing
-    //
-    // kNavDeadzone 0.72: only intentional deflection past 72% registers.
-    //
-    // kSnapFirst 1.50 s: hold threshold before auto-repeat begins.
-    // This makes single-item navigation feel heavy and deliberate:
-    // a short flick always moves exactly one item, never two.
-    //
-    // kSnapNext / kSnapFast: slightly slower repeat cadence for
-    // weighty "magnet" feel when scrolling through many items.
-    //
-    // kAnimMs 160 ms: the selection pop-scale animation resolves quickly
-    // so the bounce is perceptible but does not delay input.
     // -----------------------------------------------------------------------
-    static constexpr float kSnapFirst      = 1.50f;   // was 1.10
-    static constexpr float kSnapNext       = 0.40f;   // was 0.32
+    static constexpr float kSnapFirst      = 1.50f;
+    static constexpr float kSnapNext       = 0.40f;
     static constexpr float kSnapFast       = 0.085f;
     static constexpr float kNavAccelStart  = 1.6f;
     static constexpr float kNavAccelRange  = 0.80f;
     static constexpr float kNavDeadzone    = 0.72f;
-    static constexpr float kAnimMs         = 160.0f;  // was 220
+    static constexpr float kAnimMs         = 160.0f;
 
     bool  m_stickNavActive    = false;
     float m_stickNavCooldown  = 0.0f;
@@ -116,7 +116,7 @@ private:
     bool m_prevDLeft = false, m_prevDRight= false;
 
     static constexpr float kTrailDecayMs  = 160.0f;
-    static constexpr float kSelAnimSpeed  = 10.0f;   // was 8
+    static constexpr float kSelAnimSpeed  = 10.0f;
     mutable int32_t m_prevRow    = -1;
     mutable float   m_trailAlpha = 0.0f;
     mutable float   m_selAnimT   = 1.0f;

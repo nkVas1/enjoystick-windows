@@ -17,6 +17,12 @@ static constexpr float kPif = static_cast<float>(M_PI);
 
 namespace enjoystick::overlay {
 
+// ---------------------------------------------------------------------------
+// Toggle-knob spring config
+// ---------------------------------------------------------------------------
+static constexpr float kToggleStiffness = 380.0f;
+static constexpr float kToggleDamping   =  26.0f;
+
 SettingsMenu::SettingsMenu(OnChangedCallback onChange)
     : m_onChange(std::move(onChange))
 { BuildRows(); }
@@ -46,6 +52,27 @@ void SettingsMenu::BuildRows() {
     m_rows.push_back({ L"Advanced",                 RowType::SectionHeader });
     m_rows.push_back({ L"Deadzone inner",           RowType::FloatSlider, 0.02f,  0.40f,  0.01f, &m_values.dzInner,           nullptr,                    L""       });
     m_rows.push_back({ L"Deadzone outer",           RowType::FloatSlider, 0.50f,  1.00f,  0.01f, &m_values.dzOuter,           nullptr,                    L""       });
+
+    // Rebuild spring array in parallel
+    m_toggleKnobPositions.clear();
+    m_toggleKnobPositions.resize(m_rows.size());
+    for (size_t i = 0; i < m_rows.size(); ++i) {
+        auto& sp = m_toggleKnobPositions[i];
+        sp.stiffness = kToggleStiffness;
+        sp.damping   = kToggleDamping;
+        if (m_rows[i].type == RowType::BoolToggle && m_rows[i].bTarget)
+            sp.Snap((*m_rows[i].bTarget) ? 1.0f : 0.0f);
+        else
+            sp.Snap(0.0f);
+    }
+}
+
+void SettingsMenu::SyncToggleSprings() {
+    for (size_t i = 0; i < m_rows.size(); ++i) {
+        if (m_rows[i].type != RowType::BoolToggle || !m_rows[i].bTarget) continue;
+        if (i >= m_toggleKnobPositions.size()) continue;
+        m_toggleKnobPositions[i].SetTarget((*m_rows[i].bTarget) ? 1.0f : 0.0f);
+    }
 }
 
 bool SettingsMenu::IsInteractiveRow(int32_t idx) const noexcept {
@@ -130,6 +157,11 @@ void SettingsMenu::ResetToDefaults() {
     m_trailAlpha  = 0.0f;
     m_selAnimT    = 1.0f;
     CommitChange();
+    FireHaptic(HapticType::Medium);
+}
+
+void SettingsMenu::FireHaptic(HapticType type) {
+    if (m_onHaptic) m_onHaptic(type);
 }
 
 void SettingsMenu::Update(const ControllerState& state, float dt) {
@@ -148,8 +180,6 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
     if (north && !m_prevNorth) { ResetToDefaults(); goto done; }
 
     // ---- DPad vertical: navigate rows
-    // dUp   = DPad physical up   = previous row = dir -1
-    // dDown = DPad physical down = next row     = dir +1
     {
         const bool dVert = dUp || dDown;
         if (dVert) {
@@ -157,13 +187,13 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
                 m_dpadVertHeld  = true;
                 m_dpadVertTimer = kSnapFirst;
                 const int32_t next = NextInteractiveRow(m_selectedRow, dUp ? -1 : 1);
-                if (next != m_selectedRow) OnRowChanged(next);
+                if (next != m_selectedRow) { OnRowChanged(next); FireHaptic(HapticType::Light); }
             } else {
                 m_dpadVertTimer -= dt;
                 if (m_dpadVertTimer <= 0.0f) {
                     m_dpadVertTimer = kSnapNext;
                     const int32_t next = NextInteractiveRow(m_selectedRow, dUp ? -1 : 1);
-                    if (next != m_selectedRow) OnRowChanged(next);
+                    if (next != m_selectedRow) { OnRowChanged(next); FireHaptic(HapticType::Light); }
                 }
             }
         } else {
@@ -176,7 +206,9 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
         const auto& row = m_rows[static_cast<size_t>(m_selectedRow)];
         if (row.type == RowType::BoolToggle && row.bTarget) {
             *row.bTarget = !(*row.bTarget);
+            SyncToggleSprings();
             CommitChange();
+            FireHaptic(HapticType::Light);
         }
     }
 
@@ -203,9 +235,7 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
         }
     }
 
-    // ---- Left Stick Y: navigate rows
-    // XInput convention: ly > 0 = stick pushed UP = previous row = dir -1
-    //                    ly < 0 = stick pushed DOWN = next row   = dir +1
+    // ---- Left Stick Y: navigate rows  (ly > 0 = physical UP = dir -1)
     // ---- Left Stick X: fine-tune selected slider
     {
         const float ly = state.leftStick.y;
@@ -214,14 +244,13 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
         const bool  lxActive = std::abs(lx) > 0.25f;
 
         if (lyActive && !m_stickLxActive) {
-            // FIXED: ly > 0 means physical UP, so dir = -1 (previous row)
             const int dir = (ly > 0.0f) ? -1 : 1;
             if (!m_stickNavActive) {
                 m_stickNavActive   = true;
                 m_stickNavCooldown = kSnapFirst;
                 m_stickNavHoldTime = 0.0f;
                 const int32_t next = NextInteractiveRow(m_selectedRow, dir);
-                if (next != m_selectedRow) OnRowChanged(next);
+                if (next != m_selectedRow) { OnRowChanged(next); FireHaptic(HapticType::Light); }
             } else {
                 m_stickNavHoldTime += dt;
                 m_stickNavCooldown -= dt;
@@ -232,7 +261,7 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
                     const float interval = kSnapNext + (kSnapFast - kSnapNext) * blend;
                     m_stickNavCooldown = interval;
                     const int32_t next = NextInteractiveRow(m_selectedRow, dir);
-                    if (next != m_selectedRow) OnRowChanged(next);
+                    if (next != m_selectedRow) { OnRowChanged(next); FireHaptic(HapticType::Light); }
                 }
             }
         } else if (!lyActive) {
@@ -251,6 +280,7 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
                         *row.fTarget + (lx > 0 ? 1.0f : -1.0f) * row.step,
                         row.min, row.max);
                     CommitChange();
+                    FireHaptic(HapticType::Light);
                 }
             } else {
                 m_stickLxCooldown -= dt;
@@ -262,6 +292,7 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
                             *row.fTarget + (lx > 0 ? 1.0f : -1.0f) * row.step,
                             row.min, row.max);
                         CommitChange();
+                        FireHaptic(HapticType::Light);
                     }
                 }
             }
@@ -300,6 +331,12 @@ void SettingsMenu::UpdateAnimation(float dt) {
         m_selAnimT += dt * kSelAnimSpeed;
         if (m_selAnimT > 1.0f) m_selAnimT = 1.0f;
     }
+
+    // Step toggle knob springs every frame
+    for (size_t i = 0; i < m_toggleKnobPositions.size(); ++i) {
+        if (i < m_rows.size() && m_rows[i].type == RowType::BoolToggle)
+            m_toggleKnobPositions[i].Step(dt);
+    }
 }
 
 void SettingsMenu::AdjustSelected(float direction, bool repeat) {
@@ -309,6 +346,7 @@ void SettingsMenu::AdjustSelected(float direction, bool repeat) {
     const float step = repeat ? row.step * 1.5f : row.step;
     *row.fTarget = std::clamp(*row.fTarget + direction * step, row.min, row.max);
     CommitChange();
+    FireHaptic(HapticType::Light);
 }
 
 void SettingsMenu::CommitChange() { if (m_onChange) m_onChange(m_values); }
@@ -318,8 +356,6 @@ void SettingsMenu::CommitChange() { if (m_onChange) m_onChange(m_values); }
 // ---------------------------------------------------------------------------
 namespace {
 
-// Pronounced spring pop: A=0.22, k=14, w=22
-// Feels like a heavy magnet snapping to position with a visible overshoot.
 static float SelPopScale(float t) noexcept {
     if (t >= 1.0f) return 1.0f;
     const float A = 0.22f;
@@ -419,8 +455,8 @@ void SettingsMenu::Draw(
     const float cr      = 14.0f  * s;
     const float accentH =  3.0f  * s;
     const float hintBarH= 36.0f  * s;
-    const float sbW     =  6.0f  * s;  // scrollbar width
-    const float sbPad   =  6.0f  * s;  // margin inside panel edge
+    const float sbW     =  6.0f  * s;
+    const float sbPad   =  6.0f  * s;
 
     const int32_t totalRows   = static_cast<int32_t>(m_rows.size());
     const int32_t numHeaders  = 4;
@@ -431,7 +467,6 @@ void SettingsMenu::Draw(
                               - gap;
 
     const float totalH = padY * 2.0f + accentH + hintBarH + listH;
-
     const float px = (screenW - pw) * 0.5f;
     const float py = (screenH - totalH) * 0.5f;
 
@@ -573,8 +608,6 @@ void SettingsMenu::Draw(
                         if (m_dwriteEllipsis) {
                             DWRITE_TRIMMING trimming{};
                             trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
-                            trimming.delimiter   = 0;
-                            trimming.delimiterCount = 0;
                             lay->SetTrimming(&trimming, m_dwriteEllipsis.Get());
                         }
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
@@ -589,10 +622,7 @@ void SettingsMenu::Draw(
             }
 
             // ---- Value widget (right half)
-            // sbW + sbPad + cr is the reserved space on the right inside the panel.
-            // We clamp the widget right edge to not encroach on that zone.
             const float wx   = px + pw * 0.5f;
-            // FIXED: account for corner radius so widget never bleeds behind the rounded edge
             const float wx1  = px + pw - cr - sbW - sbPad;
 
             if (row.type == RowType::FloatSlider && row.fTarget) {
@@ -651,21 +681,34 @@ void SettingsMenu::Draw(
                     }
                 }
             } else if (row.type == RowType::BoolToggle && row.bTarget) {
-                const bool  on  = *row.bTarget;
+                // Fetch spring value for smooth knob animation
+                const float springVal = (static_cast<size_t>(i) < m_toggleKnobPositions.size())
+                    ? std::clamp(m_toggleKnobPositions[static_cast<size_t>(i)].value, 0.0f, 1.0f)
+                    : (*row.bTarget ? 1.0f : 0.0f);
+
                 const float tcx = (wx + wx1) * 0.5f;
                 const float tcy = ry + rh * 0.5f;
                 const float tw  = 42.0f * s;
                 const float th  = 22.0f * s;
+
+                // Track fill: lerp colour from SurfaceSunken → GoldDeep using springVal
                 {
+                    // Blend: (1-t)*SurfaceSunken + t*GoldDeep per channel
+                    const D2D1_COLOR_F offC = Tok::SurfaceSunken(0.88f * ease);
+                    const D2D1_COLOR_F  onC = Tok::GoldDeep    (0.72f * ease);
+                    const D2D1_COLOR_F blendC = D2D1::ColorF(
+                        offC.r + (onC.r - offC.r) * springVal,
+                        offC.g + (onC.g - offC.g) * springVal,
+                        offC.b + (onC.b - offC.b) * springVal,
+                        offC.a + (onC.a - offC.a) * springVal);
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                    rt->CreateSolidColorBrush(
-                        on ? Tok::GoldDeep(0.72f*ease) : Tok::SurfaceSunken(0.88f*ease),
-                        b.GetAddressOf());
+                    rt->CreateSolidColorBrush(blendC, b.GetAddressOf());
                     if (b) { D2D1_ROUNDED_RECT rr{
                         D2D1::RectF(tcx-tw*0.5f,tcy-th*0.5f,tcx+tw*0.5f,tcy+th*0.5f),
                         th*0.5f, th*0.5f};
                         rt->FillRoundedRectangle(rr, b.Get()); }
                 }
+                // Selection ring
                 if (sel) {
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                     rt->CreateSolidColorBrush(Tok::GoldMid(0.45f*ease), b.GetAddressOf());
@@ -674,21 +717,42 @@ void SettingsMenu::Draw(
                         th*0.5f, th*0.5f};
                         rt->DrawRoundedRectangle(rr, b.Get(), 1.1f*s); }
                 }
+                // Knob position driven by spring (0=left/off, 1=right/on)
                 {
-                    const float tx2 = on ? tcx+tw*0.5f-th*0.5f : tcx-tw*0.5f+th*0.5f;
+                    const float knobLeft  = tcx - tw*0.5f + th*0.5f;
+                    const float knobRight = tcx + tw*0.5f - th*0.5f;
+                    const float knobX     = knobLeft + (knobRight - knobLeft) * springVal;
+                    const float knobR     = th * 0.44f;
+
+                    // Glow ellipse behind knob (visible when nearly on)
+                    if (springVal > 0.3f && sel) {
+                        const float glowAlpha = (springVal - 0.3f) / 0.7f * 0.35f * ease;
+                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> gb;
+                        rt->CreateSolidColorBrush(Tok::GoldHi(glowAlpha), gb.GetAddressOf());
+                        if (gb) rt->FillEllipse(
+                            D2D1::Ellipse(D2D1::Point2F(knobX, tcy),
+                                knobR * 1.9f, knobR * 1.9f), gb.Get());
+                    }
+
+                    // Knob colour: lerp ChromeMute → GoldBright
+                    const D2D1_COLOR_F offK = Tok::ChromeMute(0.60f * ease);
+                    const D2D1_COLOR_F  onK = Tok::GoldBright(0.97f * ease);
+                    const D2D1_COLOR_F knobCol = D2D1::ColorF(
+                        offK.r + (onK.r - offK.r) * springVal,
+                        offK.g + (onK.g - offK.g) * springVal,
+                        offK.b + (onK.b - offK.b) * springVal,
+                        offK.a + (onK.a - offK.a) * springVal);
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                    rt->CreateSolidColorBrush(
-                        on ? Tok::GoldBright(0.97f*ease) : Tok::ChromeMute(0.60f*ease),
-                        b.GetAddressOf());
+                    rt->CreateSolidColorBrush(knobCol, b.GetAddressOf());
                     if (b) rt->FillEllipse(
-                        D2D1::Ellipse(D2D1::Point2F(tx2,tcy), th*0.44f, th*0.44f), b.Get());
+                        D2D1::Ellipse(D2D1::Point2F(knobX, tcy), knobR, knobR), b.Get());
                 }
             }
         }
         ry += rh + gap;
     }
 
-    // ---- Scrollbar (right edge of panel, clamped inside corner radius)
+    // ---- Scrollbar
     {
         const int32_t numInteractive = numData;
         if (numInteractive > kVisibleRows) {
@@ -697,10 +761,7 @@ void SettingsMenu::Draw(
             const float trackTop  = listTop2 + 4.0f * s;
             const float trackBot  = listBot2 - 4.0f * s;
             const float trackH    = trackBot - trackTop;
-            // FIXED: subtract cr so the scrollbar never exits the rounded panel rect
             const float sbX       = px + pw - cr - sbW - sbPad;
-
-            // Track
             {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                 rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.60f * ease), b.GetAddressOf());
@@ -708,14 +769,11 @@ void SettingsMenu::Draw(
                     sbW*0.5f, sbW*0.5f };
                     rt->FillRoundedRectangle(rr, b.Get()); }
             }
-
-            // Thumb
             const float maxOffset  = static_cast<float>(numInteractive - kVisibleRows);
             const float thumbRatio = static_cast<float>(kVisibleRows) / static_cast<float>(numInteractive);
             const float thumbH     = std::max(24.0f * s, trackH * thumbRatio);
             const float scrollT    = (maxOffset > 0.0f)
-                ? static_cast<float>(m_scrollOffset) / maxOffset
-                : 0.0f;
+                ? static_cast<float>(m_scrollOffset) / maxOffset : 0.0f;
             const float thumbTop   = trackTop + scrollT * (trackH - thumbH);
             {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
@@ -742,22 +800,18 @@ void SettingsMenu::Draw(
         const float fnt    = 11.0f * s;
         const float chipGap = 10.0f * s;
         float hx = px + padX;
-
         DrawHintChip(rt, dwrite, hx, hintCY, s, ease,
             L"\u25CF  Toggle",
             Tok::GoldDeep(0.70f * ease), Tok::GoldHi(0.92f * ease), fnt);
         hx += 90.0f * s + chipGap;
-
         DrawHintChip(rt, dwrite, hx, hintCY, s, ease,
             L"\u25C6  Close",
             Tok::SurfaceRaised(0.90f * ease), Tok::ChromeMid(0.80f * ease), fnt);
         hx += 82.0f * s + chipGap;
-
         DrawHintChip(rt, dwrite, hx, hintCY, s, ease,
             L"\u25B2  Reset defaults",
             Tok::SurfaceRaised(0.90f * ease), Tok::ChromeMid(0.80f * ease), fnt);
         hx += 130.0f * s + chipGap;
-
         DrawHintChip(rt, dwrite, hx, hintCY, s, ease,
             L"\u25C4\u25BA  Adjust value",
             Tok::GoldMid(0.55f * ease), Tok::GoldBright(0.95f * ease), fnt);
