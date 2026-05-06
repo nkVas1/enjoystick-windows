@@ -44,12 +44,19 @@ private:
     int32_t m_scrollOffset = 0;
     State   m_state        = State::Hidden;
 
-    // ---- Navigation timings (slower than before) ----------------------------
-    static constexpr float kStickFirst  = 0.70f;
-    static constexpr float kStickNext   = 0.35f;
-    static constexpr float kScrollFirst = 0.65f;
-    static constexpr float kScrollNext  = 0.22f;
-    static constexpr float kScrollRyDz  = 0.40f;
+    // ---- Navigation timings -------------------------------------------------
+    // kScrollRyDz raised 0.40 → 0.65: the right stick must be pushed past
+    // 65% of full deflection before scroll is triggered, preventing
+    // accidental scroll from resting-position drift or brief brush.
+    //
+    // kStickFirst raised 0.70 → 1.00 s: deliberate hold required to tab.
+    // kScrollFirst raised 0.65 → 0.90 s: deliberate hold required to scroll.
+    // kScrollNext  raised 0.22 → 0.30 s: slower repeat cadence.
+    static constexpr float kStickFirst  = 1.00f;   // was 0.70
+    static constexpr float kStickNext   = 0.45f;   // was 0.35
+    static constexpr float kScrollFirst = 0.90f;   // was 0.65
+    static constexpr float kScrollNext  = 0.30f;   // was 0.22
+    static constexpr float kScrollRyDz  = 0.65f;   // was 0.40  <-- key fix
 
     float m_stickCooldown  = 0.0f;
     bool  m_stickActive    = false;

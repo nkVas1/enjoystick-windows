@@ -70,11 +70,8 @@ private:
     Values m_values;
     std::vector<Row> m_rows;
     int32_t m_selectedRow  = 0;
-    int32_t m_scrollOffset = 0;  // first visible data-row index (virtual scroll)
+    int32_t m_scrollOffset = 0;
 
-    // Maximum number of data rows visible at once in the panel.
-    // At 1080p with ph_row=44 dip and panel limited to ~720px of list area,
-    // 10 rows comfortably fit without the panel touching screen edges.
     static constexpr int32_t kVisibleRows = 10;
 
     State m_state        = State::Hidden;
@@ -82,17 +79,24 @@ private:
     float m_repeatTimer  = 0.0f;
 
     // -----------------------------------------------------------------------
-    // Navigation timing (seconds)
-    // kSnapFirst     : hold duration before auto-repeat begins
-    // kSnapNext      : base repeat interval (comfortable, not too fast)
-    // kSnapFast      : minimum interval after kNavAccelStart of hold
+    // Navigation timing
+    //
+    // kNavDeadzone raised 0.55 → 0.72: a brief minor flick no longer
+    // triggers navigation. Only a deliberate push past 72% registers.
+    //
+    // kSnapFirst raised 0.85 → 1.10 s: the stick must be held 1.1 s
+    // before auto-repeat begins, eliminating accidental multi-step jumps
+    // from a momentary flick that happens to stay above deadzone.
+    //
+    // Repeat cadence (kSnapNext/kSnapFast) is slightly slower to give
+    // the user more time to release between items during fast scrolling.
     // -----------------------------------------------------------------------
-    static constexpr float kSnapFirst      = 0.85f;
-    static constexpr float kSnapNext       = 0.28f;
-    static constexpr float kSnapFast       = 0.065f;
-    static constexpr float kNavAccelStart  = 1.2f;
+    static constexpr float kSnapFirst      = 1.10f;   // was 0.85
+    static constexpr float kSnapNext       = 0.32f;   // was 0.28
+    static constexpr float kSnapFast       = 0.085f;  // was 0.065
+    static constexpr float kNavAccelStart  = 1.4f;    // was 1.2
     static constexpr float kNavAccelRange  = 0.80f;
-    static constexpr float kNavDeadzone    = 0.55f;
+    static constexpr float kNavDeadzone    = 0.72f;   // was 0.55  <-- key fix
     static constexpr float kAnimMs         = 220.0f;
 
     bool  m_stickNavActive    = false;
@@ -109,9 +113,6 @@ private:
     bool m_prevDUp   = false, m_prevDDown = false;
     bool m_prevDLeft = false, m_prevDRight= false;
 
-    // -----------------------------------------------------------------------
-    // Trail / transition animation state
-    // -----------------------------------------------------------------------
     static constexpr float kTrailDecayMs  = 160.0f;
     static constexpr float kSelAnimSpeed  = 8.0f;
     mutable int32_t m_prevRow    = -1;
