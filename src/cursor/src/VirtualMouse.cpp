@@ -14,7 +14,7 @@ namespace enjoystick::cursor {
 namespace {
     static constexpr float kReferenceWidthPx  = 1920.0f;
     static constexpr float kReferenceDpi      = 96.0f;
-    static constexpr float kMinMovementPixels = 1.0f;
+    static constexpr float kMinMovementPixels = 0.5f;  // sub-pixel accumulation threshold
 
     inline HMONITOR ToHMONITOR(uintptr_t v) noexcept {
         return reinterpret_cast<HMONITOR>(v);
@@ -41,6 +41,8 @@ void VirtualMouse::SetEnabled(bool enabled) noexcept {
     m_enabled = enabled;
     if (!enabled) {
         m_accumX = m_accumY = m_scrollAccum = 0.0f;
+        m_scrollHoldMs  = 0.0f;
+        m_scrollActive  = false;
         m_ltWasDown = m_rtWasDown = false;
     }
 }
@@ -49,16 +51,6 @@ bool VirtualMouse::IsEnabled() const noexcept { return m_enabled; }
 
 // ---------------------------------------------------------------------------
 // Adaptive per-monitor speed calibration  (v2)
-//
-// Target: crossing screen width at full stick deflection = targetTraversalMs.
-// Formula:
-//   resolutionFactor = widthPx / kReferenceWidthPx
-//   dpiFactor        = dpiX    / kReferenceDpi
-//   density          = lerp(resolutionFactor, dpiFactor, dpiWeight)
-//   densityPenalty   = 1.0 / sqrt(density)
-//   targetPxPerMs    = widthPx / targetTraversalMs
-//   speedScale       = (targetPxPerMs / maxSpeedPx) * densityPenalty
-//                      clamped to [adaptiveMinScale, adaptiveMaxScale]
 // ---------------------------------------------------------------------------
 
 auto VirtualMouse::QueryActiveMonitorProfile() const noexcept -> MonitorProfile
@@ -128,12 +120,45 @@ float VirtualMouse::EffectiveMaxSpeedPx() const noexcept {
     return base * m_monitorProfile.speedScale;
 }
 
-float VirtualMouse::Accelerate(float magnitude) const noexcept {
-    if (magnitude <= 0.0f) return 0.0f;
+// ---------------------------------------------------------------------------
+// Accelerate — per-axis curve.
+// Input: normalised axis value in [0, 1].
+// Returns: speed in px/ms along that axis.
+//
+// Design:
+//   In the linearZone the response is proportional (precision mode).
+//   Beyond it we apply the power curve, giving a smooth exponential feel
+//   without the hard kink that a simple if/else threshold creates.
+// ---------------------------------------------------------------------------
+float VirtualMouse::Accelerate(float normalised) const noexcept {
+    if (normalised <= 0.0f) return 0.0f;
     const float maxSpeed = EffectiveMaxSpeedPx();
-    if (magnitude <= m_config.linearZone)
-        return (magnitude / m_config.linearZone) * maxSpeed * 0.18f;
-    return std::pow(magnitude, m_config.curveExponent) * maxSpeed;
+    const float lz = m_config.linearZone;
+    if (normalised <= lz) {
+        // Linear zone: gentle precision mode
+        return (normalised / std::max(lz, 0.01f)) * maxSpeed * 0.15f;
+    }
+    // Remap to [0,1] outside linear zone and apply power curve
+    const float t = (normalised - lz) / (1.0f - lz + 1e-6f);
+    return std::pow(t, m_config.curveExponent) * maxSpeed;
+}
+
+// ---------------------------------------------------------------------------
+// Cross-axis suppression helper.
+// When the dominant axis is strongly over crossAxisThreshold of the total
+// magnitude, attenuate the minor axis to reduce drift during cardinal moves.
+// ---------------------------------------------------------------------------
+static void ApplyCrossAxisSuppression(
+    float& x, float& y,
+    float mag,
+    float threshold,
+    float damp) noexcept
+{
+    if (mag < 1e-6f || threshold >= 1.0f) return;
+    const float ax = std::abs(x) / mag;
+    const float ay = std::abs(y) / mag;
+    if (ax > threshold)       y *= damp;
+    else if (ay > threshold)  x *= damp;
 }
 
 void VirtualMouse::Update(const ControllerState& state, float deltaMs) {
@@ -164,16 +189,31 @@ void VirtualMouse::Update(float dx, float dy, float deltaMs) {
     const float mag = std::sqrt(dx * dx + dy * dy);
     if (mag < 1e-6f) { m_accumX = m_accumY = 0.0f; return; }
 
-    const float speed = Accelerate(std::min(mag, 1.0f));
-    const float nx    =  dx / mag;
-    const float ny    = -dy / mag;
+    // Clamp to unit circle
+    float nx = dx, ny = dy;
+    if (mag > 1.0f) { nx /= mag; ny /= mag; }
+    const float clampedMag = std::min(mag, 1.0f);
 
-    const float ramp     = std::min(1.0f, deltaMs / std::max(1.0f, m_config.accelerationMs));
-    const float movement = std::max(kMinMovementPixels,
-        speed * deltaMs * (0.35f + 0.65f * ramp));
+    // Cross-axis suppression on normalised components
+    ApplyCrossAxisSuppression(
+        nx, ny, clampedMag,
+        m_config.crossAxisThreshold,
+        m_config.crossAxisDamp);
 
-    m_accumX += nx * movement;
-    m_accumY += ny * movement;
+    // Apply per-axis independent acceleration curve.
+    // This avoids the diagonal speed boost that happens when a single
+    // Accelerate(magnitude) is used — now each axis is curved independently.
+    const float ramp = std::min(1.0f,
+        deltaMs / std::max(1.0f, m_config.accelerationMs));
+
+    const float speedX = Accelerate(std::abs(nx));
+    const float speedY = Accelerate(std::abs(ny));
+
+    const float moveX = (nx < 0 ? -1.0f : 1.0f) * speedX * deltaMs * (0.35f + 0.65f * ramp);
+    const float moveY = -(ny < 0 ? -1.0f : 1.0f) * speedY * deltaMs * (0.35f + 0.65f * ramp);
+
+    m_accumX += moveX;
+    m_accumY += moveY;
 
     const long ix = static_cast<long>(m_accumX);
     const long iy = static_cast<long>(m_accumY);
@@ -185,11 +225,16 @@ void VirtualMouse::Update(float dx, float dy, float deltaMs) {
     if (m_config.wrapEdges) {
         POINT pt;
         GetCursorPos(&pt);
-        const int sw = GetSystemMetrics(SM_CXSCREEN);
-        const int sh = GetSystemMetrics(SM_CYSCREEN);
-        SetCursorPos(
-            (static_cast<int>(pt.x) + ix + sw) % sw,
-            (static_cast<int>(pt.y) + iy + sh) % sh);
+        // Use virtual screen bounds to support multi-monitor setups correctly.
+        const int vsLeft  = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        const int vsTop   = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        const int vsW     = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        const int vsH     = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        if (vsW > 0 && vsH > 0) {
+            int nx2 = ((static_cast<int>(pt.x) - vsLeft + ix) % vsW + vsW) % vsW + vsLeft;
+            int ny2 = ((static_cast<int>(pt.y) - vsTop  + iy) % vsH + vsH) % vsH + vsTop;
+            SetCursorPos(nx2, ny2);
+        }
     } else {
         PostMouseInput(ix, iy, MOUSEEVENTF_MOVE);
     }
@@ -197,8 +242,31 @@ void VirtualMouse::Update(float dx, float dy, float deltaMs) {
 
 void VirtualMouse::ScrollStick(float dy, float deltaMs) {
     if (!m_enabled) return;
-    if (std::abs(dy) < 1e-6f) { m_scrollAccum = 0.0f; return; }
-    m_scrollAccum += dy * m_config.scrollSpeed * deltaMs;
+    if (std::abs(dy) < 1e-6f) {
+        // Stick released — reset scroll hold timer
+        m_scrollAccum   = 0.0f;
+        m_scrollHoldMs  = 0.0f;
+        m_scrollActive  = false;
+        return;
+    }
+
+    // Accumulate hold time for acceleration ramp
+    m_scrollActive   = true;
+    m_scrollHoldMs  += deltaMs;
+
+    // Compute scroll acceleration multiplier.
+    // Stays at 1.0x until scrollAccelStartMs, then ramps up to scrollSpeedMax
+    // over scrollAccelRampMs using a smooth ease-in quad curve.
+    float accelMult = 1.0f;
+    const float startMs = m_config.scrollAccelStartMs;
+    const float rampMs  = std::max(1.0f, m_config.scrollAccelRampMs);
+    const float maxMult = m_config.scrollSpeedMax;
+    if (m_scrollHoldMs > startMs) {
+        const float t  = std::min(1.0f, (m_scrollHoldMs - startMs) / rampMs);
+        accelMult = 1.0f + (maxMult - 1.0f) * (t * t);  // ease-in quad
+    }
+
+    m_scrollAccum += dy * m_config.scrollSpeed * accelMult * deltaMs;
     const long ticks = static_cast<long>(m_scrollAccum / WHEEL_DELTA);
     if (ticks == 0) return;
     m_scrollAccum -= static_cast<float>(ticks * WHEEL_DELTA);

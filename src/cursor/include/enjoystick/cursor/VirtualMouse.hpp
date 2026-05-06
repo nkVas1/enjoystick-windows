@@ -40,7 +40,7 @@ struct MouseConfig {
     bool  triggersAsClicks    = false;
     /// true = right stick moves cursor, left stick scrolls.
     bool  useRightStick       = true;
-    /// Wrap cursor at screen edges.
+    /// Wrap cursor at screen edges using full virtual desktop bounds.
     bool  wrapEdges           = false;
 
     // --- Adaptive per-monitor calibration -----------------------------------
@@ -54,6 +54,23 @@ struct MouseConfig {
     float targetScreenFracPerSec = 0.20f;
     float adaptiveMinScale    = 0.30f;
     float adaptiveMaxScale    = 2.50f;
+
+    // --- Scroll acceleration ------------------------------------------------
+    /// After this many milliseconds of continuous scrolling, the scroll
+    /// speed starts ramping up toward scrollSpeedMax.
+    float scrollAccelStartMs  = 600.0f;
+    /// Maximum scroll speed multiplier (applied after full accel ramp).
+    float scrollSpeedMax      = 3.0f;
+    /// Duration (ms) of the full scroll acceleration ramp.
+    float scrollAccelRampMs   = 1200.0f;
+
+    // --- Per-axis cross-axis suppression ------------------------------------
+    /// When stick deflection is strongly axial (one component > this ratio of
+    /// magnitude) suppress the perpendicular axis by crossAxisDamp.
+    /// Set to 1.0f to disable.
+    float crossAxisThreshold  = 0.85f;
+    /// Strength of cross-axis suppression [0, 1].  0 = full suppression.
+    float crossAxisDamp       = 0.35f;
 };
 
 // ---------------------------------------------------------------------------
@@ -81,7 +98,7 @@ public:
     void LeftUp();
 
 private:
-    [[nodiscard]] float          Accelerate(float magnitude) const noexcept;
+    [[nodiscard]] float          Accelerate(float normalised) const noexcept;
     [[nodiscard]] float          EffectiveMaxSpeedPx() const noexcept;
     [[nodiscard]] MonitorProfile QueryActiveMonitorProfile() const noexcept;
     [[nodiscard]] float          ComputeAdaptiveScale(const MonitorProfile&) const noexcept;
@@ -89,18 +106,22 @@ private:
     void PostMouseInput(long dx, long dy, unsigned long flags, int wheelDelta = 0) const;
 
     MouseConfig    m_config;
-    bool           m_enabled      = true;
+    bool           m_enabled        = true;
 
-    float          m_accumX       = 0.0f;
-    float          m_accumY       = 0.0f;
-    float          m_scrollAccum  = 0.0f;
+    float          m_accumX         = 0.0f;
+    float          m_accumY         = 0.0f;
 
-    bool           m_ltWasDown    = false;
-    bool           m_rtWasDown    = false;
+    // Scroll state
+    float          m_scrollAccum    = 0.0f;
+    float          m_scrollHoldMs   = 0.0f;  ///< Continuous scroll duration for accel ramp
+    bool           m_scrollActive   = false;
+
+    bool           m_ltWasDown      = false;
+    bool           m_rtWasDown      = false;
 
     MonitorProfile m_monitorProfile;
     /// Cached HMONITOR stored as opaque integer to avoid Windows.h in header.
-    uintptr_t      m_cachedMonitor = 0;
+    uintptr_t      m_cachedMonitor  = 0;
 };
 
 } // namespace enjoystick::cursor
