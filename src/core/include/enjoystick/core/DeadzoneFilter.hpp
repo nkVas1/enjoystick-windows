@@ -15,11 +15,26 @@ struct DeadzoneConfig {
     float outerRadius = 0.98f;
 
     enum class Shape : uint8_t {
-        Radial,  ///< Circular deadzone (default — recommended for analogue sticks)
-        Axial,   ///< Independent per-axis deadzones
-        Hybrid,  ///< Radial inner + axial outer
+        Radial,   ///< Circular deadzone (default — recommended for analogue sticks)
+        Axial,    ///< Independent per-axis deadzones
+        Hybrid,   ///< Radial inner + axial outer
+        Square,   ///< Square deadzone — maximum extent along each axis is preserved;
+                  ///  maps the square stick range to the full [-1,1] output square.
     };
     Shape shape = Shape::Radial;
+
+    // -----------------------------------------------------------------------
+    // Cardinal snap (cross-axis suppression)
+    //
+    // When the dominant axis component is > cardinalSnapThreshold × magnitude,
+    // the minor axis is attenuated by cardinalSnapDamp.  This makes it much
+    // easier to scroll or move a cursor in a perfectly straight line.
+    //
+    // Set cardinalSnapThreshold to 1.0f to disable entirely.
+    // -----------------------------------------------------------------------
+    float cardinalSnapThreshold = 0.90f;   ///< Dominant-axis ratio to trigger snap
+    float cardinalSnapDamp      = 0.30f;   ///< Minor-axis attenuation factor [0,1]
+    bool  cardinalSnapEnabled   = false;   ///< Off by default (opt-in per use-case)
 };
 
 ///
@@ -37,11 +52,17 @@ public:
 
     /// Apply deadzone + outer-clamp to a 2D stick axis.
     [[nodiscard]] Vec2 Apply(Vec2 raw) const noexcept {
+        Vec2 result;
         switch (m_config.shape) {
-            case DeadzoneConfig::Shape::Axial:  return ApplyAxial(raw);
-            case DeadzoneConfig::Shape::Hybrid: return ApplyHybrid(raw);
-            default:                            return ApplyRadial(raw);
+            case DeadzoneConfig::Shape::Axial:   result = ApplyAxial(raw);   break;
+            case DeadzoneConfig::Shape::Hybrid:  result = ApplyHybrid(raw);  break;
+            case DeadzoneConfig::Shape::Square:  result = ApplySquare(raw);  break;
+            default:                             result = ApplyRadial(raw);  break;
         }
+        if (m_config.cardinalSnapEnabled) {
+            ApplyCardinalSnap(result);
+        }
+        return result;
     }
 
     /// Apply deadzone to a 1D trigger value.
@@ -77,6 +98,47 @@ private:
         // Radial inner, axial outer
         Vec2 r = ApplyRadial(v);
         return ApplyAxial(r);
+    }
+
+    // -----------------------------------------------------------------------
+    // Square deadzone
+    //
+    // The raw stick lies in a unit square [-1,1]^2.  Hardware sticks produce
+    // less than 1.0 at corners, so we scale each axis independently:
+    //   1. Apply per-axis inner deadzone (same as Axial).
+    //   2. Remap each axis so that the outer boundary (innerRadius..outerRadius)
+    //      maps linearly to [0, 1], giving a full square output range.
+    //
+    // This is the preferred mode for UI navigation and grid-based tasks.
+    // -----------------------------------------------------------------------
+    [[nodiscard]] Vec2 ApplySquare(Vec2 v) const noexcept {
+        const float inner = m_config.innerRadius;
+        const float outer = m_config.outerRadius;
+        const float range = std::max(outer - inner, 1e-6f);
+
+        auto remap = [&](float c) -> float {
+            const float a = std::abs(c);
+            if (a <= inner) return 0.0f;
+            if (a >= outer) return c < 0 ? -1.0f : 1.0f;
+            return ((a - inner) / range) * (c < 0 ? -1.0f : 1.0f);
+        };
+
+        return { remap(v.x), remap(v.y) };
+    }
+
+    // -----------------------------------------------------------------------
+    // Cardinal snap: attenuate the minor axis when motion is strongly axial.
+    // Called on the already-processed output vector.
+    // -----------------------------------------------------------------------
+    void ApplyCardinalSnap(Vec2& v) const noexcept {
+        const float mag = std::sqrt(v.x * v.x + v.y * v.y);
+        if (mag < 1e-6f) return;
+        const float ax = std::abs(v.x) / mag;
+        const float ay = std::abs(v.y) / mag;
+        const float thr  = m_config.cardinalSnapThreshold;
+        const float damp = m_config.cardinalSnapDamp;
+        if (ax > thr)       v.y *= damp;
+        else if (ay > thr)  v.x *= damp;
     }
 
     DeadzoneConfig m_config;
