@@ -39,8 +39,11 @@ static constexpr float kHintH_base   = 26.0f;
 static constexpr float kFKey_base    = 24.0f;
 static constexpr float kFSpec_base   = 22.0f;
 static constexpr float kFHint_base   = 13.5f;
-static constexpr float kFSub_base    = 10.5f;   // sub-label font size
 static constexpr float kAccentH_base =  3.0f;
+
+// Sub-label font sizes
+static constexpr float kFSubShift_base =  9.0f;
+static constexpr float kFSubSym_base   =  8.0f;
 
 // ---------------------------------------------------------------------------
 // Layout
@@ -600,6 +603,45 @@ static void DrawHintChip(
     (void)ease;
 }
 
+// Draw a small sub-label in a corner of a key rect.
+// cornerX / cornerY: top-left of the key face rect.
+// kw / kh: key face width / height.
+// The text is right-aligned and placed in the corner specified by (isRight, isBottom).
+static void DrawSubLabel(
+    ID2D1RenderTarget* rt,
+    IDWriteFactory*    dwrite,
+    float kx, float ky, float kw, float kh,
+    const wchar_t*  text,
+    float fontSize, float alpha,
+    bool  isRight,  bool isBottom) noexcept
+{
+    if (!rt || !dwrite || !text || text[0] == L'\0' || alpha < 0.01f) return;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
+    dwrite->CreateTextFormat(L"Segoe UI", nullptr,
+        DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL, fontSize, L"en-us", fmt.GetAddressOf());
+    if (!fmt) return;
+    fmt->SetTextAlignment(isRight
+        ? DWRITE_TEXT_ALIGNMENT_TRAILING
+        : DWRITE_TEXT_ALIGNMENT_LEADING);
+    fmt->SetParagraphAlignment(isBottom
+        ? DWRITE_PARAGRAPH_ALIGNMENT_FAR
+        : DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+
+    const float margin = fontSize * 0.55f;
+    const float rx0 = kx + margin;
+    const float ry0 = ky + margin;
+    const float rx1 = kx + kw - margin;
+    const float ry1 = ky + kh - margin;
+    if (rx1 <= rx0 || ry1 <= ry0) return;
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+    rt->CreateSolidColorBrush(Tok::ChromeMute(alpha), b.GetAddressOf());
+    if (!b) return;
+    rt->DrawText(text, static_cast<UINT32>(std::wcslen(text)),
+        fmt.Get(), D2D1::RectF(rx0, ry0, rx1, ry1), b.Get());
+}
+
 } // anon
 
 // ---------------------------------------------------------------------------
@@ -638,7 +680,6 @@ void VirtualKeyboard::Draw(
     const float kPadY   = kPadY_base   * s;
     const float kHintH  = kHintH_base  * s;
     const float kAccH   = kAccentH_base * s;
-    const float kFSub   = kFSub_base   * s;
 
     float maxRowW = 0.0f;
     for (const auto& row : m_rows) {
@@ -656,7 +697,7 @@ void VirtualKeyboard::Draw(
     const float panelX  = (screenW - kPanelW) * 0.5f;
     const float panelR  = 14.0f * s;
 
-    // Panel background
+    // Panel chrome
     { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
       rt->CreateSolidColorBrush(Tok::GoldMid(0.88f * ease), b.GetAddressOf());
       if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(panelX, panelY, panelX+kPanelW, panelY+kAccH+panelR), panelR, panelR};
@@ -719,7 +760,6 @@ void VirtualKeyboard::Draw(
 
     const float keysTop = panelY + kAccH + kPadY + 6.0f * s;
 
-    // Spring cursor
     const Vec2 selCentre = KeyCentrePixel(m_row, m_col, s, screenW, screenH);
     m_cursorSpringX.target = selCentre.x;
     m_cursorSpringY.target = selCentre.y;
@@ -734,7 +774,7 @@ void VirtualKeyboard::Draw(
 
     const float scl = m_cursorScaleSpring.value;
 
-    // Liquid trail
+    // Liquid trail blob
     if (fac) {
         const float tx = m_trailSpringX.value;
         const float ty = m_trailSpringY.value;
@@ -797,7 +837,7 @@ void VirtualKeyboard::Draw(
         }
     }
 
-    // Keys
+    // ---- Key rendering -------------------------------------------------------
     for (int32_t ri = 0; ri < static_cast<int32_t>(m_rows.size()); ++ri) {
         const auto& row = m_rows[static_cast<size_t>(ri)];
         const float ry  = keysTop + static_cast<float>(ri) * (kKeyH + kGap);
@@ -818,26 +858,28 @@ void VirtualKeyboard::Draw(
             const float sRy = kCy - skh * 0.5f;
             const float cr  = kCorner * sc2;
 
-            // Classify special key variants
-            const bool isBackspace = k.isSpecial && (k.label == L"\u232B");
-            const bool isShift     = k.isSpecial && (k.label == L"\u21E7");
-            const bool shiftActive = isShift && (m_shift || m_caps);
+            // Is this the backspace key?
+            const bool isBs = k.isSpecial && (k.label == L"\u232B");
 
-            // Key fill
-            D2D1_COLOR_F fillCol;
-            if (isBackspace) {
-                fillCol = sel ? Tok::GoldDeep(0.88f * ease) : Tok::SurfaceSunken(0.78f * ease);
-            } else if (shiftActive) {
-                fillCol = Tok::AmberWarm(0.30f * ease);
+            // ---- Key face fill
+            if (isBs) {
+                // AmberWarm tinted fill for destructive key
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+                rt->CreateSolidColorBrush(
+                    sel ? Tok::AmberWarm(0.22f * ease) : Tok::SurfaceSunken(0.90f * ease),
+                    b.GetAddressOf());
+                if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh), cr, cr};
+                         rt->FillRoundedRectangle(rr, b.Get()); }
             } else {
-                fillCol = sel ? Tok::SurfaceRaised(0.97f * ease) : Tok::SurfaceSunken(0.90f * ease);
+                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
+                rt->CreateSolidColorBrush(
+                    sel ? Tok::SurfaceRaised(0.97f * ease) : Tok::SurfaceSunken(0.90f * ease),
+                    b.GetAddressOf());
+                if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh), cr, cr};
+                         rt->FillRoundedRectangle(rr, b.Get()); }
             }
-            { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-              rt->CreateSolidColorBrush(fillCol, b.GetAddressOf());
-              if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh), cr, cr};
-                       rt->FillRoundedRectangle(rr, b.Get()); } }
 
-            // Inner bevel
+            // ---- Inset bevel
             { const float ins = 2.4f * s;
               Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
               rt->CreateSolidColorBrush(
@@ -848,32 +890,37 @@ void VirtualKeyboard::Draw(
                   std::max(cr-ins,0.0f), std::max(cr-ins,0.0f)};
                   rt->FillRoundedRectangle(rr, b.Get()); } }
 
-            // Border
+            // ---- Border / selection ring
             if (sel) {
-                D2D1_COLOR_F borderCol = isBackspace
-                    ? Tok::AmberWarm(0.85f * ease)
+                // For backspace selected: AmberWarm glow ring
+                const D2D1_COLOR_F ringCol = isBs
+                    ? Tok::AmberWarm(0.88f * ease)
                     : Tok::GoldHi(0.90f * ease);
                 { Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                  rt->CreateSolidColorBrush(borderCol, b.GetAddressOf());
+                  rt->CreateSolidColorBrush(ringCol, b.GetAddressOf());
                   if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh), cr, cr};
                            rt->DrawRoundedRectangle(rr, b.Get(), 2.2f*s); } }
+                const D2D1_COLOR_F innerCol = isBs
+                    ? Tok::AmberWarm(0.22f * ease)
+                    : Tok::GoldWarm(0.18f * ease);
                 { const float g = 3.0f * s;
                   Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                  rt->CreateSolidColorBrush(Tok::GoldWarm(0.18f * ease), b.GetAddressOf());
+                  rt->CreateSolidColorBrush(innerCol, b.GetAddressOf());
                   if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx+g,sRy+g,sRx+skw-g,sRy+skh-g),
                            std::max(cr-g,0.0f), std::max(cr-g,0.0f)};
                            rt->DrawRoundedRectangle(rr, b.Get(), 1.0f*s); } }
             } else {
-                D2D1_COLOR_F idleBorder = isBackspace
-                    ? Tok::GoldShadow(0.55f * ease)
-                    : (shiftActive ? Tok::AmberWarm(0.55f * ease) : Tok::InkLine(0.72f * ease));
+                // Backspace unselected: subtle AmberWarm border
+                const D2D1_COLOR_F borderCol = isBs
+                    ? Tok::AmberWarm(0.38f * ease)
+                    : Tok::InkLine(0.72f * ease);
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-                rt->CreateSolidColorBrush(idleBorder, b.GetAddressOf());
+                rt->CreateSolidColorBrush(borderCol, b.GetAddressOf());
                 if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(sRx,sRy,sRx+skw,sRy+skh), cr, cr};
-                         rt->DrawRoundedRectangle(rr, b.Get(), isBackspace ? 1.0f : 0.7f); }
+                         rt->DrawRoundedRectangle(rr, b.Get(), isBs ? 1.1f : 0.7f); }
             }
 
-            // Inner rim shadow
+            // ---- Shadow bevel bottom
             { const float bi = 1.0f;
               Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
               rt->CreateSolidColorBrush(
@@ -884,12 +931,12 @@ void VirtualKeyboard::Draw(
                   std::max(cr-bi,0.0f), std::max(cr-bi,0.0f)};
                   rt->DrawRoundedRectangle(rr, b.Get(), 0.5f); } }
 
-            // Specular arc
+            // ---- Specular arc
             if (fac) DrawArcSpecular(rt, fac.Get(),
                 kCx, sRy + skh * 0.28f, skw * 0.26f, skh * 0.18f,
                 (sel ? 0.10f : 0.04f) * ease);
 
-            // Main label
+            // ---- Main label
             if (dwrite) {
                 const std::wstring disp = KeyDisplay(k);
                 if (!disp.empty()) {
@@ -903,18 +950,19 @@ void VirtualKeyboard::Draw(
                     if (fmt) {
                         fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
                         fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-                        D2D1_COLOR_F lblCol;
-                        if (isBackspace) {
-                            lblCol = sel ? Tok::AmberWarm(0.95f * ease) : Tok::GoldMid(0.60f * ease);
-                        } else if (shiftActive) {
-                            lblCol = Tok::AmberWarm(0.95f * ease);
-                        } else {
-                            lblCol = sel         ? Tok::GoldBright(0.99f * ease)
-                                    : k.isSpecial ? Tok::ChromeMid(0.70f * ease)
-                                    :               Tok::ChromeHi(0.82f * ease);
-                        }
+                        D2D1_COLOR_F labelCol;
+                        if (isBs)
+                            labelCol = sel
+                                ? Tok::GoldAccent(0.99f * ease)
+                                : Tok::AmberWarm(0.75f * ease);
+                        else
+                            labelCol = sel
+                                ? Tok::GoldBright(0.99f * ease)
+                                : (k.isSpecial
+                                    ? Tok::ChromeMid(0.70f * ease)
+                                    : Tok::ChromeHi(0.82f * ease));
                         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> lb;
-                        rt->CreateSolidColorBrush(lblCol, lb.GetAddressOf());
+                        rt->CreateSolidColorBrush(labelCol, lb.GetAddressOf());
                         if (lb) rt->DrawText(disp.c_str(),
                             static_cast<UINT32>(disp.size()), fmt.Get(),
                             D2D1::RectF(sRx, sRy, sRx+skw, sRy+skh), lb.Get());
@@ -922,47 +970,36 @@ void VirtualKeyboard::Draw(
                 }
             }
 
-            // Sub-label: show alternate-layer character in bottom-right corner
-            // Only on non-special, standard-width keys.
+            // ---- Sub-labels (shift / sym character in corners)
+            // Only shown on non-special, non-wide keys.
+            // Not shown when that layer is already active (no redundancy).
             if (dwrite && !k.isSpecial && k.widthMul <= 1.05f) {
-                std::wstring subText;
-                // What to show depends on current layer:
-                // Alpha layer -> show shift char (top-right of physical keyboard)
-                // Cyr layer   -> show Russian letter as reminder on Latin key
-                // Sym layer   -> already showing sym; sub-label shows alpha
-                if (m_layer == Layer::Alpha) {
-                    subText = k.shiftLabel;
-                } else if (m_layer == Layer::Cyr) {
-                    subText = k.cyrLabel;  // lowercase Cyrillic hint
-                } else {
-                    subText = k.label;     // original alpha hint in sym mode
+                // Top-right: shift-layer label (hidden in Sym layer or when Shift/Caps active)
+                const bool showShift = (m_layer == Layer::Alpha && !m_shift && !m_caps)
+                                    || (m_layer == Layer::Cyr);
+                if (showShift && k.shiftLabel != k.label) {
+                    // For Alpha layer: show uppercase; for Cyr layer: show cyr-shift
+                    const std::wstring& subTxt = (m_layer == Layer::Cyr)
+                        ? k.cyrShift : k.shiftLabel;
+                    if (subTxt != k.cyrLabel && subTxt != k.label) {
+                        DrawSubLabel(rt, dwrite,
+                            sRx, sRy, skw, skh,
+                            subTxt.c_str(),
+                            kFSubShift_base * s * sc2,
+                            (sel ? 0.55f : 0.38f) * ease,
+                            true, false);  // top-right
+                    }
                 }
-                // Don't show sub-label if it's the same as main
-                const std::wstring mainDisp = KeyDisplay(k);
-                if (!subText.empty() && subText != mainDisp) {
-                    Microsoft::WRL::ComPtr<IDWriteTextFormat> sfmt;
-                    dwrite->CreateTextFormat(L"Segoe UI", nullptr,
-                        DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                        DWRITE_FONT_STRETCH_NORMAL, kFSub * sc2, L"en-us",
-                        sfmt.GetAddressOf());
-                    if (sfmt) {
-                        sfmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
-                        sfmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_FAR);
-                        const float subAlpha = sel ? 0.40f : 0.28f;
-                        D2D1_COLOR_F subCol;
-                        if (m_layer == Layer::Cyr) {
-                            subCol = Tok::GoldDeep(subAlpha * 0.9f * ease);
-                        } else {
-                            subCol = Tok::ChromeMute(subAlpha * ease);
-                        }
-                        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> sb;
-                        rt->CreateSolidColorBrush(subCol, sb.GetAddressOf());
-                        const float subPad = 3.5f * s * sc2;
-                        if (sb) rt->DrawText(
-                            subText.c_str(), static_cast<UINT32>(subText.size()),
-                            sfmt.Get(),
-                            D2D1::RectF(sRx, sRy, sRx+skw-subPad, sRy+skh-subPad*0.7f),
-                            sb.Get());
+                // Bottom-right: sym-layer label (hidden when Sym layer is active)
+                if (m_layer != Layer::Sym && m_layer != Layer::Cyr) {
+                    if (!k.symLabel.empty() && k.symLabel != k.label
+                        && k.symLabel != k.shiftLabel) {
+                        DrawSubLabel(rt, dwrite,
+                            sRx, sRy, skw, skh,
+                            k.symLabel.c_str(),
+                            kFSubSym_base * s * sc2,
+                            (sel ? 0.45f : 0.28f) * ease,
+                            true, true);  // bottom-right
                     }
                 }
             }
