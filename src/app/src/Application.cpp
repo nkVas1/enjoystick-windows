@@ -295,7 +295,9 @@ private:
     }
 
     void SetupSettingsMenu() {
-        m_overlay->GetSettingsMenu().SetOnChanged(
+        auto& sm = m_overlay->GetSettingsMenu();
+
+        sm.SetOnChanged(
             [this](const overlay::SettingsMenu::Values& v) {
                 const auto vmCfg = VMConfigFromSettings(v);
                 m_virtualMouse->SetConfig(vmCfg);
@@ -306,10 +308,25 @@ private:
                 dz.outerRadius = v.dzOuter;
                 m_config->SetDeadzoneConfig(dz);
 
+                // Heavy confirm rumble on settings commit
                 if (m_inputEngine)
                     m_inputEngine->Rumble(ControllerId{0}, {0.0f, 0.20f, 30});
             }
         );
+
+        // Soft tick on row navigation
+        sm.SetOnNavigate([this] {
+            if (m_inputEngine)
+                ScheduleRumble(m_inputEngine.get(), ControllerId{0},
+                               {0.0f, 0.12f, 18}, 0);
+        });
+
+        // Lighter tick on slider nudge
+        sm.SetOnAdjust([this] {
+            if (m_inputEngine)
+                ScheduleRumble(m_inputEngine.get(), ControllerId{0},
+                               {0.0f, 0.08f, 12}, 0);
+        });
     }
 
     void SetupKeyboard() {
@@ -413,12 +430,8 @@ private:
         const bool kbOpen        = m_overlay->GetVirtualKeyboard().IsOpen();
         const bool controlsOpen  = m_overlay->GetControlsOverlay().IsOpen();
 
-        // ---- Controls overlay: directly drive Update() so it receives real input.
-        // We do NOT return early — fall through to PostState so OverlayWindow
-        // also has the latest state for its own render-thread copy.
         if (controlsOpen) {
             m_overlay->GetControlsOverlay().Update(state, dt * 0.001f);
-            // Restore cursor the moment the overlay finishes closing
             if (!m_overlay->GetControlsOverlay().IsOpen()) {
                 if (m_mode == InputMode::Cursor)
                     m_virtualMouse->SetEnabled(true);
