@@ -6,13 +6,19 @@
 
 namespace enjoystick::core {
 
-/// Predefined haptic patterns inspired by PlayStation DualSense haptic design.
+/// Predefined haptic patterns.
+///
+/// Design principles (XInput motor mapping):
+///   Low-freq motor  = body / bass rumble  (felt in palm)
+///   High-freq motor = detail / snap click (felt in fingers)
 enum class HapticPattern : uint8_t {
-    Click,          ///< Short sharp click (UI confirm)
+    Click,          ///< Short sharp click (UI confirm / selection)
     SoftBump,       ///< Gentle bump (navigation step)
+    Tick,           ///< Ultra-short micro-tick for list scroll / row change
     DoubleTap,      ///< Two-pulse confirmation
-    Error,          ///< Triple short pulses (error)
-    LongPress,      ///< Sustained low-frequency rumble
+    SuccessChime,   ///< Rising two-pulse (settings saved, action done)
+    Error,          ///< Triple short pulses (error / invalid action)
+    LongPress,      ///< Sustained low-frequency rumble (hold)
     Custom,         ///< Defined by RumbleParams directly
 };
 

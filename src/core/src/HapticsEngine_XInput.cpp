@@ -109,14 +109,22 @@ public:
         switch (pattern) {
 
         case HapticPattern::Click:
-            // Short high-freq snap
+            // Short high-freq snap — felt in fingers
             XInputRumble(id, 0.0f, 0.70f, m);
             ScheduleStop(id, 30);
             break;
 
         case HapticPattern::SoftBump:
+            // Navigation step — mild low motor, subtle
             XInputRumble(id, 0.30f, 0.20f, m);
             ScheduleStop(id, 50);
+            break;
+
+        case HapticPattern::Tick:
+            // Ultra-short high-freq micro-tick for list scroll.
+            // Intentionally very quiet — just enough to feel each row.
+            XInputRumble(id, 0.0f, 0.22f, m);
+            ScheduleStop(id, 18);
             break;
 
         case HapticPattern::DoubleTap:
@@ -125,8 +133,16 @@ public:
             SchedulePulse(id, 0.0f, 0.55f, m, 60, 120);
             break;
 
+        case HapticPattern::SuccessChime:
+            // Rising two-pulse: soft bump first, then a clean click.
+            // Communicates "done" with a positive, ascending feel.
+            XInputRumble(id, 0.18f, 0.35f, m);
+            ScheduleStop(id, 50);
+            SchedulePulse(id, 0.0f, 0.75f, m, 35, 100);
+            break;
+
         case HapticPattern::Error:
-            // Three pulses: 40 ms on, 40 ms off, repeated three times
+            // Three pulses: 40 ms on, 40 ms off, x3
             XInputRumble(id, 0.60f, 0.30f, m);
             ScheduleStop(id, 40);
             SchedulePulse(id, 0.60f, 0.30f, m, 40, 80);
