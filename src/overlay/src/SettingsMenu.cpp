@@ -204,8 +204,8 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
     }
 
     // ---- Left Stick Y: navigate rows
-    // XInput convention: ly > 0 = stick pushed UP = go to PREVIOUS (smaller index) row
-    // ly < 0 = stick pushed DOWN = go to NEXT (larger index) row
+    // XInput: ly > 0 = stick up = PREVIOUS row (smaller index)
+    //         ly < 0 = stick down = NEXT row (larger index)
     {
         const float ly = state.leftStick.y;
         const float lx = state.leftStick.x;
@@ -213,7 +213,6 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
         const bool  lxActive = std::abs(lx) > 0.25f;
 
         if (lyActive && !m_stickLxActive) {
-            // FIX: invert sign — ly > 0 means stick up = row index decreases
             const int dir = (ly > 0.0f) ? -1 : 1;
             if (!m_stickNavActive) {
                 m_stickNavActive   = true;
@@ -318,7 +317,6 @@ void SettingsMenu::CommitChange() { if (m_onChange) m_onChange(m_values); }
 namespace {
 
 // Heavier spring-bounce pop: A=0.22, k=14, w=22
-// Produces a visible overshoot then settles, giving the "magnetised" feel
 static float SelPopScale(float t) noexcept {
     if (t >= 1.0f) return 1.0f;
     const float A = 0.22f;
@@ -408,35 +406,32 @@ void SettingsMenu::Draw(
     Microsoft::WRL::ComPtr<ID2D1Factory> fac;
     rt->GetFactory(fac.GetAddressOf());
 
-    const float s       = dpiScale;
-    const float pw      = 580.0f * s;
-    const float ph_row  = 44.0f  * s;
-    const float ph_hdr  = 28.0f  * s;
-    const float padX    = 28.0f  * s;
-    const float padY    = 20.0f  * s;
-    const float gap     =  4.0f  * s;
-    const float cr      = 14.0f  * s;
-    const float accentH =  3.0f  * s;
-    const float hintBarH= 36.0f  * s;
-    // Scrollbar stays fully inside the rounded panel
-    // sbPad is measured from the inner edge of the rounding
-    const float sbW     =  6.0f  * s;
-    const float sbPad   =  7.0f  * s;  // right margin inside panel (was 5)
-    const float sbX     = px_placeholder_set_below_in_draw_ctx_{}; // computed below
+    const float s        = dpiScale;
+    const float pw       = 580.0f * s;
+    const float ph_row   = 44.0f  * s;
+    const float ph_hdr   = 28.0f  * s;
+    const float padX     = 28.0f  * s;
+    const float padY     = 20.0f  * s;
+    const float gap      =  4.0f  * s;
+    const float cr       = 14.0f  * s;
+    const float accentH  =  3.0f  * s;
+    const float hintBarH = 36.0f  * s;
+    // Scrollbar: sbW wide, sbPad from right edge, extra cr*0.35 clears the rounding
+    const float sbW      =  6.0f  * s;
+    const float sbPad    =  7.0f  * s;
 
-    const int32_t totalRows   = static_cast<int32_t>(m_rows.size());
-    const int32_t numHeaders  = 4;
-    const int32_t numData     = totalRows - numHeaders;
-    const int32_t visData     = std::min(numData, kVisibleRows);
-    const float   listH       = static_cast<float>(visData) * (ph_row + gap)
-                              + static_cast<float>(numHeaders) * (ph_hdr + gap)
-                              - gap;
-
+    const int32_t totalRows  = static_cast<int32_t>(m_rows.size());
+    const int32_t numHeaders = 4;
+    const int32_t numData    = totalRows - numHeaders;
+    const int32_t visData    = std::min(numData, kVisibleRows);
+    const float   listH      = static_cast<float>(visData) * (ph_row + gap)
+                             + static_cast<float>(numHeaders) * (ph_hdr + gap)
+                             - gap;
     const float totalH = padY * 2.0f + accentH + hintBarH + listH;
 
-    const float px = (screenW - pw) * 0.5f;
-    const float py = (screenH - totalH) * 0.5f;
-    // Scrollbar X: inset from right edge, clear of corner rounding
+    const float px     = (screenW - pw) * 0.5f;
+    const float py     = (screenH - totalH) * 0.5f;
+    // Scrollbar X: computed after px is known, inset from right edge clear of rounding
     const float sbXCalc = px + pw - sbW - sbPad - cr * 0.35f;
 
     // ---- Scrim
@@ -541,7 +536,6 @@ void SettingsMenu::Draw(
             }
 
             if (sel) {
-                // Spring-bounce pop scale
                 const float popSc  = SelPopScale(m_selAnimT);
                 const float inset  = (1.0f - popSc) * ph_row * 0.5f;
                 const float selTop = ry + 1.0f*s + inset;
@@ -591,8 +585,9 @@ void SettingsMenu::Draw(
                     }
                 }
             }
+
             // ---- Value widget (right half)
-            // wx1 accounts for scrollbar space: subtract sbW + sbPad + corner clearance
+            // wx1 stops before the scrollbar (sbXCalc - 4px gap)
             const float wx  = px + pw * 0.5f;
             const float wx1 = sbXCalc - 4.0f * s;
 
@@ -617,7 +612,7 @@ void SettingsMenu::Draw(
                 }
                 {
                     const float tx2 = wx + (wx1-wx)*t;
-                    const float tr = 8.0f * s;
+                    const float tr  = 8.0f * s;
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                     rt->CreateSolidColorBrush(
                         sel ? Tok::GoldBright(0.97f*ease) : Tok::GoldMid(0.60f*ease),
@@ -626,7 +621,7 @@ void SettingsMenu::Draw(
                 }
                 if (sel) {
                     const float tx2 = wx + (wx1-wx)*t;
-                    const float tr = 8.0f * s;
+                    const float tr  = 8.0f * s;
                     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> rb;
                     rt->CreateSolidColorBrush(Tok::GoldHi(0.55f*ease), rb.GetAddressOf());
                     if (rb) rt->DrawEllipse(
@@ -693,14 +688,12 @@ void SettingsMenu::Draw(
     {
         const int32_t numInteractive = numData;
         if (numInteractive > kVisibleRows) {
-            const float listTop2  = py + padY + accentH;
-            const float listBot2  = listTop2 + listH;
-            // Inset track top/bottom by cr*0.5 so thumb stays clear of corner rounding
-            const float trackTop  = listTop2 + cr * 0.5f;
-            const float trackBot  = listBot2 - cr * 0.5f;
-            const float trackH    = trackBot - trackTop;
+            const float listTop2 = py + padY + accentH;
+            const float listBot2 = listTop2 + listH;
+            const float trackTop = listTop2 + cr * 0.5f;
+            const float trackBot = listBot2 - cr * 0.5f;
+            const float trackH   = trackBot - trackTop;
 
-            // Track
             {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                 rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.60f * ease), b.GetAddressOf());
@@ -709,13 +702,11 @@ void SettingsMenu::Draw(
                     rt->FillRoundedRectangle(rr, b.Get()); }
             }
 
-            // Thumb
             const float maxOffset  = static_cast<float>(numInteractive - kVisibleRows);
             const float thumbRatio = static_cast<float>(kVisibleRows) / static_cast<float>(numInteractive);
             const float thumbH     = std::max(24.0f * s, trackH * thumbRatio);
             const float scrollT    = (maxOffset > 0.0f)
-                ? static_cast<float>(m_scrollOffset) / maxOffset
-                : 0.0f;
+                ? static_cast<float>(m_scrollOffset) / maxOffset : 0.0f;
             const float thumbTop   = trackTop + scrollT * (trackH - thumbH);
             {
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
@@ -739,7 +730,7 @@ void SettingsMenu::Draw(
                 D2D1::Point2F(px + pw - padX, hintY),
                 b.Get(), 0.6f);
         }
-        const float fnt    = 11.0f * s;
+        const float fnt     = 11.0f * s;
         const float chipGap = 10.0f * s;
         float hx = px + padX;
 
