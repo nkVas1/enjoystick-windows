@@ -515,12 +515,15 @@ private:
                 if (pressed(Button::RB)) { SendBrowserTab(true);  }
             }
 
+            // L3 — double left click
             if (pressed(Button::LS)) {
                 SendDoubleClick(MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP);
             }
 
+            // Y (North) — middle click
             if (pressed(Button::North)) m_virtualMouse->MiddleClick();
 
+            // X (West) — browser back (XButton1)
             if (pressed(Button::West)) {
                 SendXButton(XBUTTON1, true);
                 SendXButton(XBUTTON1, false);
@@ -551,26 +554,39 @@ private:
                 SendKey(VK_LWIN, false);
             }
 
+            // R3 — open virtual keyboard
             if (pressed(Button::RS)) {
                 OpenKeyboard();
                 return;
             }
 
-            if (held(Button::East)) {
-                m_eastHoldMs += dt;
-                if (m_eastHoldMs >= kEastLongPressMs && !m_eastLongActive) {
-                    m_eastLongActive = true;
+            // ------------------------------------------------------------------
+            // South (A) — left click (tap) / left drag (hold)
+            // ------------------------------------------------------------------
+            if (held(Button::South)) {
+                m_southHoldMs += dt;
+                if (m_southHoldMs >= kSouthLongPressMs && !m_southDragActive) {
+                    m_southDragActive = true;
                     m_virtualMouse->LeftDown();
                 }
             }
-            if (released(Button::East)) {
-                if (m_eastLongActive) {
+            if (released(Button::South)) {
+                if (m_southDragActive) {
+                    // Release drag
                     m_virtualMouse->LeftUp();
-                } else if (m_eastHoldMs < kEastLongPressMs && m_eastHoldMs > 0.0f) {
-                    m_virtualMouse->RightClick();
+                } else if (m_southHoldMs > 0.0f && m_southHoldMs < kSouthLongPressMs) {
+                    // Short tap → left click
+                    m_virtualMouse->LeftClick();
                 }
-                m_eastHoldMs     = 0.0f;
-                m_eastLongActive = false;
+                m_southHoldMs     = 0.0f;
+                m_southDragActive = false;
+            }
+
+            // ------------------------------------------------------------------
+            // East (B) — right click (tap only, no hold-to-drag)
+            // ------------------------------------------------------------------
+            if (pressed(Button::East)) {
+                m_virtualMouse->RightClick();
             }
         }
 
@@ -647,9 +663,10 @@ private:
 
     HWND           m_prevForeground   = nullptr;
 
-    static constexpr float kEastLongPressMs = 600.0f;
-    float  m_eastHoldMs     = 0.0f;
-    bool   m_eastLongActive = false;
+    // South (A) hold-to-drag state
+    static constexpr float kSouthLongPressMs = 600.0f;
+    float m_southHoldMs     = 0.0f;
+    bool  m_southDragActive = false;
 };
 
 std::unique_ptr<Application> Application::Create() {
