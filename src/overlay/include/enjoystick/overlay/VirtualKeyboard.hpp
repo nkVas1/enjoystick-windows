@@ -25,8 +25,6 @@ namespace enjoystick::overlay {
 // Axis convention (XInput):
 //   lx > 0 = right, lx < 0 = left
 //   ly > 0 = UP,    ly < 0 = DOWN
-//
-// Right stick is intentionally NOT used for keyboard navigation.
 // ---------------------------------------------------------------------------
 
 class VirtualKeyboard {
@@ -97,36 +95,30 @@ private:
     // -------------------------------------------------------------------------
     // Left-stick navigation timing (seconds)
     //
-    // kSnapDeadzone 0.40: low deadzone — responsive to gentle stick push.
-    //   At 0.40 the stick registers clearly but won't trigger from micro-jitter.
+    // kSnapDeadzone 0.42: comfortable activation threshold — responds to a
+    //   deliberate push without firing on incidental contact.
     //
-    // kStickRepeatFirst 0.38s: short initial hold before auto-repeat starts.
-    //   Feels snappy — one deliberate push = exactly one key step.
+    // kStickRepeatFirst 0.32s: short initial delay before auto-repeat starts.
+    // kStickRepeatNext  0.10s: comfortable repeat cadence — one key per tick.
+    // kStickRepeatFast  0.048s: maximum repeat rate after sustained hold.
     //
-    // kStickRepeatNext  0.11s: comfortable repeat cadence at medium speed.
-    //
-    // kStickRepeatFast  0.060s: top speed reached after sustained hold.
-    //   Deliberately not too fast so wide rows are traversable without overshoot.
-    //
-    // kStickSpeedScale: analog magnitude of the left stick beyond deadzone is
-    //   used to linearly scale the repeat cooldown.  A full-deflection push
-    //   (magnitude 1.0) triggers at full speed; a gentle push (magnitude ~0.5)
-    //   triggers at half speed.  This makes the stick feel proportional and
-    //   tightly controllable.
+    // Analog magnitude scaling: full stick deflection yields ~55% of the base
+    // interval, gentle push stays at 100% — navigation speed is proportional
+    // to how hard the stick is pushed.
     // -------------------------------------------------------------------------
     float  m_stickCooldown    = 0.0f;
     float  m_stickHoldTime    = 0.0f;
-    float  m_stickMag         = 0.0f;  // smoothed analog magnitude of left stick
-    static constexpr float kStickRepeatFirst      = 0.38f;
-    static constexpr float kStickRepeatNext       = 0.11f;
-    static constexpr float kStickRepeatFast       = 0.060f;
-    static constexpr float kStickRepeatAccelStart = 0.70f;
-    static constexpr float kStickRepeatAccelRange = 0.55f;
-    static constexpr float kSnapDeadzone          = 0.40f;
+    float  m_stickMag         = 0.0f;   // smoothed analog magnitude [0,1]
+    static constexpr float kStickRepeatFirst      = 0.32f;
+    static constexpr float kStickRepeatNext       = 0.10f;
+    static constexpr float kStickRepeatFast       = 0.048f;
+    static constexpr float kStickRepeatAccelStart = 0.65f;
+    static constexpr float kStickRepeatAccelRange = 0.45f;
+    static constexpr float kSnapDeadzone          = 0.42f;
     bool   m_stickActive = false;
 
-    static constexpr float kDPadFirst = 0.28f;
-    static constexpr float kDPadNext  = 0.08f;
+    static constexpr float kDPadFirst = 0.32f;
+    static constexpr float kDPadNext  = 0.09f;
     bool    m_dpadHeld    = false;
     float   m_dpadTimer   = 0.0f;
     int32_t m_dpadDirRow  = 0;
@@ -161,15 +153,15 @@ private:
     float m_westDebounce = 0.0f;
     float m_lbDebounce   = 0.0f;
 
+    mutable float m_screenW = 1920.0f;
+    mutable float m_screenH = 1080.0f;
+    mutable float m_dpiScale= 1.0f;
+
     State  m_state     = State::Hidden;
     float  m_glowPhase = 0.0f;
     Layer  m_layer     = Layer::Alpha;
     bool   m_shift     = false;
     bool   m_caps      = false;
-
-    mutable float m_screenW = 1920.0f;
-    mutable float m_screenH = 1080.0f;
-    mutable float m_dpiScale= 1.0f;
 
     mutable FloatSpring m_panelSpring;
     mutable FloatSpring m_cursorSpringX;
