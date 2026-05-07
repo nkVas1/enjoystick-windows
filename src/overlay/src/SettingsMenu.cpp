@@ -283,7 +283,7 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
         }
     }
 
-    // ---- DPad horizontal (slider adjust): single-step policy
+    // ---- DPad horizontal (slider adjust): single-step policy, flat step (no acceleration)
     {
         const bool hHorz = dLeft || dRight;
         if (hHorz) {
@@ -307,13 +307,17 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
     }
 
     // ---- Left-stick navigation
-    // Vertical axis: single-step policy (gate=kSnapGate, cadence=kSnapCadence, no accel).
-    // Horizontal axis (slider adjust): same gate/cadence policy.
+    // Vertical axis  : single-step policy (gate=kSnapGate, cadence=kSnapCadence, no accel).
+    // Horizontal axis: same gate/cadence policy for slider adjust.
+    // Y and X axes are mutually exclusive — a diagonal push navigates rows
+    // and never simultaneously modifies a slider value.
     {
         const float ly = state.leftStick.y;
         const float lx = state.leftStick.x;
         const bool  lyActive = std::abs(ly) > kNavDeadzone;
-        const bool  lxActive = std::abs(lx) > 0.30f;
+        // Raised deadzone (0.30 -> 0.55) prevents false adjustments from
+        // diagonal deflection or resting-position lateral drift.
+        const bool  lxActive = std::abs(lx) > 0.55f;
 
         if (lyActive && !m_stickLxActive) {
             const int dir = (ly > 0.0f) ? -1 : 1;
@@ -340,7 +344,9 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
             m_stickNavHoldTime = 0.0f;
         }
 
-        if (lxActive && !m_stickNavActive) {
+        // lxActive guard: only process X-axis when Y-axis is not active,
+        // ensuring diagonal stick movement navigates rows exclusively.
+        if (lxActive && !lyActive && !m_stickNavActive) {
             if (!m_stickLxActive) {
                 // First step fires immediately.
                 m_stickLxActive   = true;
@@ -407,11 +413,12 @@ void SettingsMenu::UpdateAnimation(float dt) {
 }
 
 void SettingsMenu::AdjustSelected(float direction, bool repeat) {
+    (void)repeat; // step is always flat — no acceleration on repeat
     if (!IsInteractiveRow(m_activeTab, m_selectedRow)) return;
     const auto& row = m_tabs[static_cast<size_t>(m_activeTab)].rows[static_cast<size_t>(m_selectedRow)];
     if (row.type != RowType::FloatSlider || !row.fTarget) return;
-    const float step = repeat ? row.step * 1.5f : row.step;
-    *row.fTarget = std::clamp(*row.fTarget + direction * step, row.min, row.max);
+    // Always use the row's nominal step — repeat does NOT accelerate.
+    *row.fTarget = std::clamp(*row.fTarget + direction * row.step, row.min, row.max);
     CommitChange();
     if (m_onAdjust) m_onAdjust();
 }
