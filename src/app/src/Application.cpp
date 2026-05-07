@@ -1,6 +1,7 @@
 #include <enjoystick/app/Application.hpp>
 #include <enjoystick/app/SystemTray.hpp>
 #include <enjoystick/config/ConfigStore.hpp>
+#include <enjoystick/voice/VoiceInputEngine.hpp>
 #include "AutoStart.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -16,15 +17,36 @@
 
 namespace enjoystick::app {
 
+// ---------------------------------------------------------------------------
+// InputMode — Cursor, Navigate, Voice
+// ---------------------------------------------------------------------------
+
 enum class InputMode : uint8_t {
     Cursor,
     Navigate,
+    Voice,
+};
+
+static constexpr InputMode kNextMode[3] = {
+    InputMode::Navigate,  // Cursor   → Navigate
+    InputMode::Voice,     // Navigate → Voice
+    InputMode::Cursor,    // Voice    → Cursor
 };
 
 static const wchar_t* InputModeLabel(InputMode m) noexcept {
-    return (m == InputMode::Cursor)
-        ? L"\U0001F5B1  Cursor mode"
-        : L"\u2B06  Navigate mode";
+    switch (m) {
+        case InputMode::Navigate: return L"\u2B06  Navigate mode";
+        case InputMode::Voice:    return L"\U0001F3A4  Voice mode";
+        default:                  return L"\U0001F5B1  Cursor mode";
+    }
+}
+
+static const wchar_t* InputModeTrayLabel(InputMode m) noexcept {
+    switch (m) {
+        case InputMode::Navigate: return L"Switch to Voice mode";
+        case InputMode::Voice:    return L"Switch to Cursor mode";
+        default:                  return L"Switch to Navigate mode";
+    }
 }
 
 static const wchar_t* ControllerTypeLabel(ControllerType t) noexcept {
@@ -202,6 +224,10 @@ public:
         m_virtualMouse->SetEnabled(true);
         m_keyMapper->SetEnabled(false);
 
+        // Voice engine
+        m_voiceEngine = voice::VoiceInputEngine::Create({});
+        SetupVoiceEngine();
+
         m_overlay = overlay::OverlayWindow::Create({});
         SetupRadialMenu();
         SetupSettingsMenu();
@@ -249,6 +275,7 @@ public:
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        if (m_voiceEngine) m_voiceEngine->Stop();
         if (m_inputEngine) m_inputEngine->Stop();
         if (m_overlay)     m_overlay->Hide();
         if (m_tray)        m_tray->Remove();
@@ -259,13 +286,48 @@ public:
     void Exit() override { PostQuitMessage(0); }
 
     void ToggleInputMode() override {
-        SetMode(m_mode == InputMode::Cursor ? InputMode::Navigate : InputMode::Cursor);
+        // Cycle: Cursor → Navigate → Voice → Cursor
+        SetMode(kNextMode[static_cast<int>(m_mode)]);
     }
 
 private:
     // -------------------------------------------------------------------------
     // Setup helpers
     // -------------------------------------------------------------------------
+
+    void SetupVoiceEngine() {
+        if (!m_voiceEngine) return;
+
+        m_voiceEngine->OnResult([this](const voice::RecognitionResult& res) {
+            // Type the recognised text into the active window
+            const auto& text = res.text;
+            if (text.empty()) return;
+
+            // Bring back the previously focused window before typing
+            if (m_prevForeground && m_prevForeground != GetConsoleWindow())
+                SetForegroundWindow(m_prevForeground);
+
+            // Prefix with a space when appending to existing text
+            const std::wstring toType = (m_voiceAppendSpace ? L" " : L"") + text;
+            m_voiceAppendSpace = true;
+
+            for (wchar_t ch : toType) {
+                INPUT inp{};
+                inp.type       = INPUT_KEYBOARD;
+                inp.ki.wVk     = 0;
+                inp.ki.wScan   = ch;
+                inp.ki.dwFlags = KEYEVENTF_UNICODE;
+                SendInput(1, &inp, sizeof(INPUT));
+                inp.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+                SendInput(1, &inp, sizeof(INPUT));
+            }
+        });
+
+        m_voiceEngine->OnStateChanged([this](const voice::VoiceInputState& state) {
+            // Forward state snapshot to overlay for live VU + partial text display
+            m_overlay->GetVoiceInputHUD().SetVoiceState(state);
+        });
+    }
 
     void SetupRadialMenu() {
         using RM = overlay::RadialMenuItem;
@@ -308,20 +370,17 @@ private:
                 dz.outerRadius = v.dzOuter;
                 m_config->SetDeadzoneConfig(dz);
 
-                // Heavy confirm rumble on settings commit
                 if (m_inputEngine)
                     m_inputEngine->Rumble(ControllerId{0}, {0.0f, 0.20f, 30});
             }
         );
 
-        // Soft tick on row navigation
         sm.SetOnNavigate([this] {
             if (m_inputEngine)
                 ScheduleRumble(m_inputEngine.get(), ControllerId{0},
                                {0.0f, 0.12f, 18}, 0);
         });
 
-        // Lighter tick on slider nudge
         sm.SetOnAdjust([this] {
             if (m_inputEngine)
                 ScheduleRumble(m_inputEngine.get(), ControllerId{0},
@@ -373,27 +432,68 @@ private:
         m_overlay->ShowToast(L"\U0001F4CB  Controls reference \u2014 [\u25C4/\u25BA] sections  [\u25C6] close", 3000);
     }
 
+    // Activate voice mode: stop mouse/nav, start engine, show HUD
+    void EnterVoiceMode() {
+        m_prevForeground   = GetForegroundWindow();
+        m_voiceAppendSpace = false;
+        m_virtualMouse->SetEnabled(false);
+        m_keyMapper->SetEnabled(false);
+
+        auto& hud = m_overlay->GetVoiceInputHUD();
+        hud.Open();
+
+        if (m_voiceEngine) m_voiceEngine->Start();
+
+        m_overlay->SetModeLabel(InputModeLabel(InputMode::Voice));
+        m_overlay->ShowToast(L"\U0001F3A4  Voice mode \u2014 LB+RB to exit", 3000);
+        if (m_inputEngine)
+            m_inputEngine->Rumble(ControllerId{0}, {0.0f, 0.35f, 60});
+    }
+
+    // Deactivate voice mode: stop engine, close HUD
+    void ExitVoiceMode() {
+        if (m_voiceEngine) m_voiceEngine->Stop();
+        m_overlay->GetVoiceInputHUD().Close();
+        m_voiceAppendSpace = false;
+    }
+
     void SetMode(InputMode newMode) {
         if (m_mode == newMode) return;
+
+        const InputMode prevMode = m_mode;
         m_mode = newMode;
 
-        const bool cursor   = (m_mode == InputMode::Cursor);
-        const bool menuOpen = m_overlay->GetRadialMenu().IsVisible();
-        const bool kbOpen   = m_overlay->GetVirtualKeyboard().IsOpen();
-        const bool ctrlOpen = m_overlay->GetControlsOverlay().IsOpen();
+        // Leave previous mode
+        if (prevMode == InputMode::Voice) {
+            ExitVoiceMode();
+        }
+
+        // Enter new mode
+        const bool cursor    = (m_mode == InputMode::Cursor);
+        const bool navigate  = (m_mode == InputMode::Navigate);
+        const bool voiceMode = (m_mode == InputMode::Voice);
+
+        const bool menuOpen  = m_overlay->GetRadialMenu().IsVisible();
+        const bool kbOpen    = m_overlay->GetVirtualKeyboard().IsOpen();
+        const bool ctrlOpen  = m_overlay->GetControlsOverlay().IsOpen();
+
         m_virtualMouse->SetEnabled(cursor && !menuOpen && !kbOpen && !ctrlOpen);
-        m_keyMapper->SetEnabled(!cursor);
+        m_keyMapper->SetEnabled(navigate);
 
-        if (m_overlay) {
-            m_overlay->SetModeLabel(InputModeLabel(m_mode));
-            m_overlay->ShowToast(InputModeLabel(m_mode));
+        if (voiceMode) {
+            EnterVoiceMode();
+        } else {
+            if (m_overlay) {
+                m_overlay->SetModeLabel(InputModeLabel(m_mode));
+                m_overlay->ShowToast(InputModeLabel(m_mode));
+            }
+            if (m_inputEngine) {
+                m_inputEngine->Rumble(ControllerId{0}, {0.0f, 0.55f, 80});
+                ScheduleRumble(m_inputEngine.get(), ControllerId{0}, {0.0f, 0.40f, 60}, 120);
+            }
         }
+
         if (m_tray) m_tray->SetMenuItems(BuildTrayMenu());
-
-        if (m_inputEngine) {
-            m_inputEngine->Rumble(ControllerId{0}, {0.0f, 0.55f, 80});
-            ScheduleRumble(m_inputEngine.get(), ControllerId{0}, {0.0f, 0.40f, 60}, 120);
-        }
     }
 
     // -------------------------------------------------------------------------
@@ -429,6 +529,23 @@ private:
         const bool settingsOpen  = m_overlay->GetSettingsMenu().IsOpen();
         const bool kbOpen        = m_overlay->GetVirtualKeyboard().IsOpen();
         const bool controlsOpen  = m_overlay->GetControlsOverlay().IsOpen();
+        const bool voiceOpen     = m_overlay->GetVoiceInputHUD().IsOpen();
+
+        // ------------------------------------------------------------------
+        // Voice mode: very limited controls (just LB+RB to exit)
+        // ------------------------------------------------------------------
+        if (voiceOpen) {
+            if (held(Button::LB) && held(Button::RB)) {
+                if (!m_lbRbChordActive) {
+                    m_lbRbChordActive = true;
+                    ToggleInputMode(); // exits voice, enters cursor
+                }
+            } else {
+                m_lbRbChordActive = false;
+            }
+            m_overlay->PostState(state);
+            return;
+        }
 
         if (controlsOpen) {
             m_overlay->GetControlsOverlay().Update(state, dt * 0.001f);
@@ -500,6 +617,7 @@ private:
             return;
         }
 
+        // LB+RB — cycle through modes (Cursor → Navigate → Voice → Cursor)
         if (held(Button::LB) && held(Button::RB)) {
             if (!m_lbRbChordActive) {
                 m_lbRbChordActive = true;
@@ -515,15 +633,12 @@ private:
                 if (pressed(Button::RB)) { SendBrowserTab(true);  }
             }
 
-            // L3 — double left click
             if (pressed(Button::LS)) {
                 SendDoubleClick(MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP);
             }
 
-            // Y (North) — middle click
             if (pressed(Button::North)) m_virtualMouse->MiddleClick();
 
-            // X (West) — browser back (XButton1)
             if (pressed(Button::West)) {
                 SendXButton(XBUTTON1, true);
                 SendXButton(XBUTTON1, false);
@@ -554,15 +669,11 @@ private:
                 SendKey(VK_LWIN, false);
             }
 
-            // R3 — open virtual keyboard
             if (pressed(Button::RS)) {
                 OpenKeyboard();
                 return;
             }
 
-            // ------------------------------------------------------------------
-            // South (A) — left click (tap) / left drag (hold)
-            // ------------------------------------------------------------------
             if (held(Button::South)) {
                 m_southHoldMs += dt;
                 if (m_southHoldMs >= kSouthLongPressMs && !m_southDragActive) {
@@ -572,19 +683,14 @@ private:
             }
             if (released(Button::South)) {
                 if (m_southDragActive) {
-                    // Release drag
                     m_virtualMouse->LeftUp();
                 } else if (m_southHoldMs > 0.0f && m_southHoldMs < kSouthLongPressMs) {
-                    // Short tap → left click
                     m_virtualMouse->LeftClick();
                 }
                 m_southHoldMs     = 0.0f;
                 m_southDragActive = false;
             }
 
-            // ------------------------------------------------------------------
-            // East (B) — right click (tap only, no hold-to-drag)
-            // ------------------------------------------------------------------
             if (pressed(Button::East)) {
                 m_virtualMouse->RightClick();
             }
@@ -621,15 +727,12 @@ private:
     }
 
     std::vector<TrayMenuItem> BuildTrayMenu() {
-        const wchar_t* modeLabel = (m_mode == InputMode::Cursor)
-            ? L"Switch to Navigate mode"
-            : L"Switch to Cursor mode";
         const bool autoOn = AutoStart::IsEnabled();
         const wchar_t* autoLabel = autoOn ? L"\u2713 Launch on login" : L"  Launch on login";
         return {
             { L"EnjoyStick v0.1", {},       false },
             { L"",                {},       true  },
-            { modeLabel,          [this]{ ToggleInputMode(); } },
+            { InputModeTrayLabel(m_mode), [this]{ ToggleInputMode(); } },
             { L"Open Settings",   [this]{ OpenSettingsMenu(); } },
             { L"Open Keyboard",   [this]{ OpenKeyboard(); } },
             { L"Controls Reference", [this]{ OpenControlsOverlay(); } },
@@ -643,12 +746,13 @@ private:
     // Members
     // -------------------------------------------------------------------------
 
-    std::unique_ptr<config::ConfigStore>    m_config;
-    std::unique_ptr<core::InputEngine>      m_inputEngine;
-    std::unique_ptr<cursor::VirtualMouse>   m_virtualMouse;
-    std::unique_ptr<input::KeyboardMapper>  m_keyMapper;
-    std::unique_ptr<overlay::OverlayWindow> m_overlay;
-    std::unique_ptr<SystemTray>             m_tray;
+    std::unique_ptr<config::ConfigStore>       m_config;
+    std::unique_ptr<core::InputEngine>         m_inputEngine;
+    std::unique_ptr<cursor::VirtualMouse>      m_virtualMouse;
+    std::unique_ptr<input::KeyboardMapper>     m_keyMapper;
+    std::unique_ptr<voice::VoiceInputEngine>   m_voiceEngine;
+    std::unique_ptr<overlay::OverlayWindow>    m_overlay;
+    std::unique_ptr<SystemTray>                m_tray;
 
     CallbackHandle               m_inputHandle;
     CallbackHandle               m_connHandle;
@@ -660,10 +764,10 @@ private:
     Button         m_prevButtons     = Button::None;
     bool           m_lbRbChordActive = false;
     bool           m_guideChordUsed  = false;
+    bool           m_voiceAppendSpace = false;
 
     HWND           m_prevForeground   = nullptr;
 
-    // South (A) hold-to-drag state
     static constexpr float kSouthLongPressMs = 600.0f;
     float m_southHoldMs     = 0.0f;
     bool  m_southDragActive = false;
