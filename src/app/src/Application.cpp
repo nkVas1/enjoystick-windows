@@ -286,6 +286,7 @@ private:
     void SetupVoiceEngine() {
         if (!m_voiceEngine) return;
 
+        // Finalised speech result -> type unicode characters into foreground window
         m_voiceEngine->OnResult([this](const voice::RecognitionResult& res) {
             const auto& text = res.text;
             if (text.empty()) return;
@@ -308,16 +309,21 @@ private:
             }
         });
 
+        // State changes (listening / recognising / level) -> update VoiceInputHUD
         m_voiceEngine->OnStateChanged([this](const voice::VoiceInputState& state) {
-            if (m_overlay) {
+            if (m_overlay)
                 m_overlay->GetVoiceInputHUD().SetVoiceState(state);
-            }
         });
 
-        // Show a toast if SAPI fails to initialise so the user knows why the
-        // mic icon stays inactive instead of silently doing nothing.
-        m_voiceEngine->OnError([this](const voice::RecognitionResult& /*unused*/) {
-            // OnError on the engine is not yet bridged; handled at voice layer
+        // Runtime SAPI errors (mic disconnect, recognition failure) -> overlay toast
+        m_voiceEngine->OnError([this](const std::wstring& errorMsg) {
+            if (m_overlay) {
+                // Truncate at 120 chars so the toast pill does not overflow
+                const std::wstring display = errorMsg.size() > 120
+                    ? errorMsg.substr(0, 118) + L"…"
+                    : errorMsg;
+                m_overlay->ShowToast(L"[ERR] \U0001F3A4  " + display, 5000);
+            }
         });
     }
 
@@ -428,10 +434,12 @@ private:
         if (m_voiceEngine) {
             const bool ok = m_voiceEngine->Start();
             if (!ok) {
+                // Static failure (e.g. SAPI not present) — show toast immediately.
+                // Dynamic errors (mic unplug etc.) are forwarded by OnError callback.
                 m_overlay->ShowToast(
                     L"[ERR] \U0001F3A4  Voice unavailable \u2014 check SAPI / microphone", 5000);
-                // Don't exit the mode — HUD still shows so the user can cancel
             } else {
+                // Sync HUD language badge to the engine's active language
                 SyncVoiceHudLang();
             }
         }
@@ -450,7 +458,7 @@ private:
     }
 
     void SyncVoiceHudLang() {
-        if (!m_voiceEngine) return;
+        if (!m_voiceEngine || !m_voiceEngine->IsActive()) return;
         const wchar_t* label =
             (m_voiceEngine->GetLanguage() == voice::VoiceLanguage::Russian)
             ? L"RU" : L"EN";
@@ -530,7 +538,7 @@ private:
         // Voice mode controls
         // ------------------------------------------------------------------
         if (voiceOpen) {
-            // LB+RB — exit voice mode
+            // LB+RB chord -> exit voice mode
             if (held(Button::LB) && held(Button::RB)) {
                 if (!m_lbRbChordActive) {
                     m_lbRbChordActive = true;
@@ -540,7 +548,7 @@ private:
                 m_lbRbChordActive = false;
             }
 
-            // West (B on Xbox) — cycle recognition language RU↔EN
+            // West button (X on PS / B on Xbox) -> cycle recognition language RU<->EN
             if (pressed(Button::West)) {
                 if (m_voiceEngine) {
                     m_voiceEngine->CycleLanguage();
@@ -553,7 +561,7 @@ private:
                 }
             }
 
-            // Select (View) — reset append-space for new sentence start
+            // Select / View -> reset append-space (begin a new sentence)
             if (pressed(Button::Select)) {
                 m_voiceAppendSpace = false;
                 m_overlay->ShowToast(L"\U0001F3A4  New sentence", 1200);
@@ -623,7 +631,7 @@ private:
             return;
         }
 
-        // LB+RB — cycle modes
+        // LB+RB chord -> cycle input mode
         if (held(Button::LB) && held(Button::RB)) {
             if (!m_lbRbChordActive) { m_lbRbChordActive = true; ToggleInputMode(); }
         } else {
@@ -741,12 +749,12 @@ private:
     CallbackHandle               m_connHandle;
     config::ConfigCallbackHandle m_configHandle;
 
-    InputMode      m_mode            = InputMode::Cursor;
-    int64_t        m_lastTick        = 0;
-    LARGE_INTEGER  m_qpcFreq         = {};
-    Button         m_prevButtons     = Button::None;
-    bool           m_lbRbChordActive = false;
-    bool           m_guideChordUsed  = false;
+    InputMode      m_mode             = InputMode::Cursor;
+    int64_t        m_lastTick         = 0;
+    LARGE_INTEGER  m_qpcFreq          = {};
+    Button         m_prevButtons      = Button::None;
+    bool           m_lbRbChordActive  = false;
+    bool           m_guideChordUsed   = false;
     bool           m_voiceAppendSpace = false;
 
     HWND           m_prevForeground   = nullptr;
