@@ -26,15 +26,15 @@ namespace enjoystick::overlay {
 //   lx > 0 = right, lx < 0 = left
 //   ly > 0 = UP,    ly < 0 = DOWN
 //
-// Stick navigation policy (single-step, independent axes):
+// Stick navigation policy (single-step, independent axes, hysteresis):
 //   - Each axis (X and Y) has its own active flag and cooldown.
-//   - Crossing kSnapDeadzone fires exactly ONE step immediately.
-//   - The OTHER axis is suppressed unless it dominates by kAxisDominance
-//     (i.e. |lx| > |ly|*kAxisDominance for X to be active).
-//     This eliminates diagonal bleed-through.
-//   - Auto-repeat does NOT start until kStickRepeatGate seconds.
-//   - After that gate, repeats fire every kStickRepeatCadence seconds
-//     with NO further acceleration.
+//   - ACTIVATION:   |value| must EXCEED kSnapDeadzone (0.60) to start.
+//   - DEACTIVATION: |value| must DROP BELOW kSnapRelease (0.25) to reset.
+//     The wide hysteresis gap absorbs physical stick bounce, ensuring
+//     exactly ONE step fires per flick — no matter how fast.
+//   - The OTHER axis is suppressed unless it dominates by kAxisDominance.
+//   - Auto-repeat starts only after kStickRepeatGate seconds (3.0 s).
+//   - After that gate, repeats fire every kStickRepeatCadence seconds.
 // ---------------------------------------------------------------------------
 
 class VirtualKeyboard {
@@ -103,31 +103,32 @@ private:
     int32_t m_col = 0;
 
     // -------------------------------------------------------------------------
-    // Left-stick navigation timing  (independent per-axis state machines)
+    // Left-stick navigation timing  (independent per-axis, hysteresis deadzone)
     //
-    // ROOT-CAUSE FIX (2026-05-07):
-    //   Previous code used a single shared active/cooldown state and chose
-    //   the axis with "prefer horizontal if |lx|>=|ly|".  Any diagonal
-    //   deflection made hx=true, producing horizontal steps when the user
-    //   intended vertical ones (and vice-versa), causing multi-key jumps.
+    // HYSTERESIS FIX (2026-05-07):
+    //   Physical sticks bounce through the threshold on both the outward
+    //   and return paths.  A single-threshold design (activate == deactivate)
+    //   re-triggers m_stickActiveX=false then =true on each bounce crossing,
+    //   firing multiple "first step" NavigateTo() calls per physical flick.
     //
-    //   Now each axis is fully independent.  An axis is only considered
-    //   active when it dominates the other by kAxisDominance (1.5x).
-    //   Ambiguous diagonals activate neither axis, so the cursor is silent
-    //   until the stick is pushed cleanly in one direction.
+    //   Solution: two thresholds.
+    //     kSnapDeadzone  = 0.60  — axis becomes active (first step fires)
+    //     kSnapRelease   = 0.25  — axis resets (next flick will fire first step)
+    //   The gap [0.25, 0.60] is the hysteresis band; the stick must fully
+    //   retreat below 0.25 before a new first-step can fire.  This absorbs
+    //   all physical bounce and guarantees exactly 1 step per flick.
     //
-    // kSnapDeadzone     — minimum deflection to register intent (raised
-    //                      from 0.42 to 0.55 to reduce drift sensitivity).
-    // kAxisDominance    — one axis must exceed the other by this factor
-    //                      before it is allowed to fire.
-    // kStickRepeatGate  — how long the stick must be held before auto-
-    //                      repeat begins (1.5 s — unchanged).
-    // kStickRepeatCadence — flat repeat interval after the gate (0.22 s).
+    // kAxisDominance: one axis must be 1.5x the other to activate;
+    //   ambiguous diagonals suppress both axes.
+    //
+    // kStickRepeatGate raised to 3.0 s (was 1.5 s) as a sanity-check:
+    //   no deliberate single-key navigation should ever trigger repeat.
     // -------------------------------------------------------------------------
-    static constexpr float kSnapDeadzone         = 0.55f;  // was 0.42
+    static constexpr float kSnapDeadzone         = 0.60f;  // activate threshold
+    static constexpr float kSnapRelease          = 0.25f;  // deactivate threshold (hysteresis)
     static constexpr float kAxisDominance        = 1.5f;   // |dominant| > |other|*1.5
-    static constexpr float kStickRepeatGate      = 1.50f;  // seconds before first repeat
-    static constexpr float kStickRepeatCadence   = 0.22f;  // seconds between repeats (flat)
+    static constexpr float kStickRepeatGate      = 3.00f;  // s before first repeat (was 1.5)
+    static constexpr float kStickRepeatCadence   = 0.22f;  // s between repeats (flat)
 
     // X axis (left/right) — independent state
     float  m_stickCooldownX  = 0.0f;
@@ -137,16 +138,16 @@ private:
     float  m_stickCooldownY  = 0.0f;
     bool   m_stickActiveY    = false;
 
-    // Legacy aliases kept for Open() reset compatibility
-    float  m_stickCooldown   = 0.0f;  // unused by new code; reset in Open()
-    float  m_stickHoldTime   = 0.0f;  // unused by new code; reset in Open()
-    bool   m_stickActive     = false; // unused by new code; reset in Open()
+    // Legacy aliases (unused by new code, reset in Open())
+    float  m_stickCooldown   = 0.0f;
+    float  m_stickHoldTime   = 0.0f;
+    bool   m_stickActive     = false;
 
     // -------------------------------------------------------------------------
-    // DPad navigation timing  (same single-step policy)
+    // DPad navigation timing
     // -------------------------------------------------------------------------
-    static constexpr float kDPadFirst   = 1.50f;  // gate before repeat
-    static constexpr float kDPadCadence = 0.22f;  // repeat cadence (flat)
+    static constexpr float kDPadFirst   = 1.50f;
+    static constexpr float kDPadCadence = 0.22f;
 
     bool    m_dpadHeld    = false;
     float   m_dpadTimer   = 0.0f;
