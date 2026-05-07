@@ -81,11 +81,19 @@ endif()
 
 # ---------------------------------------------------------------------------
 # Subsystem modules
+#
+# ORDER MATTERS: a module must be listed before any other module that
+# links against it, so that the CMake target exists when the dependent
+# CMakeLists.txt is processed.
+#   core   <- cursor, input, config, voice, overlay, app all depend on it
+#   voice  <- overlay depends on it (VoiceInputHUD.hpp includes VoiceInput.hpp)
+#   overlay<- app depends on it
 # ---------------------------------------------------------------------------
 set(ENJOYSTICK_MODULES
     src/core
     src/cursor
     src/input
+    src/voice
     src/overlay
     src/config
     src/app

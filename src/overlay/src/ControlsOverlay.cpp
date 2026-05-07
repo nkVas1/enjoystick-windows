@@ -422,6 +422,8 @@ void ControlsOverlay::Draw(
     auto* dwrite = static_cast<IDWriteFactory*>(dwriteFactoryPtr);
     const float s    = dpiScale;
     const float ease = EaseOutCubic(pv);
+    // EaseInCubic reserved for future close animation
+    (void)static_cast<float(*)(float) noexcept>(&EaseInCubic);
 
     // ---- Scrim
     {
@@ -639,7 +641,6 @@ void ControlsOverlay::Draw(
 
     // ---- Section tab bar
     {
-        // Tab bar is taller now to fit icon + label text
         const float tabBarY  = panelY + panelH - 52.0f * s;
         const float tabBarH  = 52.0f * s;
         {
@@ -661,7 +662,6 @@ void ControlsOverlay::Draw(
             const float dist  = std::abs(static_cast<float>(i) - tabSprV);
             const float blend = std::max(0.0f, 1.0f - dist);
 
-            // ---- Icon
             if (dwrite && i < static_cast<int32_t>(m_sections.size())) {
                 Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
                 dwrite->CreateTextFormat(L"Segoe UI Emoji", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
@@ -682,7 +682,6 @@ void ControlsOverlay::Draw(
                 }
             }
 
-            // ---- Label text under icon
             if (dwrite && i < static_cast<int32_t>(m_sections.size())) {
                 Microsoft::WRL::ComPtr<IDWriteTextFormat> lf;
                 dwrite->CreateTextFormat(L"Segoe UI", nullptr,
@@ -704,7 +703,6 @@ void ControlsOverlay::Draw(
                 }
             }
 
-            // ---- Active underline
             if (isSel) {
                 const float ulW = tabW * 0.45f + tabW * 0.40f * blend;
                 const float ulX = tx + (tabW - ulW) * 0.5f;
@@ -733,7 +731,6 @@ void ControlsOverlay::Draw(
             }
         }
     }
-    (void)EaseInCubic;
 }
 
 } // namespace enjoystick::overlay
