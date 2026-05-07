@@ -10,6 +10,7 @@ cmake_minimum_required(VERSION 3.14)
 
 add_library(enjoystick_voice STATIC
     src/VoiceInput.cpp
+    src/VoiceInputEngine.cpp
 )
 
 target_compile_definitions(enjoystick_voice PUBLIC

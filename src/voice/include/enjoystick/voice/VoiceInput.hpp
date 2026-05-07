@@ -37,10 +37,10 @@ enum class VoiceLanguage : uint8_t {
 };
 
 struct VoiceInputState {
-    bool    listening  = false;  ///< Mic is armed and waiting for speech
-    bool    recognizing= false;  ///< Speech is being actively processed
-    float   level      = 0.0f;  ///< Normalised audio level [0..1] for VU meter
-    std::wstring partial;       ///< In-progress hypothesis (may be empty)
+    bool    listening   = false;  ///< Mic is armed and waiting for speech
+    bool    recognizing = false;  ///< Speech is being actively processed
+    float   level       = 0.0f;  ///< Normalised audio level [0..1] for VU meter
+    std::wstring partial;        ///< In-progress hypothesis (may be empty)
 };
 
 class VoiceInput {

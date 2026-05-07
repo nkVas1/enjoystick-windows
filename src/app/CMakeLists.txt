@@ -32,6 +32,7 @@ target_link_libraries(enjoystick_app
         enjoystick_cursor
         enjoystick_input
         enjoystick_overlay
+        enjoystick_voice
         enjoystick_config
     PRIVATE
         shell32
