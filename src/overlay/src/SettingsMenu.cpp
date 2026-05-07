@@ -162,9 +162,11 @@ void SettingsMenu::Open(const Values& current) {
     m_tabIndicatorSpring.velocity  = 0.0f;
 
     m_stickNavActive   = false;
+    m_stickNavWasActive= false;
     m_stickNavCooldown = 0.0f;
     m_stickNavHoldTime = 0.0f;
     m_stickLxActive    = false;
+    m_stickLxWasActive = false;
     m_stickLxCooldown  = 0.0f;
     m_dpadVertHeld     = false;
     m_dpadVertTimer    = 0.0f;
@@ -180,7 +182,9 @@ void SettingsMenu::Close() {
     if (m_state == State::Hidden) return;
     m_state = State::Closing;
     m_stickNavActive = false;
+    m_stickNavWasActive = false;
     m_stickLxActive  = false;
+    m_stickLxWasActive = false;
     m_dpadVertHeld   = false;
     m_dpadHorzHeld   = false;
 }
@@ -260,7 +264,7 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
     if (lb && !m_prevLB) { SwitchTab(-1); }
     if (rb && !m_prevRB) { SwitchTab(+1); }
 
-    // ---- DPad vertical: single-step policy (gate=1.5s, cadence=0.22s)
+    // ---- DPad vertical: single-step policy (gate=kSnapGate, cadence=kSnapCadence)
     {
         const bool dVert = dUp || dDown;
         if (dVert) {
@@ -306,51 +310,64 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
         }
     }
 
-    // ---- Left-stick navigation
-    // Vertical axis  : single-step policy (gate=kSnapGate, cadence=kSnapCadence, no accel).
-    // Horizontal axis: same gate/cadence policy for slider adjust.
-    // Y and X axes are mutually exclusive — a diagonal push navigates rows
-    // and never simultaneously modifies a slider value.
+    // ---- Left-stick navigation (hysteresis on both axes)
+    //
+    // Y axis — row navigation:
+    //   Activate when |ly| > kNavDeadzone (0.62).
+    //   Deactivate (reset gate for next first-step) when |ly| < kNavRelease (0.28).
+    //   X axis is suppressed while Y axis is in hysteresis band or active.
+    //
+    // X axis — slider adjust:
+    //   Same thresholds.  Only processed when Y axis has fully released.
     {
         const float ly = state.leftStick.y;
         const float lx = state.leftStick.x;
-        const bool  lyActive = std::abs(ly) > kNavDeadzone;
-        // Raised deadzone (0.30 -> 0.55) prevents false adjustments from
-        // diagonal deflection or resting-position lateral drift.
-        const bool  lxActive = std::abs(lx) > 0.55f;
+        const float absLy = std::abs(ly);
+        const float absLx = std::abs(lx);
 
-        if (lyActive && !m_stickLxActive) {
+        // --- Y axis (row navigation) -----------------------------------------
+        // Hysteresis: set WasActive on first activation; clear below kNavRelease.
+        if (absLy > kNavDeadzone && !m_stickNavWasActive) {
+            // Fresh activation—first step fires immediately.
+            m_stickNavWasActive = true;
+            m_stickNavActive    = true;
+            m_stickNavCooldown  = kSnapGate;
+            m_stickNavHoldTime  = 0.0f;
             const int dir = (ly > 0.0f) ? -1 : 1;
-            if (!m_stickNavActive) {
-                // First step fires immediately.
-                m_stickNavActive   = true;
-                m_stickNavCooldown = kSnapGate;
-                m_stickNavHoldTime = 0.0f;
-                const int32_t next = NextInteractiveRow(m_activeTab, m_selectedRow, dir);
-                if (next != m_selectedRow) OnRowChanged(next);
-            } else {
+            const int32_t next = NextInteractiveRow(m_activeTab, m_selectedRow, dir);
+            if (next != m_selectedRow) OnRowChanged(next);
+        } else if (m_stickNavWasActive) {
+            if (absLy < kNavRelease) {
+                // Stick has fully retreated — reset hysteresis gate.
+                m_stickNavWasActive = false;
+                m_stickNavActive    = false;
+                m_stickNavCooldown  = 0.0f;
+                m_stickNavHoldTime  = 0.0f;
+            } else if (absLy > kNavDeadzone) {
+                // Still held above activate threshold — auto-repeat.
                 m_stickNavHoldTime += dt;
                 m_stickNavCooldown -= dt;
                 if (m_stickNavCooldown <= 0.0f) {
-                    // Flat cadence — no acceleration.
                     m_stickNavCooldown = kSnapCadence;
+                    const int dir = (ly > 0.0f) ? -1 : 1;
                     const int32_t next = NextInteractiveRow(m_activeTab, m_selectedRow, dir);
                     if (next != m_selectedRow) OnRowChanged(next);
                 }
             }
-        } else if (!lyActive) {
-            m_stickNavActive   = false;
-            m_stickNavCooldown = 0.0f;
-            m_stickNavHoldTime = 0.0f;
+            // Band [kNavRelease, kNavDeadzone]: stick in hysteresis band—do nothing.
         }
 
-        // lxActive guard: only process X-axis when Y-axis is not active,
-        // ensuring diagonal stick movement navigates rows exclusively.
-        if (lxActive && !lyActive && !m_stickNavActive) {
-            if (!m_stickLxActive) {
-                // First step fires immediately.
-                m_stickLxActive   = true;
-                m_stickLxCooldown = kSnapGate;
+        // Y-axis is "engaged" (active or in hysteresis band) when WasActive is set.
+        const bool lyEngaged = m_stickNavWasActive;
+
+        // --- X axis (slider adjust) ------------------------------------------
+        // Only process when Y axis has fully released (not in hysteresis band).
+        if (!lyEngaged) {
+            if (absLx > kNavDeadzone && !m_stickLxWasActive) {
+                // Fresh activation.
+                m_stickLxWasActive = true;
+                m_stickLxActive    = true;
+                m_stickLxCooldown  = kSnapGate;
                 const auto& row = m_tabs[static_cast<size_t>(m_activeTab)].rows[static_cast<size_t>(m_selectedRow)];
                 if (row.type == RowType::FloatSlider && row.fTarget) {
                     *row.fTarget = std::clamp(
@@ -359,24 +376,28 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
                     CommitChange();
                     if (m_onAdjust) m_onAdjust();
                 }
-            } else {
-                m_stickLxCooldown -= dt;
-                if (m_stickLxCooldown <= 0.0f) {
-                    // Flat cadence — no acceleration.
-                    m_stickLxCooldown = kSnapCadence;
-                    const auto& row = m_tabs[static_cast<size_t>(m_activeTab)].rows[static_cast<size_t>(m_selectedRow)];
-                    if (row.type == RowType::FloatSlider && row.fTarget) {
-                        *row.fTarget = std::clamp(
-                            *row.fTarget + (lx > 0 ? 1.0f : -1.0f) * row.step,
-                            row.min, row.max);
-                        CommitChange();
-                        if (m_onAdjust) m_onAdjust();
+            } else if (m_stickLxWasActive) {
+                if (absLx < kNavRelease) {
+                    m_stickLxWasActive = false;
+                    m_stickLxActive    = false;
+                    m_stickLxCooldown  = 0.0f;
+                } else if (absLx > kNavDeadzone) {
+                    // Auto-repeat.
+                    m_stickLxCooldown -= dt;
+                    if (m_stickLxCooldown <= 0.0f) {
+                        m_stickLxCooldown = kSnapCadence;
+                        const auto& row = m_tabs[static_cast<size_t>(m_activeTab)].rows[static_cast<size_t>(m_selectedRow)];
+                        if (row.type == RowType::FloatSlider && row.fTarget) {
+                            *row.fTarget = std::clamp(
+                                *row.fTarget + (lx > 0 ? 1.0f : -1.0f) * row.step,
+                                row.min, row.max);
+                            CommitChange();
+                            if (m_onAdjust) m_onAdjust();
+                        }
                     }
                 }
+                // Band: do nothing.
             }
-        } else if (!lxActive) {
-            m_stickLxActive   = false;
-            m_stickLxCooldown = 0.0f;
         }
     }
 
