@@ -323,8 +323,6 @@ private:
             m_overlay->GetVoiceInputHUD().SetVoiceState(state);
         });
 
-        // Guard: only show SAPI runtime errors while Voice mode is active
-        // and the 600ms post-exit suppression window has expired.
         m_voiceEngine->OnError([this](const std::wstring& errorMsg) {
             if (m_mode != InputMode::Voice) return;
             if (m_voiceErrorSuppressMs > 0.0f) return;
@@ -440,7 +438,6 @@ private:
         auto& hud = m_overlay->GetVoiceInputHUD();
         hud.Open();
 
-        // Clear suppression window before starting
         m_voiceErrorSuppressMs = 0.0f;
         if (m_voiceEngine) m_voiceEngine->Start();
 
@@ -451,7 +448,6 @@ private:
     }
 
     void ExitVoiceMode() {
-        // Activate suppression window so stale SAPI callbacks don't toast
         m_voiceErrorSuppressMs = 600.0f;
         if (m_voiceEngine) m_voiceEngine->Stop();
         m_overlay->GetVoiceInputHUD().Close();
@@ -498,17 +494,28 @@ private:
     // -------------------------------------------------------------------------
     // Controller state handler  (called from InputEngine thread @ 250 Hz)
     //
-    // NOTE: VirtualKeyboard::Update() is intentionally NOT called here.
-    //       The render thread (OverlayWindow::RenderFrame at ~60 Hz) drives
-    //       the keyboard via m_keyboard.Update(m_lastState, dt).  Calling
-    //       Update() from both threads simultaneously was causing ~31x
-    //       duplicate NavigateTo() calls per stick flick (the root cause of
-    //       all keyboard navigation bugs).  The input thread only checks
-    //       IsOpen() to decide input routing.
+    // ARCHITECTURE NOTE — single Update() driver per widget:
+    //
+    //   All overlay widgets (VirtualKeyboard, SettingsMenu, ControlsOverlay,
+    //   RadialMenu) are driven EXCLUSIVELY by the render thread via
+    //   OverlayWindow::RenderFrame() (~60 Hz).  The input thread (250 Hz) must
+    //   NOT call widget Update() methods — doing so causes duplicate navigation
+    //   events (~31x per flick) and data races on widget state fields.
+    //
+    //   The input thread's only responsibilities when a widget is open:
+    //     1. Check IsOpen() to decide input routing.
+    //     2. Call PostState() to hand the latest ControllerState to the
+    //        render thread's m_lastState buffer.
+    //     3. Re-enable the virtual mouse if a widget just closed.
+    //
+    //   RadialMenu is an exception: its Update() is called from the input
+    //   thread because it does not use stick-navigation timing (it uses
+    //   right-stick angle which is safe to read from any thread), and it
+    //   was already the single call site.  If it ever gains timing-sensitive
+    //   navigation, move it to the render thread too.
     // -------------------------------------------------------------------------
 
     void OnControllerState(const ControllerState& state) {
-        // Tick voice error suppression timer (~4 ms/tick at 250 Hz)
         if (m_voiceErrorSuppressMs > 0.0f) {
             m_voiceErrorSuppressMs -= 4.0f;
             if (m_voiceErrorSuppressMs < 0.0f) m_voiceErrorSuppressMs = 0.0f;
@@ -545,7 +552,7 @@ private:
         const bool voiceOpen     = m_overlay->GetVoiceInputHUD().IsOpen();
 
         // ------------------------------------------------------------------
-        // Voice mode: limited controls (LB+RB to exit, West = lang cycle)
+        // Voice mode
         // ------------------------------------------------------------------
         if (voiceOpen) {
             if (held(Button::LB) && held(Button::RB)) {
@@ -560,19 +567,23 @@ private:
             return;
         }
 
+        // ------------------------------------------------------------------
+        // Controls overlay — render thread drives Update(); we only route
+        // state and watch for close to re-enable the mouse.
+        // ------------------------------------------------------------------
         if (controlsOpen) {
-            m_overlay->GetControlsOverlay().Update(state, dt * 0.001f);
             if (!m_overlay->GetControlsOverlay().IsOpen()) {
                 if (m_mode == InputMode::Cursor)
                     m_virtualMouse->SetEnabled(true);
             }
+            m_overlay->PostState(state);
             m_prevButtons = state.buttons;
             return;
         }
 
-        // Keyboard is open: only forward state to the render thread via PostState.
-        // The render thread drives VirtualKeyboard::Update() exclusively.
-        // We still re-enable the mouse if the keyboard just closed.
+        // ------------------------------------------------------------------
+        // Virtual keyboard — render thread drives Update().
+        // ------------------------------------------------------------------
         if (kbOpen) {
             if (!m_overlay->GetVirtualKeyboard().IsOpen() && m_mode == InputMode::Cursor)
                 m_virtualMouse->SetEnabled(true);
@@ -628,12 +639,15 @@ private:
             return;
         }
 
+        // ------------------------------------------------------------------
+        // Settings menu — render thread drives Update(); we only PostState.
+        // ------------------------------------------------------------------
         if (settingsOpen) {
-            m_overlay->GetSettingsMenu().Update(state, dt * 0.001f);
+            m_overlay->PostState(state);
             return;
         }
 
-        // LB+RB — cycle through modes (Cursor -> Navigate -> Voice -> Cursor)
+        // LB+RB — cycle through modes
         if (held(Button::LB) && held(Button::RB)) {
             if (!m_lbRbChordActive) {
                 m_lbRbChordActive = true;
@@ -741,7 +755,6 @@ private:
         if (connected && m_inputEngine)
             m_inputEngine->Rumble(id, {0.3f, 0.6f, 150});
 
-        // If controller disconnects during Voice mode, shut down cleanly
         if (!connected && m_mode == InputMode::Voice && m_voiceEngine) {
             m_voiceErrorSuppressMs = 600.0f;
             m_voiceEngine->Stop();
