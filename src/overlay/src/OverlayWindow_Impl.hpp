@@ -118,15 +118,15 @@ private:
     SettingsMenu    m_settingsMenu;
     VirtualKeyboard m_keyboard;
     ControlsOverlay m_controlsOverlay;
-    VoiceInputHUD   m_voiceHUD;          // <<< new
+    VoiceInputHUD   m_voiceHUD;
+
+    // Thread-safe voice state snapshot (written from Application, read on render thread)
+    mutable std::mutex          m_voiceStateMutex;
+    voice::VoiceInputState      m_voiceState;
 
     std::mutex                      m_toastMutex;
     std::queue<ToastNotification>   m_pendingToasts;
-    std::vector<ToastNotification>  m_activeToasts;
-
-    // Pending VoiceInputState snapshot posted from the app layer (thread-safe)
-    mutable std::mutex              m_voiceStateMutex;
-    voice::VoiceInputState          m_voiceState;
+    std::vector<ToastNotification>  m_activeToasts;   // max 4 shown simultaneously
 
     FloatSpring m_hudPillWidthSpring;
     float       m_hudPillPhase = 0.0f;

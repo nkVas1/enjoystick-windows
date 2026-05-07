@@ -28,6 +28,20 @@ namespace enjoystick::overlay {
 ///     via a lock-free state snapshot.
 ///   - Supports multi-monitor setups: one OverlayWindow per HMONITOR
 ///
+/// Usage:
+///   auto overlay = OverlayWindow::Create();
+///   overlay->Show();
+///   // from input callback:
+///   overlay->PostState(state);
+///   // update the HUD mode chip:
+///   overlay->SetModeLabel(L"\U0001F5B1  Cursor mode");
+///   // open keyboard:
+///   overlay->GetVirtualKeyboard().Open(L"");
+///   // open controls reference:
+///   overlay->GetControlsOverlay().Open();
+///   // update voice HUD state:
+///   overlay->GetVoiceInputHUD().Open();
+///
 class OverlayWindow {
 public:
     struct Config {
@@ -72,7 +86,9 @@ public:
     /// Access the gamepad-driven controls reference overlay.
     virtual ControlsOverlay& GetControlsOverlay() = 0;
 
-    /// Access the voice-input HUD overlay.
+    /// Access the voice-input HUD component.
+    /// Use Open() / Close() to show/hide the animated microphone panel.
+    /// Feed voice state snapshots via UpdateVoiceState() for live VU/partial text.
     virtual VoiceInputHUD& GetVoiceInputHUD() = 0;
 
     /// Trigger a toast notification (thread-safe).

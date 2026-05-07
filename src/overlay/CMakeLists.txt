@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.14)
 # Direct2D / DirectWrite layered-window overlay.
 # Renders: active indicator, toast notifications, radial menu,
 #          settings menu, virtual keyboard, controls reference,
-#          voice input HUD.
+#          voice-input HUD.
 # ---------------------------------------------------------------------------
 
 add_library(enjoystick_overlay STATIC
