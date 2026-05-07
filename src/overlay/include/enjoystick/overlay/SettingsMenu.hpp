@@ -106,31 +106,31 @@ private:
     // -----------------------------------------------------------------------
     // Navigation timing — single-step policy with hysteresis
     //
-    // kSnapDeadzone: stick must exceed this to register a step.
-    // kSnapRelease:  stick must drop BELOW this to reset the axis.
-    //   The gap [kSnapRelease .. kSnapDeadzone] is the hysteresis band;
-    //   the stick must fully retreat below kSnapRelease before the next
-    //   first-step can fire.  Identical fix to VirtualKeyboard (2026-05-07).
+    // HYSTERESIS (same fix as VirtualKeyboard, 2026-05-07):
+    //   kSnapDeadzone  = 0.62 — axis becomes active (first step fires)
+    //   kNavRelease    = 0.28 — axis resets (next flick fires first step)
+    //   The gap [0.28, 0.62] is the hysteresis band; the stick must fully
+    //   retreat below kNavRelease before a new first-step can fire.
     //
-    // kSnapGate:     hold this many seconds before auto-repeat begins (1.0 s).
-    // kSnapCadence:  flat repeat interval after the gate.
+    // kSnapGate:    hold this many seconds before auto-repeat begins.
+    // kSnapCadence: flat repeat interval after the gate.
     // -----------------------------------------------------------------------
     static constexpr float kSnapDeadzone  = 0.62f;   // activate threshold
-    static constexpr float kSnapRelease   = 0.25f;   // deactivate threshold (hysteresis)
+    static constexpr float kNavRelease    = 0.28f;   // deactivate threshold (hysteresis)
+    static constexpr float kNavDeadzone   = 0.62f;   // alias for value-adjust axis
     static constexpr float kSnapGate      = 1.00f;   // s before first repeat (was 1.5)
     static constexpr float kSnapCadence   = 0.22f;   // s between repeats (flat)
-    static constexpr float kNavDeadzone   = 0.62f;   // alias kept for value-adjust axis
     static constexpr float kAnimMs        = 160.0f;
 
-    // Y-axis (row navigation) — with hysteresis
+    // Y-axis (row navigation) — hysteresis pair
     bool  m_stickNavActive    = false;
-    bool  m_stickNavReleased  = true;   // true = ready for next flick
+    bool  m_stickNavWasActive = false;  // true while stick is at or above deadzone
     float m_stickNavCooldown  = 0.0f;
     float m_stickNavHoldTime  = 0.0f;
 
-    // X-axis (tab switch / value adjust) — with hysteresis
+    // X-axis (tab switch / value adjust) — hysteresis pair
     bool  m_stickLxActive     = false;
-    bool  m_stickLxReleased   = true;   // true = ready for next flick
+    bool  m_stickLxWasActive  = false;  // true while stick is at or above deadzone
     float m_stickLxCooldown   = 0.0f;
 
     bool  m_dpadVertHeld      = false;
