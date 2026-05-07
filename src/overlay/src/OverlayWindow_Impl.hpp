@@ -10,6 +10,7 @@
 #include <enjoystick/overlay/OverlayWindow.hpp>
 #include <enjoystick/overlay/VirtualKeyboard.hpp>
 #include <enjoystick/overlay/ControlsOverlay.hpp>
+#include <enjoystick/overlay/VoiceInputHUD.hpp>
 
 #include "Overlay_SpringAnim.hpp"
 
@@ -61,6 +62,7 @@ public:
     SettingsMenu&    GetSettingsMenu()    override;
     VirtualKeyboard& GetVirtualKeyboard() override;
     ControlsOverlay& GetControlsOverlay() override;
+    VoiceInputHUD&   GetVoiceInputHUD()   override;
     void ShowToast(std::wstring message, uint32_t durationMs) override;
     void SetModeLabel(std::wstring label)       override;
     [[nodiscard]] bool    IsShown()  const noexcept override;
@@ -81,11 +83,9 @@ private:
     void DrawActiveIndicator(ID2D1RenderTarget* rt);
     void DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds);
     void DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds);
-    // stickSource: stick coordinates to visualize
     void DrawStickViz(ID2D1RenderTarget* rt, float pillRight, float pillCy,
                       Vec2 stickSource) const;
 
-    // Decode category from message prefix [OK], [WARN], [ERR] etc.
     static ToastCategory DecodeCategory(const std::wstring& msg) noexcept;
 
     Config   m_config;
@@ -118,27 +118,25 @@ private:
     SettingsMenu    m_settingsMenu;
     VirtualKeyboard m_keyboard;
     ControlsOverlay m_controlsOverlay;
+    VoiceInputHUD   m_voiceHUD;          // <<< new
 
     std::mutex                      m_toastMutex;
     std::queue<ToastNotification>   m_pendingToasts;
-    std::vector<ToastNotification>  m_activeToasts;   // max 4 shown simultaneously
+    std::vector<ToastNotification>  m_activeToasts;
 
-    // HUD pill spring: animates width/position when label changes
-    FloatSpring m_hudPillWidthSpring;  // tracks target chip pixel width
-    float       m_hudPillPhase = 0.0f; // pulse phase for border glow
+    // Pending VoiceInputState snapshot posted from the app layer (thread-safe)
+    mutable std::mutex              m_voiceStateMutex;
+    voice::VoiceInputState          m_voiceState;
 
-    // HUD cross-dissolve: when the mode label changes, old fades out and new fades in.
-    // m_hudCrossT: 0.0 = showing prev, 1.0 = fully showing current
-    // Duration = kHudCrossDuration seconds
+    FloatSpring m_hudPillWidthSpring;
+    float       m_hudPillPhase = 0.0f;
+
     static constexpr float kHudCrossDuration = 0.160f;
-    std::wstring m_hudPrevLabel;       // label that is fading out
-    float        m_hudCrossT   = 1.0f; // 1.0 = fully settled on current label
-    bool         m_hudCrossDir = true; // true = fading from prev->cur (not used, kept for clarity)
+    std::wstring m_hudPrevLabel;
+    float        m_hudCrossT   = 1.0f;
+    bool         m_hudCrossDir = true;
 
-    // Mini stick visualizer:
-    //   - alpha spring fades in when stick is deflected
-    //   - m_stickVizUseRight: when true, shows right stick (e.g. during RadialMenu)
-    FloatSpring  m_stickVizSpring;     // value = alpha 0..1
+    FloatSpring  m_stickVizSpring;
     bool         m_stickVizUseRight = false;
 
     std::thread        m_renderThread;

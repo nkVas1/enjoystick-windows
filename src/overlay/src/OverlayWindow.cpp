@@ -61,13 +61,14 @@ RadialMenu&       OverlayWindowImpl::GetRadialMenu()                    { return
 SettingsMenu&     OverlayWindowImpl::GetSettingsMenu()                  { return m_settingsMenu; }
 VirtualKeyboard&  OverlayWindowImpl::GetVirtualKeyboard()               { return m_keyboard; }
 ControlsOverlay&  OverlayWindowImpl::GetControlsOverlay()               { return m_controlsOverlay; }
+VoiceInputHUD&    OverlayWindowImpl::GetVoiceInputHUD()                 { return m_voiceHUD; }
 
 void OverlayWindowImpl::SetModeLabel(std::wstring label) {
     std::lock_guard lk(m_modeLabelMutex);
     if (label != m_modeLabel) {
-        m_hudPrevLabel = m_modeLabel;  // save outgoing label
+        m_hudPrevLabel = m_modeLabel;
         m_modeLabel    = std::move(label);
-        m_hudCrossT    = 0.0f;         // restart cross-dissolve
+        m_hudCrossT    = 0.0f;
         m_hudCrossDir  = true;
     }
 }
@@ -317,9 +318,16 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
     const bool keyboardActive  = m_keyboard.IsOpen();
     const bool settingsActive  = m_settingsMenu.IsOpen();
     const bool controlsActive  = m_controlsOverlay.IsOpen();
+    const bool voiceActive     = m_voiceHUD.IsOpen();
 
-    // RadialMenu is driven by right stick, everything else uses left stick.
     m_stickVizUseRight = radialActive;
+
+    // Pull latest voice state snapshot (written from app thread)
+    voice::VoiceInputState voiceSnap;
+    {
+        std::lock_guard lk(m_voiceStateMutex);
+        voiceSnap = m_voiceState;
+    }
 
     static const ControllerState kEmpty{};
 
@@ -350,7 +358,10 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
         m_controlsOverlay.Update(kEmpty, deltaSeconds);
     }
 
-    // Advance stick-viz alpha spring using the source stick magnitude
+    // Always advance VoiceHUD (it handles its own open/close animation)
+    m_voiceHUD.Update(voiceSnap, deltaSeconds);
+
+    // Advance stick-viz alpha spring
     {
         const Vec2  stick = m_stickVizUseRight ? m_lastState.rightStick : m_lastState.leftStick;
         const float lx  = stick.x;
@@ -368,6 +379,13 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
                     static_cast<float>(w), static_cast<float>(h));
     m_controlsOverlay.Draw(rt, m_dwriteFactory.Get(), m_dpiScale,
                            static_cast<float>(w), static_cast<float>(h));
+
+    // Voice HUD renders on top of other overlays (it is non-blocking, just a HUD)
+    if (voiceActive) {
+        m_voiceHUD.Draw(rt, m_dwriteFactory.Get(), m_dpiScale,
+                        static_cast<float>(w), static_cast<float>(h));
+    }
+
     DrawHudMode(rt, deltaSeconds);
     DrawActiveIndicator(rt);
     DrawToasts(rt, deltaSeconds);
@@ -439,12 +457,11 @@ void OverlayWindowImpl::DrawStickViz(ID2D1RenderTarget* rt, float pillRight, flo
     if (alpha < 0.01f) return;
 
     const float s    = m_dpiScale;
-    const float r    = 14.0f * s;  // ring radius
-    const float gap  =  8.0f * s;  // gap between pill right edge and ring centre
+    const float r    = 14.0f * s;
+    const float gap  =  8.0f * s;
     const float cx   = pillRight + gap + r;
     const float cy   = pillCy;
 
-    // Outer ring
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.72f * alpha), b.GetAddressOf());
@@ -456,21 +473,19 @@ void OverlayWindowImpl::DrawStickViz(ID2D1RenderTarget* rt, float pillRight, flo
         if (b) rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), b.Get(), 1.0f * s);
     }
 
-    // Stick dot
     const float lx  = stickSource.x;
-    const float ly  = stickSource.y;  // XInput: +y = up in physical world
+    const float ly  = stickSource.y;
     const float mag = std::sqrt(lx*lx + ly*ly);
     const float travelR = r - 4.0f * s;
     const float dx  = lx * travelR;
-    const float dy  = -ly * travelR;  // flip Y: screen Y increases downward
-    const float dotR = 2.0f * s + (mag * 3.0f * s);  // lerp dot size with stick magnitude
+    const float dy  = -ly * travelR;
+    const float dotR = 2.0f * s + (mag * 3.0f * s);
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::GoldHi(0.92f * alpha), b.GetAddressOf());
         if (b) rt->FillEllipse(
             D2D1::Ellipse(D2D1::Point2F(cx + dx, cy + dy), dotR, dotR), b.Get());
     }
-    // Small specular on the dot
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::White(0.45f * alpha), b.GetAddressOf());
@@ -499,7 +514,6 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
     }
     if (label.empty() && prevLabel.empty()) return;
 
-    // Advance cross-dissolve timer (outside the mutex)
     if (crossT < 1.0f) {
         crossT += deltaSeconds / kHudCrossDuration;
         if (crossT > 1.0f) crossT = 1.0f;
@@ -519,7 +533,6 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
     if (m_hudPillPhase > 2.0f * kPi) m_hudPillPhase -= 2.0f * kPi;
     const float pulse = 0.5f + 0.5f * std::sin(m_hudPillPhase);
 
-    // Create text layout for current label
     Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
     m_dwriteFactory->CreateTextFormat(
         L"Segoe UI", nullptr,
@@ -543,7 +556,6 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
     if (layout) layout->GetMetrics(&tm);
     else if (prevLayout) prevLayout->GetMetrics(&tm);
 
-    // Determine active mode badge
     struct BadgeInfo { const wchar_t* text; D2D1_COLOR_F fill; D2D1_COLOR_F textCol; bool pulse; };
     BadgeInfo badge{};
     bool showBadge = false;
@@ -566,6 +578,10 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
         showBadge = true;
     } else if (m_settingsMenu.IsOpen()) {
         badge = { L"SETT", Tok::SurfaceRaised(0.80f), Tok::ChromeHi(0.90f), false };
+        showBadge = true;
+    } else if (m_voiceHUD.IsOpen()) {
+        // Voice mode badge: amber-warm pulsing microphone label
+        badge = { L"MIC", Tok::AmberWarm(0.72f + 0.18f * pulse), Tok::SurfaceBase(0.96f), true };
         showBadge = true;
     }
 
@@ -593,11 +609,14 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
             rt->FillRoundedRectangle(rr, b.Get());
         }
     }
-    // Gold accent bar
+    // Gold accent bar (amber when voice mode)
     {
         const float accentAlpha = (showBadge && badge.pulse) ? (0.70f + 0.28f * pulse) : 0.90f;
+        const D2D1_COLOR_F accentCol = m_voiceHUD.IsOpen()
+            ? Tok::AmberWarm(accentAlpha)
+            : Tok::GoldMid(accentAlpha);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(Tok::GoldMid(accentAlpha), b.GetAddressOf());
+        rt->CreateSolidColorBrush(accentCol, b.GetAddressOf());
         if (b) {
             D2D1_ROUNDED_RECT bar{};
             bar.rect    = D2D1::RectF(chipX, chipY + r * 0.4f,
@@ -630,10 +649,9 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
                 D2D1::Point2F(chipX + accentW + padX, chipY + padY),
                 prevLayout.Get(), b.Get());
     }
-
     // Current label fading in
     if (layout) {
-        const float curAlpha = crossT;   // 0..1 as dissolve progresses
+        const float curAlpha = crossT;
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::ChromeHi(0.92f * curAlpha), b.GetAddressOf());
         if (b)
@@ -671,7 +689,6 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
         }
     }
 
-    // Mini stick visualizer: pass the correct stick source
     const float pillCy = chipY + chipH * 0.5f;
     const Vec2 vizStick = m_stickVizUseRight ? m_lastState.rightStick : m_lastState.leftStick;
     DrawStickViz(rt, chipX + chipW, pillCy, vizStick);

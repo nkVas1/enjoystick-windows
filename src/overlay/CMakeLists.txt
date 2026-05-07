@@ -5,7 +5,8 @@ cmake_minimum_required(VERSION 3.14)
 #
 # Direct2D / DirectWrite layered-window overlay.
 # Renders: active indicator, toast notifications, radial menu,
-#          settings menu, virtual keyboard, controls reference.
+#          settings menu, virtual keyboard, controls reference,
+#          voice input HUD.
 # ---------------------------------------------------------------------------
 
 add_library(enjoystick_overlay STATIC
@@ -14,6 +15,7 @@ add_library(enjoystick_overlay STATIC
     src/RadialMenu.cpp
     src/SettingsMenu.cpp
     src/VirtualKeyboard.cpp
+    src/VoiceInputHUD.cpp
 )
 
 target_compile_definitions(enjoystick_overlay PUBLIC
@@ -27,7 +29,7 @@ target_include_directories(enjoystick_overlay
 )
 
 target_link_libraries(enjoystick_overlay
-    PUBLIC  enjoystick_core enjoystick_config
+    PUBLIC  enjoystick_core enjoystick_config enjoystick_voice
     PRIVATE d2d1 dwrite
 )
 

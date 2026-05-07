@@ -5,6 +5,7 @@
 #include <enjoystick/overlay/SettingsMenu.hpp>
 #include <enjoystick/overlay/VirtualKeyboard.hpp>
 #include <enjoystick/overlay/ControlsOverlay.hpp>
+#include <enjoystick/overlay/VoiceInputHUD.hpp>
 #include <memory>
 #include <string>
 #include <functional>
@@ -26,18 +27,6 @@ namespace enjoystick::overlay {
 ///   - Dedicated render thread; PostState() is called from the input thread
 ///     via a lock-free state snapshot.
 ///   - Supports multi-monitor setups: one OverlayWindow per HMONITOR
-///
-/// Usage:
-///   auto overlay = OverlayWindow::Create();
-///   overlay->Show();
-///   // from input callback:
-///   overlay->PostState(state);
-///   // update the HUD mode chip:
-///   overlay->SetModeLabel(L"\U0001F5B1  Cursor mode");
-///   // open keyboard:
-///   overlay->GetVirtualKeyboard().Open(L"");
-///   // open controls reference:
-///   overlay->GetControlsOverlay().Open();
 ///
 class OverlayWindow {
 public:
@@ -82,6 +71,9 @@ public:
 
     /// Access the gamepad-driven controls reference overlay.
     virtual ControlsOverlay& GetControlsOverlay() = 0;
+
+    /// Access the voice-input HUD overlay.
+    virtual VoiceInputHUD& GetVoiceInputHUD() = 0;
 
     /// Trigger a toast notification (thread-safe).
     virtual void ShowToast(std::wstring message, uint32_t durationMs = 2500) = 0;
