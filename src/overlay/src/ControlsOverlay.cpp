@@ -161,12 +161,14 @@ void ControlsOverlay::Open() {
     m_sectionIdx  = 0;
     m_scrollOffset = 0;
     m_state       = State::Opening;
-    m_stickActive = false;
-    m_stickCooldown = 0.0f;
-    m_scrollDpadHeld  = false;
-    m_scrollDpadTimer = 0.0f;
-    m_scrollRyActive  = false;
-    m_scrollRyCooldown= 0.0f;
+    m_stickActive      = false;
+    m_stickWasActive   = false;
+    m_stickCooldown    = 0.0f;
+    m_scrollDpadHeld   = false;
+    m_scrollDpadTimer  = 0.0f;
+    m_scrollRyActive   = false;
+    m_scrollRyWasActive= false;
+    m_scrollRyCooldown = 0.0f;
 
     m_openMask = Button::None;
 
@@ -235,38 +237,52 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
         goto done;
     }
 
+    // Helper: reset hysteresis when changing section
+    auto resetSectionNav = [&]() {
+        m_stickActive      = false;
+        m_stickWasActive   = false;
+        m_scrollOffset     = 0;
+        m_scrollDpadHeld   = false;
+        m_scrollRyActive   = false;
+        m_scrollRyWasActive= false;
+    };
+
     // ---- Section navigation (DPad Left / Right)
     if (dRight && !m_prevDRight) {
         const int32_t n = static_cast<int32_t>(m_sections.size());
         m_sectionIdx = (m_sectionIdx + 1) % n;
         m_tabSpring.SetTarget(static_cast<float>(m_sectionIdx));
-        m_stickActive  = false;
-        m_scrollOffset = 0;
-        m_scrollDpadHeld = false;
-        m_scrollRyActive = false;
+        resetSectionNav();
     }
     if (dLeft && !m_prevDLeft) {
         const int32_t n = static_cast<int32_t>(m_sections.size());
         m_sectionIdx = (m_sectionIdx - 1 + n) % n;
         m_tabSpring.SetTarget(static_cast<float>(m_sectionIdx));
-        m_stickActive  = false;
-        m_scrollOffset = 0;
-        m_scrollDpadHeld = false;
-        m_scrollRyActive = false;
+        resetSectionNav();
     }
 
-    // ---- Section navigation (Left Stick X)
+    // ---- Section navigation (Left Stick X) with hysteresis
     {
-        const float lx = state.leftStick.x;
-        if (std::abs(lx) > 0.50f) {
-            if (!m_stickActive) {
-                m_stickActive   = true;
-                m_stickCooldown = kStickFirst;
-                const int32_t n = static_cast<int32_t>(m_sections.size());
-                m_sectionIdx = (m_sectionIdx + (lx > 0 ? 1 : -1) + n) % n;
-                m_tabSpring.SetTarget(static_cast<float>(m_sectionIdx));
-                m_scrollOffset = 0;
-            } else {
+        const float lx    = state.leftStick.x;
+        const float absLx = std::abs(lx);
+
+        if (absLx > kStickDeadzone && !m_stickWasActive) {
+            // Fresh activation — first step fires immediately.
+            m_stickWasActive = true;
+            m_stickActive    = true;
+            m_stickCooldown  = kStickFirst;
+            const int32_t n = static_cast<int32_t>(m_sections.size());
+            m_sectionIdx = (m_sectionIdx + (lx > 0 ? 1 : -1) + n) % n;
+            m_tabSpring.SetTarget(static_cast<float>(m_sectionIdx));
+            m_scrollOffset = 0;
+        } else if (m_stickWasActive) {
+            if (absLx < kStickRelease) {
+                // Stick has fully retreated — reset hysteresis gate.
+                m_stickWasActive = false;
+                m_stickActive    = false;
+                m_stickCooldown  = 0.0f;
+            } else if (absLx > kStickDeadzone) {
+                // Still held — auto-repeat.
                 m_stickCooldown -= dt;
                 if (m_stickCooldown <= 0.0f) {
                     m_stickCooldown = kStickNext;
@@ -276,9 +292,7 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
                     m_scrollOffset = 0;
                 }
             }
-        } else {
-            m_stickActive   = false;
-            m_stickCooldown = 0.0f;
+            // Hysteresis band [kStickRelease, kStickDeadzone]: do nothing.
         }
     }
 
@@ -313,18 +327,28 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
         }
     }
 
-    // ---- Scroll binding list (Right Stick Y)
+    // ---- Scroll binding list (Right Stick Y) with hysteresis
     {
-        const float ry = state.rightStick.y;
-        if (std::abs(ry) > kScrollRyDz) {
-            if (!m_scrollRyActive) {
-                m_scrollRyActive   = true;
-                m_scrollRyCooldown = kScrollFirst;
-                const int32_t total = m_sectionIdx < static_cast<int32_t>(m_sections.size())
-                    ? static_cast<int32_t>(m_sections[static_cast<size_t>(m_sectionIdx)].bindings.size()) : 0;
-                if (ry > 0 && m_scrollOffset > 0)       --m_scrollOffset;
-                if (ry < 0 && m_scrollOffset < total-1) ++m_scrollOffset;
-            } else {
+        const float ry    = state.rightStick.y;
+        const float absRy = std::abs(ry);
+
+        if (absRy > kScrollRyDz && !m_scrollRyWasActive) {
+            // Fresh activation.
+            m_scrollRyWasActive = true;
+            m_scrollRyActive    = true;
+            m_scrollRyCooldown  = kScrollFirst;
+            const int32_t total = m_sectionIdx < static_cast<int32_t>(m_sections.size())
+                ? static_cast<int32_t>(m_sections[static_cast<size_t>(m_sectionIdx)].bindings.size()) : 0;
+            if (ry > 0 && m_scrollOffset > 0)       --m_scrollOffset;
+            if (ry < 0 && m_scrollOffset < total-1) ++m_scrollOffset;
+        } else if (m_scrollRyWasActive) {
+            if (absRy < kScrollRyRelease) {
+                // Stick fully retreated — reset gate.
+                m_scrollRyWasActive = false;
+                m_scrollRyActive    = false;
+                m_scrollRyCooldown  = 0.0f;
+            } else if (absRy > kScrollRyDz) {
+                // Auto-repeat.
                 m_scrollRyCooldown -= dt;
                 if (m_scrollRyCooldown <= 0.0f) {
                     m_scrollRyCooldown = kScrollNext;
@@ -334,9 +358,7 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
                     if (ry < 0 && m_scrollOffset < total-1) ++m_scrollOffset;
                 }
             }
-        } else {
-            m_scrollRyActive   = false;
-            m_scrollRyCooldown = 0.0f;
+            // Hysteresis band [kScrollRyRelease, kScrollRyDz]: do nothing.
         }
     }
 
