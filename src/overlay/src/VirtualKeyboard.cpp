@@ -181,8 +181,15 @@ void VirtualKeyboard::Open(const std::wstring& seed) {
     m_shift         = false; m_caps = false;
     m_glowPhase     = 0.0f;
     m_state         = State::Opening;
+
+    // Legacy single-axis fields (kept for safety)
     m_stickCooldown = 0.0f; m_stickActive = false;
     m_stickHoldTime = 0.0f;
+
+    // Independent per-axis state
+    m_stickActiveX   = false; m_stickCooldownX = 0.0f;
+    m_stickActiveY   = false; m_stickCooldownY = 0.0f;
+
     m_dpadHeld      = false; m_dpadTimer = 0.0f;
     m_dpadDirRow    = 0; m_dpadDirCol = 0;
     m_typeDebounce  = 0.0f;
@@ -427,44 +434,75 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
         }
     }
 
-    // ---- Left-stick navigation (left stick ONLY — right stick is not used)
+    // ---- Left-stick navigation  (independent X and Y axes)
     //
-    // Single-step policy:
-    //   - Crossing kSnapDeadzone fires exactly ONE step immediately.
-    //   - Auto-repeat does not start until kStickRepeatGate seconds of
-    //     continuous hold have elapsed (1.5 s by default).
-    //   - After the gate, repeats fire every kStickRepeatCadence seconds
-    //     with NO further acceleration and NO analog-magnitude scaling.
-    //   This guarantees that a 1–1.5 s deliberate hold = exactly one key hop.
+    // ROOT-CAUSE FIX: The previous implementation used a single shared
+    // active/cooldown state and picked the axis with:
+    //   hx = |lx| >= |ly|  (prefer horizontal)
+    // This caused horizontal steps whenever the stick was deflected
+    // diagonally, even when the user clearly intended vertical movement.
+    //
+    // New design:
+    //   - X and Y each have their own active flag and cooldown timer.
+    //   - An axis fires only when it exceeds kSnapDeadzone AND it
+    //     dominates the other axis by at least kAxisDominance (1.5x).
+    //     "Ambiguous" diagonals (neither dominates) suppress both axes.
+    //   - First step fires immediately on crossing the threshold.
+    //   - Auto-repeat begins only after kStickRepeatGate seconds of
+    //     continuous hold, then repeats every kStickRepeatCadence
+    //     seconds with no acceleration.
+    //   - Releasing a stick (dropping below kSnapDeadzone or losing
+    //     dominance) immediately resets that axis's state, so the next
+    //     push fires a fresh first step.
     {
-        const float lx = state.leftStick.x;
-        const float ly = state.leftStick.y;
-        // Prefer horizontal if |lx| >= |ly|, else vertical.
-        const bool hx = std::abs(lx) >= std::abs(ly) && std::abs(lx) > kSnapDeadzone;
-        const bool hy = !hx && std::abs(ly) > kSnapDeadzone;
+        const float lx  = state.leftStick.x;
+        const float ly  = state.leftStick.y;
+        const float alx = std::abs(lx);
+        const float aly = std::abs(ly);
 
-        if (hx || hy) {
-            if (!m_stickActive) {
-                // First step — fires immediately on deadzone crossing.
-                m_stickActive   = true;
-                m_stickHoldTime = 0.0f;
-                m_stickCooldown = kStickRepeatGate;
-                if (hx) NavigateTo(m_row,                       m_col + (lx > 0.0f ? 1 : -1));
-                else    NavigateTo(m_row + (ly > 0.0f ? -1 : 1), m_col);
+        // X axis: active when |lx| exceeds deadzone AND dominates Y
+        const bool hxActive = alx > kSnapDeadzone && alx > aly * kAxisDominance;
+        // Y axis: active when |ly| exceeds deadzone AND dominates X
+        const bool hyActive = aly > kSnapDeadzone && aly > alx * kAxisDominance;
+
+        // -- X axis state machine --
+        if (hxActive) {
+            const int32_t dc = (lx > 0.0f) ? 1 : -1;
+            if (!m_stickActiveX) {
+                m_stickActiveX   = true;
+                m_stickCooldownX = kStickRepeatGate;
+                NavigateTo(m_row, m_col + dc);
             } else {
-                m_stickHoldTime += dt;
-                m_stickCooldown -= dt;
-                if (m_stickCooldown <= 0.0f) {
-                    // Flat cadence — no acceleration, no magnitude scaling.
-                    m_stickCooldown = kStickRepeatCadence;
-                    if (hx) NavigateTo(m_row,                       m_col + (lx > 0.0f ? 1 : -1));
-                    else    NavigateTo(m_row + (ly > 0.0f ? -1 : 1), m_col);
+                m_stickCooldownX -= dt;
+                if (m_stickCooldownX <= 0.0f) {
+                    m_stickCooldownX = kStickRepeatCadence;
+                    NavigateTo(m_row, m_col + dc);
                 }
             }
         } else {
-            m_stickActive   = false;
-            m_stickCooldown = 0.0f;
-            m_stickHoldTime = 0.0f;
+            m_stickActiveX   = false;
+            m_stickCooldownX = 0.0f;
+        }
+
+        // -- Y axis state machine --
+        // XInput convention: ly > 0 = stick pushed UP = navigate to row above (row-1)
+        //                    ly < 0 = stick pushed DOWN = navigate to row below (row+1)
+        if (hyActive) {
+            const int32_t dr = (ly > 0.0f) ? -1 : 1;
+            if (!m_stickActiveY) {
+                m_stickActiveY   = true;
+                m_stickCooldownY = kStickRepeatGate;
+                NavigateTo(m_row + dr, m_col);
+            } else {
+                m_stickCooldownY -= dt;
+                if (m_stickCooldownY <= 0.0f) {
+                    m_stickCooldownY = kStickRepeatCadence;
+                    NavigateTo(m_row + dr, m_col);
+                }
+            }
+        } else {
+            m_stickActiveY   = false;
+            m_stickCooldownY = 0.0f;
         }
     }
     // Right stick: intentionally not used for keyboard navigation.
