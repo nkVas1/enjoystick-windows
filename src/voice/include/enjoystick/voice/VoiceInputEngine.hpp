@@ -9,7 +9,7 @@
 //   auto engine = VoiceInputEngine::Create({});
 //   engine->OnResult([](const RecognitionResult& r){ ... });
 //   engine->OnStateChanged([](const VoiceInputState& s){ ... });
-//   engine->Start();
+//   engine->Start();   // returns true if SAPI initialised successfully
 //   engine->Stop();
 //
 // Internally owns a VoiceInput instance and re-exposes its callbacks.
@@ -46,13 +46,17 @@ public:
     /// (listening/recognising flag, audio level, partial text).
     virtual void OnStateChanged(std::function<void(const VoiceInputState&)> cb) = 0;
 
+    /// Register callback fired on SAPI errors (e.g. no microphone).
+    virtual void OnError(std::function<void(const std::wstring&)> cb) = 0;
+
     /// Arm the microphone and begin recognition.
-    virtual void Start() = 0;
+    /// Returns true if SAPI initialised successfully, false on failure.
+    [[nodiscard]] virtual bool Start() = 0;
 
     /// Disarm and stop recognition.
     virtual void Stop() = 0;
 
-    /// Cycle the active recognition language (RU ↔ EN).
+    /// Cycle the active recognition language (RU <-> EN).
     virtual void CycleLanguage() = 0;
 
     [[nodiscard]] virtual bool          IsActive()   const noexcept = 0;
