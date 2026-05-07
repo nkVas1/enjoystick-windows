@@ -14,11 +14,19 @@
 static constexpr double M_PI = 3.14159265358979323846;
 #endif
 static constexpr float kPif = static_cast<float>(M_PI);
+(void)kPif;
 
 namespace enjoystick::overlay {
 
 // ---------------------------------------------------------------------------
-// BuildTabs  — defines all 5 tabs and their rows
+// Constructor
+// ---------------------------------------------------------------------------
+SettingsMenu::SettingsMenu(OnChangedCallback onChange)
+    : m_onChange(std::move(onChange))
+{}
+
+// ---------------------------------------------------------------------------
+// BuildTabs  -- defines all 5 tabs and their rows
 // ---------------------------------------------------------------------------
 void SettingsMenu::BuildTabs() {
     m_tabs.clear();
@@ -27,35 +35,35 @@ void SettingsMenu::BuildTabs() {
     // --- Tab 0: Cursor
     {
         Tab t; t.title = L"Cursor";
-        t.rows.push_back({ L"Cursor speed",     RowType::FloatSlider, 1.0f,   20.0f,  0.5f,  &m_values.cursorSpeed,       nullptr,                    L" px/ms" });
-        t.rows.push_back({ L"Curve exponent",   RowType::FloatSlider, 0.8f,   3.0f,   0.05f, &m_values.curveExponent,     nullptr,                    L""       });
-        t.rows.push_back({ L"Acceleration",     RowType::FloatSlider, 20.0f,  500.0f, 10.0f, &m_values.accelerationMs,    nullptr,                    L" ms"    });
-        t.rows.push_back({ L"Right stick cursor", RowType::BoolToggle, 0,     0,      0,     nullptr,                     &m_values.useRightStick,    L""       });
+        t.rows.push_back({ L"Cursor speed",       RowType::FloatSlider, 1.0f,   20.0f,  0.5f,  &m_values.cursorSpeed,       nullptr,                    L" px/ms" });
+        t.rows.push_back({ L"Curve exponent",      RowType::FloatSlider, 0.8f,   3.0f,   0.05f, &m_values.curveExponent,     nullptr,                    L""       });
+        t.rows.push_back({ L"Acceleration",        RowType::FloatSlider, 20.0f,  500.0f, 10.0f, &m_values.accelerationMs,    nullptr,                    L" ms"    });
+        t.rows.push_back({ L"Right stick cursor",  RowType::BoolToggle,  0,      0,      0,     nullptr,                     &m_values.useRightStick,    L""       });
         m_tabs.push_back(std::move(t));
     }
 
     // --- Tab 1: Scrolling
     {
         Tab t; t.title = L"Scrolling";
-        t.rows.push_back({ L"Scroll speed",     RowType::FloatSlider, 1.0f,   40.0f,  0.5f,  &m_values.scrollSpeed,       nullptr,                    L""       });
-        t.rows.push_back({ L"Triggers as clicks", RowType::BoolToggle, 0,     0,      0,     nullptr,                     &m_values.triggersAsClicks, L""       });
+        t.rows.push_back({ L"Scroll speed",        RowType::FloatSlider, 1.0f,   40.0f,  0.5f,  &m_values.scrollSpeed,       nullptr,                    L""       });
+        t.rows.push_back({ L"Triggers as clicks",  RowType::BoolToggle,  0,      0,      0,     nullptr,                     &m_values.triggersAsClicks, L""       });
         m_tabs.push_back(std::move(t));
     }
 
     // --- Tab 2: Adaptive
     {
         Tab t; t.title = L"Adaptive";
-        t.rows.push_back({ L"Adaptive speed",   RowType::BoolToggle,  0,      0,      0,     nullptr,                     &m_values.adaptiveSpeed,    L""       });
-        t.rows.push_back({ L"Traversal time",   RowType::FloatSlider, 300.0f, 2000.f, 50.0f, &m_values.targetTraversalMs, nullptr,                    L" ms"    });
-        t.rows.push_back({ L"DPI weight",       RowType::FloatSlider, 0.0f,   1.0f,   0.05f, &m_values.dpiWeight,         nullptr,                    L""       });
+        t.rows.push_back({ L"Adaptive speed",      RowType::BoolToggle,  0,      0,      0,     nullptr,                     &m_values.adaptiveSpeed,    L""       });
+        t.rows.push_back({ L"Traversal time",      RowType::FloatSlider, 300.0f, 2000.f, 50.0f, &m_values.targetTraversalMs, nullptr,                    L" ms"    });
+        t.rows.push_back({ L"DPI weight",          RowType::FloatSlider, 0.0f,   1.0f,   0.05f, &m_values.dpiWeight,         nullptr,                    L""       });
         m_tabs.push_back(std::move(t));
     }
 
     // --- Tab 3: Advanced
     {
         Tab t; t.title = L"Advanced";
-        t.rows.push_back({ L"Deadzone inner",   RowType::FloatSlider, 0.02f,  0.40f,  0.01f, &m_values.dzInner,           nullptr,                    L""       });
-        t.rows.push_back({ L"Deadzone outer",   RowType::FloatSlider, 0.50f,  1.00f,  0.01f, &m_values.dzOuter,           nullptr,                    L""       });
+        t.rows.push_back({ L"Deadzone inner",      RowType::FloatSlider, 0.02f,  0.40f,  0.01f, &m_values.dzInner,           nullptr,                    L""       });
+        t.rows.push_back({ L"Deadzone outer",      RowType::FloatSlider, 0.50f,  1.00f,  0.01f, &m_values.dzOuter,           nullptr,                    L""       });
         m_tabs.push_back(std::move(t));
     }
 
@@ -71,8 +79,6 @@ void SettingsMenu::BuildTabs() {
 }
 
 void SettingsMenu::RebuildToggleSprings() {
-    // Flatten all rows across all tabs to build the spring vector.
-    // Indexed as: tab0 rows, then tab1 rows, …
     size_t total = 0;
     for (const auto& tab : m_tabs) total += tab.rows.size();
     m_toggleSprings.resize(total);
@@ -90,7 +96,6 @@ void SettingsMenu::RebuildToggleSprings() {
     }
 }
 
-// Returns a flat index across all tabs for the toggle spring array.
 static int32_t FlatRowIndex(const std::vector<SettingsMenu::Tab>& tabs, int32_t tabIdx, int32_t rowIdx) {
     int32_t flat = 0;
     for (int32_t t = 0; t < tabIdx; ++t)
@@ -102,14 +107,13 @@ bool SettingsMenu::IsInteractiveRow(int32_t tabIdx, int32_t rowIdx) const noexce
     if (tabIdx < 0 || tabIdx >= static_cast<int32_t>(m_tabs.size())) return false;
     const auto& rows = m_tabs[static_cast<size_t>(tabIdx)].rows;
     if (rowIdx < 0 || rowIdx >= static_cast<int32_t>(rows.size())) return false;
-    return true;  // all rows in tabs are interactive (no section headers)
+    return true;
 }
 
 int32_t SettingsMenu::NextInteractiveRow(int32_t tabIdx, int32_t from, int32_t dir) const noexcept {
     if (tabIdx < 0 || tabIdx >= static_cast<int32_t>(m_tabs.size())) return from;
     const int32_t n = static_cast<int32_t>(m_tabs[static_cast<size_t>(tabIdx)].rows.size());
     if (n == 0) return from;
-    // Simple clamp — no wrapping within a tab so the user feels the boundaries
     const int32_t next = from + dir;
     if (next < 0) return 0;
     if (next >= n) return n - 1;
@@ -120,12 +124,11 @@ void SettingsMenu::SwitchTab(int32_t dir) {
     const int32_t nTabs = static_cast<int32_t>(m_tabs.size());
     if (nTabs == 0) return;
     m_activeTab = (m_activeTab + dir + nTabs) % nTabs;
-    const int32_t n = static_cast<int32_t>(m_tabs[static_cast<size_t>(m_activeTab)].rows.size());
-    m_selectedRow   = (n > 0) ? 0 : 0;
+    m_selectedRow   = 0;
     m_prevRow       = -1;
     m_trailAlpha    = 0.0f;
     m_selAnimT      = 1.0f;
-    m_selCursorInit = false;  // force snap on tab change
+    m_selCursorInit = false;
     if (m_onNavigate) m_onNavigate();
 }
 
@@ -209,7 +212,6 @@ void SettingsMenu::ActivateSelected() {
     if (row.type == RowType::BoolToggle && row.bTarget) {
         *row.bTarget = !(*row.bTarget);
         CommitChange();
-        // Sync spring target
         const int32_t flat = FlatRowIndex(m_tabs, m_activeTab, m_selectedRow);
         if (flat >= 0 && flat < static_cast<int32_t>(m_toggleSprings.size()))
             m_toggleSprings[static_cast<size_t>(flat)].SetTarget(*row.bTarget ? 1.0f : 0.0f);
@@ -221,7 +223,6 @@ void SettingsMenu::ActivateSelected() {
 }
 
 void SettingsMenu::Update(const ControllerState& state, float dt) {
-    // Advance toggle knob springs
     {
         size_t flat = 0;
         for (const auto& tab : m_tabs) {
@@ -262,11 +263,9 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
     if (north && !m_prevNorth) { ResetToDefaults(); goto done; }
     if (south && !m_prevSouth) { ActivateSelected(); }
 
-    // Tab navigation: LB = prev tab, RB = next tab
     if (lb && !m_prevLB) { SwitchTab(-1); }
     if (rb && !m_prevRB) { SwitchTab(+1); }
 
-    // ---- DPad vertical: navigate rows within active tab
     {
         const bool dVert = dUp || dDown;
         if (dVert) {
@@ -289,7 +288,6 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
         }
     }
 
-    // ---- DPad horizontal: adjust selected slider
     {
         const bool hHorz = dLeft || dRight;
         if (hHorz) {
@@ -312,8 +310,6 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
         }
     }
 
-    // ---- Left Stick Y: navigate rows within active tab
-    // ---- Left Stick X: fine-tune selected slider
     {
         const float ly = state.leftStick.y;
         const float lx = state.leftStick.x;
@@ -488,17 +484,15 @@ void SettingsMenu::Draw(
     auto* rt     = static_cast<ID2D1RenderTarget*>(renderTargetPtr);
     auto* dwrite = static_cast<IDWriteFactory*>(dwriteFactoryPtr);
 
+    // Build ellipsis trimming object once (lazy init)
     if (dwrite && !m_dwriteEllipsis) {
-        dwrite->CreateEllipsisTrimmingSign(
-            [&]() -> IDWriteTextFormat* {
-                IDWriteTextFormat* proto = nullptr;
-                dwrite->CreateTextFormat(L"Segoe UI", nullptr,
-                    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                    DWRITE_FONT_STRETCH_NORMAL, 13.0f * dpiScale,
-                    L"en-us", &proto);
-                return proto;
-            }(),
-            m_dwriteEllipsis.GetAddressOf());
+        Microsoft::WRL::ComPtr<IDWriteTextFormat> proto;
+        dwrite->CreateTextFormat(L"Segoe UI", nullptr,
+            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, 13.0f * dpiScale,
+            L"en-us", proto.GetAddressOf());
+        if (proto)
+            dwrite->CreateEllipsisTrimmingSign(proto.Get(), m_dwriteEllipsis.GetAddressOf());
     }
 
     Microsoft::WRL::ComPtr<ID2D1Factory> fac;
@@ -506,7 +500,7 @@ void SettingsMenu::Draw(
 
     const float s        = dpiScale;
     const float pw       = 580.0f * s;
-    const float ph_row   = 48.0f  * s;   // slightly taller rows for comfort
+    const float ph_row   = 48.0f  * s;
     const float padX     = 28.0f  * s;
     const float padY     = 18.0f  * s;
     const float gap      =  6.0f  * s;
@@ -514,17 +508,13 @@ void SettingsMenu::Draw(
     const float accentH  =  3.0f  * s;
     const float tabBarH  = 38.0f  * s;
     const float hintBarH = 36.0f  * s;
-    const float sbPadR   = cr + 4.0f * s;
-    const float sbW      =  5.0f  * s;
-    (void)sbPadR; (void)sbW;
 
     const int32_t nTabs  = static_cast<int32_t>(m_tabs.size());
     const int32_t nRows  = (m_activeTab >= 0 && m_activeTab < nTabs)
         ? static_cast<int32_t>(m_tabs[static_cast<size_t>(m_activeTab)].rows.size())
         : 0;
 
-    // Panel height: enough for all rows in the active tab
-    const float listH = static_cast<float>(nRows) * (ph_row + gap) - (nRows > 0 ? gap : 0.0f);
+    const float listH  = static_cast<float>(nRows) * (ph_row + gap) - (nRows > 0 ? gap : 0.0f);
     const float totalH = padY + accentH + tabBarH + gap + listH + gap + hintBarH + padY;
 
     const float px = (screenW - pw) * 0.5f;
@@ -571,14 +561,13 @@ void SettingsMenu::Draw(
     const float tabW = pw / static_cast<float>(nTabs);
     const float tabH = tabBarH;
 
-    // Tab indicator spring: tracks active tab in float space
     if (!m_tabIndicatorInit) {
         m_tabIndicatorSpring.Snap(static_cast<float>(m_activeTab));
         m_tabIndicatorInit = true;
     }
     m_tabIndicatorSpring.SetTarget(static_cast<float>(m_activeTab));
 
-    // Background pill behind tab bar
+    // Background pill
     {
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
         rt->CreateSolidColorBrush(Tok::SurfaceSunken(0.55f * ease), b.GetAddressOf());
@@ -653,7 +642,6 @@ void SettingsMenu::Draw(
     // ---------------------------------------------------------------------------
     if (m_activeTab >= 0 && m_activeTab < nTabs) {
         const auto& activeRows = m_tabs[static_cast<size_t>(m_activeTab)].rows;
-        // flat base index for toggle springs
         int32_t flatBase = 0;
         for (int32_t ti = 0; ti < m_activeTab; ++ti)
             flatBase += static_cast<int32_t>(m_tabs[static_cast<size_t>(ti)].rows.size());
@@ -693,7 +681,6 @@ void SettingsMenu::Draw(
                 if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(px+8.0f*s,selTop,px+pw-8.0f*s,selBot),7.0f*s,7.0f*s};
                          rt->FillRoundedRectangle(rr, b.Get()); }
 
-                // Left accent bar
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> ab;
                 rt->CreateSolidColorBrush(Tok::GoldHi(0.85f * ease), ab.GetAddressOf());
                 if (ab) { D2D1_ROUNDED_RECT rr{D2D1::RectF(px+8.0f*s, cursorY-ph_row*0.5f+6.0f*s,
@@ -824,7 +811,6 @@ void SettingsMenu::Draw(
                         th*0.5f, th*0.5f};
                         rt->DrawRoundedRectangle(rr, b.Get(), 1.5f*s); }
                 }
-                // Knob
                 const float kr  = (th * 0.5f) - 2.5f*s;
                 const float kx0 = tcx - tw*0.5f + kr + 2.5f*s;
                 const float kx1 = tcx + tw*0.5f - kr - 2.5f*s;
