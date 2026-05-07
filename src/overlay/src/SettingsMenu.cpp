@@ -260,18 +260,19 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
     if (lb && !m_prevLB) { SwitchTab(-1); }
     if (rb && !m_prevRB) { SwitchTab(+1); }
 
+    // ---- DPad vertical: single-step policy (gate=1.5s, cadence=0.22s)
     {
         const bool dVert = dUp || dDown;
         if (dVert) {
             if (!m_dpadVertHeld) {
                 m_dpadVertHeld  = true;
-                m_dpadVertTimer = kSnapFirst;
+                m_dpadVertTimer = kSnapGate;
                 const int32_t next = NextInteractiveRow(m_activeTab, m_selectedRow, dUp ? -1 : 1);
                 if (next != m_selectedRow) OnRowChanged(next);
             } else {
                 m_dpadVertTimer -= dt;
                 if (m_dpadVertTimer <= 0.0f) {
-                    m_dpadVertTimer = kSnapNext;
+                    m_dpadVertTimer = kSnapCadence;
                     const int32_t next = NextInteractiveRow(m_activeTab, m_selectedRow, dUp ? -1 : 1);
                     if (next != m_selectedRow) OnRowChanged(next);
                 }
@@ -282,18 +283,19 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
         }
     }
 
+    // ---- DPad horizontal (slider adjust): single-step policy
     {
         const bool hHorz = dLeft || dRight;
         if (hHorz) {
             if (!m_dpadHorzHeld) {
                 m_dpadHorzHeld  = true;
-                m_dpadHorzTimer = kSnapFirst;
+                m_dpadHorzTimer = kSnapGate;
                 if (dLeft)  AdjustSelected(-1.0f, false);
                 if (dRight) AdjustSelected( 1.0f, false);
             } else {
                 m_dpadHorzTimer -= dt;
                 if (m_dpadHorzTimer <= 0.0f) {
-                    m_dpadHorzTimer = kSnapNext;
+                    m_dpadHorzTimer = kSnapCadence;
                     if (dLeft)  AdjustSelected(-1.0f, true);
                     if (dRight) AdjustSelected( 1.0f, true);
                 }
@@ -304,6 +306,9 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
         }
     }
 
+    // ---- Left-stick navigation
+    // Vertical axis: single-step policy (gate=kSnapGate, cadence=kSnapCadence, no accel).
+    // Horizontal axis (slider adjust): same gate/cadence policy.
     {
         const float ly = state.leftStick.y;
         const float lx = state.leftStick.x;
@@ -313,8 +318,9 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
         if (lyActive && !m_stickLxActive) {
             const int dir = (ly > 0.0f) ? -1 : 1;
             if (!m_stickNavActive) {
+                // First step fires immediately.
                 m_stickNavActive   = true;
-                m_stickNavCooldown = kSnapFirst;
+                m_stickNavCooldown = kSnapGate;
                 m_stickNavHoldTime = 0.0f;
                 const int32_t next = NextInteractiveRow(m_activeTab, m_selectedRow, dir);
                 if (next != m_selectedRow) OnRowChanged(next);
@@ -322,11 +328,8 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
                 m_stickNavHoldTime += dt;
                 m_stickNavCooldown -= dt;
                 if (m_stickNavCooldown <= 0.0f) {
-                    const float accelT   = std::max(0.0f,
-                        (m_stickNavHoldTime - kNavAccelStart) / kNavAccelRange);
-                    const float blend    = std::min(1.0f, accelT * accelT);
-                    const float interval = kSnapNext + (kSnapFast - kSnapNext) * blend;
-                    m_stickNavCooldown   = interval;
+                    // Flat cadence — no acceleration.
+                    m_stickNavCooldown = kSnapCadence;
                     const int32_t next = NextInteractiveRow(m_activeTab, m_selectedRow, dir);
                     if (next != m_selectedRow) OnRowChanged(next);
                 }
@@ -339,8 +342,9 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
 
         if (lxActive && !m_stickNavActive) {
             if (!m_stickLxActive) {
+                // First step fires immediately.
                 m_stickLxActive   = true;
-                m_stickLxCooldown = kSnapFirst;
+                m_stickLxCooldown = kSnapGate;
                 const auto& row = m_tabs[static_cast<size_t>(m_activeTab)].rows[static_cast<size_t>(m_selectedRow)];
                 if (row.type == RowType::FloatSlider && row.fTarget) {
                     *row.fTarget = std::clamp(
@@ -352,7 +356,8 @@ void SettingsMenu::Update(const ControllerState& state, float dt) {
             } else {
                 m_stickLxCooldown -= dt;
                 if (m_stickLxCooldown <= 0.0f) {
-                    m_stickLxCooldown = kSnapNext * 0.6f;
+                    // Flat cadence — no acceleration.
+                    m_stickLxCooldown = kSnapCadence;
                     const auto& row = m_tabs[static_cast<size_t>(m_activeTab)].rows[static_cast<size_t>(m_selectedRow)];
                     if (row.type == RowType::FloatSlider && row.fTarget) {
                         *row.fTarget = std::clamp(
