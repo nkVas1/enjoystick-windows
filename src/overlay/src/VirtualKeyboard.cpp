@@ -182,7 +182,7 @@ void VirtualKeyboard::Open(const std::wstring& seed) {
     m_glowPhase     = 0.0f;
     m_state         = State::Opening;
     m_stickCooldown = 0.0f; m_stickActive = false;
-    m_stickHoldTime = 0.0f; m_stickMag    = 0.0f;
+    m_stickHoldTime = 0.0f;
     m_dpadHeld      = false; m_dpadTimer = 0.0f;
     m_dpadDirRow    = 0; m_dpadDirCol = 0;
     m_typeDebounce  = 0.0f;
@@ -401,6 +401,8 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     }
 
     // ---- DPad navigation
+    // Single-step policy: first step fires immediately, then waits kDPadFirst
+    // before starting a slow flat repeat at kDPadCadence (no acceleration).
     {
         const int32_t dr = dDown ? 1 : (dUp   ? -1 : 0);
         const int32_t dc = dRight? 1 : (dLeft ? -1 : 0);
@@ -415,60 +417,47 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
             } else {
                 m_dpadTimer -= dt;
                 if (m_dpadTimer <= 0.0f) {
-                    m_dpadTimer = kDPadNext;
+                    m_dpadTimer = kDPadCadence;
                     NavigateTo(m_row + m_dpadDirRow, m_col + m_dpadDirCol);
                 }
             }
         } else {
-            m_dpadHeld = false;
+            m_dpadHeld  = false;
             m_dpadTimer = 0.0f;
         }
     }
 
     // ---- Left-stick navigation (left stick ONLY — right stick is not used)
     //
-    // The repeat interval is scaled by the analog magnitude of the stick:
-    //   full deflection  -> interval * 0.55  (fast)
-    //   half deflection  -> interval * 0.77  (medium)
-    //   near-deadzone    -> interval * 1.00  (slow, precise)
-    // This makes navigation feel proportional to stick pressure.
+    // Single-step policy:
+    //   - Crossing kSnapDeadzone fires exactly ONE step immediately.
+    //   - Auto-repeat does not start until kStickRepeatGate seconds of
+    //     continuous hold have elapsed (1.5 s by default).
+    //   - After the gate, repeats fire every kStickRepeatCadence seconds
+    //     with NO further acceleration and NO analog-magnitude scaling.
+    //   This guarantees that a 1–1.5 s deliberate hold = exactly one key hop.
     {
         const float lx = state.leftStick.x;
         const float ly = state.leftStick.y;
         // Prefer horizontal if |lx| >= |ly|, else vertical.
-        const bool  hx = std::abs(lx) >= std::abs(ly) && std::abs(lx) > kSnapDeadzone;
-        const bool  hy = !hx && std::abs(ly) > kSnapDeadzone;
+        const bool hx = std::abs(lx) >= std::abs(ly) && std::abs(lx) > kSnapDeadzone;
+        const bool hy = !hx && std::abs(ly) > kSnapDeadzone;
 
         if (hx || hy) {
-            // Analog magnitude normalised to [0,1] beyond deadzone.
-            const float rawMag  = hx ? std::abs(lx) : std::abs(ly);
-            const float normMag = std::min(1.0f,
-                (rawMag - kSnapDeadzone) / (1.0f - kSnapDeadzone));
-            // Smooth the magnitude slightly to avoid sudden speed jumps.
-            m_stickMag = m_stickMag + (normMag - m_stickMag) * std::min(1.0f, dt * 12.0f);
-
             if (!m_stickActive) {
+                // First step — fires immediately on deadzone crossing.
                 m_stickActive   = true;
                 m_stickHoldTime = 0.0f;
-                m_stickMag      = normMag;
-                m_stickCooldown = kStickRepeatFirst;
-                if (hx) NavigateTo(m_row,         m_col + (lx > 0.0f ? 1 : -1));
+                m_stickCooldown = kStickRepeatGate;
+                if (hx) NavigateTo(m_row,                       m_col + (lx > 0.0f ? 1 : -1));
                 else    NavigateTo(m_row + (ly > 0.0f ? -1 : 1), m_col);
             } else {
                 m_stickHoldTime += dt;
                 m_stickCooldown -= dt;
                 if (m_stickCooldown <= 0.0f) {
-                    const float accelT   = std::max(0.0f,
-                        (m_stickHoldTime - kStickRepeatAccelStart) / kStickRepeatAccelRange);
-                    const float blend    = std::min(1.0f, accelT * accelT);
-                    float interval = kStickRepeatNext + (kStickRepeatFast - kStickRepeatNext) * blend;
-                    // Scale interval by inverse of analog magnitude:
-                    //   full push   -> *0.55 (faster)
-                    //   gentle push -> *1.00 (slower)
-                    const float speedScale = 1.0f - m_stickMag * 0.45f;
-                    interval *= speedScale;
-                    m_stickCooldown = interval;
-                    if (hx) NavigateTo(m_row,         m_col + (lx > 0.0f ? 1 : -1));
+                    // Flat cadence — no acceleration, no magnitude scaling.
+                    m_stickCooldown = kStickRepeatCadence;
+                    if (hx) NavigateTo(m_row,                       m_col + (lx > 0.0f ? 1 : -1));
                     else    NavigateTo(m_row + (ly > 0.0f ? -1 : 1), m_col);
                 }
             }
@@ -476,7 +465,6 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
             m_stickActive   = false;
             m_stickCooldown = 0.0f;
             m_stickHoldTime = 0.0f;
-            m_stickMag      = 0.0f;
         }
     }
     // Right stick: intentionally not used for keyboard navigation.
