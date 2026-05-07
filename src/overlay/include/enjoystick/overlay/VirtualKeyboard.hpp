@@ -26,14 +26,15 @@ namespace enjoystick::overlay {
 //   lx > 0 = right, lx < 0 = left
 //   ly > 0 = UP,    ly < 0 = DOWN
 //
-// Stick navigation policy (single-step):
-//   - Crossing the deadzone fires exactly ONE step immediately.
-//   - Auto-repeat does NOT start until the stick has been held
-//     continuously for kStickRepeatGate seconds (1.5 s).
+// Stick navigation policy (single-step, independent axes):
+//   - Each axis (X and Y) has its own active flag and cooldown.
+//   - Crossing kSnapDeadzone fires exactly ONE step immediately.
+//   - The OTHER axis is suppressed unless it dominates by kAxisDominance
+//     (i.e. |lx| > |ly|*kAxisDominance for X to be active).
+//     This eliminates diagonal bleed-through.
+//   - Auto-repeat does NOT start until kStickRepeatGate seconds.
 //   - After that gate, repeats fire every kStickRepeatCadence seconds
-//     (0.22 s) with NO further acceleration.
-//   This means a 1–1.5 s hold always moves exactly one key, making
-//   deliberate single-key navigation reliable and predictable.
+//     with NO further acceleration.
 // ---------------------------------------------------------------------------
 
 class VirtualKeyboard {
@@ -102,24 +103,44 @@ private:
     int32_t m_col = 0;
 
     // -------------------------------------------------------------------------
-    // Left-stick navigation timing
+    // Left-stick navigation timing  (independent per-axis state machines)
     //
-    // SINGLE-STEP POLICY:
-    //   kSnapDeadzone     — stick must exceed this to register intent.
-    //   kStickRepeatGate  — how long (s) the stick must be held before
-    //                       auto-repeat begins.  1.5 s means a normal
-    //                       deliberate 1-second hold never repeats.
-    //   kStickRepeatCadence — interval between repeat steps after the
-    //                       gate.  Kept slow and flat (no acceleration)
-    //                       so every repeat step is equally intentional.
+    // ROOT-CAUSE FIX (2026-05-07):
+    //   Previous code used a single shared active/cooldown state and chose
+    //   the axis with "prefer horizontal if |lx|>=|ly|".  Any diagonal
+    //   deflection made hx=true, producing horizontal steps when the user
+    //   intended vertical ones (and vice-versa), causing multi-key jumps.
+    //
+    //   Now each axis is fully independent.  An axis is only considered
+    //   active when it dominates the other by kAxisDominance (1.5x).
+    //   Ambiguous diagonals activate neither axis, so the cursor is silent
+    //   until the stick is pushed cleanly in one direction.
+    //
+    // kSnapDeadzone     — minimum deflection to register intent (raised
+    //                      from 0.42 to 0.55 to reduce drift sensitivity).
+    // kAxisDominance    — one axis must exceed the other by this factor
+    //                      before it is allowed to fire.
+    // kStickRepeatGate  — how long the stick must be held before auto-
+    //                      repeat begins (1.5 s — unchanged).
+    // kStickRepeatCadence — flat repeat interval after the gate (0.22 s).
     // -------------------------------------------------------------------------
-    static constexpr float kSnapDeadzone         = 0.42f;
+    static constexpr float kSnapDeadzone         = 0.55f;  // was 0.42
+    static constexpr float kAxisDominance        = 1.5f;   // |dominant| > |other|*1.5
     static constexpr float kStickRepeatGate      = 1.50f;  // seconds before first repeat
     static constexpr float kStickRepeatCadence   = 0.22f;  // seconds between repeats (flat)
 
-    float  m_stickCooldown    = 0.0f;  // time remaining until next repeat step
-    float  m_stickHoldTime    = 0.0f;  // total time stick has been held
-    bool   m_stickActive      = false;
+    // X axis (left/right) — independent state
+    float  m_stickCooldownX  = 0.0f;
+    bool   m_stickActiveX    = false;
+
+    // Y axis (up/down) — independent state
+    float  m_stickCooldownY  = 0.0f;
+    bool   m_stickActiveY    = false;
+
+    // Legacy aliases kept for Open() reset compatibility
+    float  m_stickCooldown   = 0.0f;  // unused by new code; reset in Open()
+    float  m_stickHoldTime   = 0.0f;  // unused by new code; reset in Open()
+    bool   m_stickActive     = false; // unused by new code; reset in Open()
 
     // -------------------------------------------------------------------------
     // DPad navigation timing  (same single-step policy)
