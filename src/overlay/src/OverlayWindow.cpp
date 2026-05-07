@@ -381,7 +381,6 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
     m_controlsOverlay.Draw(rt, m_dwriteFactory.Get(), m_dpiScale,
                            static_cast<float>(w), static_cast<float>(h));
 
-    // Voice HUD draws on top of most UI but below toasts
     if (voiceActive) {
         m_voiceHUD.Draw(rt, m_dwriteFactory.Get(), m_dpiScale,
                         static_cast<float>(w), static_cast<float>(h));
@@ -406,8 +405,6 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
     blend.AlphaFormat         = AC_SRC_ALPHA;
     UpdateLayeredWindow(m_hwnd, nullptr, &ptDst, &szWnd, m_memDC,
                         &ptSrc, 0, &blend, ULW_ALPHA);
-
-    (void)voiceActive;
 }
 
 // ---------------------------------------------------------------------------
@@ -566,7 +563,6 @@ void OverlayWindowImpl::DrawHudMode(ID2D1RenderTarget* rt, float deltaSeconds) {
     const bool voiceOpen = m_voiceHUD.IsOpen();
 
     if (voiceOpen) {
-        // Voice mode badge — pulsing mic colour
         badge = { L"MIC\U0001F3A4",
                   Tok::GoldDeep(0.75f),
                   Tok::GoldBright(0.97f),
