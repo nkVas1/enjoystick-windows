@@ -17,8 +17,10 @@
 #include <wrl/client.h>   // Microsoft::WRL::ComPtr  (no ATL required)
 
 // SAPI headers (shipped with the Windows SDK)
+// NOTE: sphelper.h is intentionally NOT included here because it pulls in
+//       atlbase.h which requires the ATL/MFC optional workload.  Instead we
+//       provide inline replacements for the two helpers we need.
 #include <sapi.h>
-#include <sphelper.h>     // SpFindBestToken, SpClearEvent
 
 #pragma comment(lib, "sapi.lib")
 
@@ -37,6 +39,54 @@ using Microsoft::WRL::ComPtr;
 
 // Message posted to the dispatch window by SAPI when events are available
 static constexpr UINT WM_VOICE_EVENT = WM_APP + 50;
+
+// ---------------------------------------------------------------------------
+// ATL-free replacements for sphelper.h utilities
+// ---------------------------------------------------------------------------
+
+/// Free any CoTask-allocated strings inside a SPEVENT, then zero it.
+static inline void SpClearEventInline(SPEVENT* pEvt) noexcept {
+    if (!pEvt) return;
+    // Only SPET_LPARAM_IS_STRING events own the lParam string.
+    if (SPET_LPARAM_IS_STRING ==
+        static_cast<SPEVENTLPARAMTYPE>(HIWORD(pEvt->wParam)))
+    {
+        CoTaskMemFree(reinterpret_cast<void*>(pEvt->lParam));
+    }
+    *pEvt = SPEVENT{};
+}
+
+/// Find the best SAPI recognizer token matching `pszReqAttribs`.
+/// Equivalent to SpFindBestToken(SPCAT_RECOGNIZERS, ...) from sphelper.h
+/// but implemented via raw COM without ATL.
+static HRESULT SpFindBestTokenLocal(
+    const wchar_t*    pszReqAttribs,
+    const wchar_t*    pszOptAttribs,
+    ISpObjectToken**  ppToken) noexcept
+{
+    if (!ppToken) return E_POINTER;
+    *ppToken = nullptr;
+
+    ComPtr<ISpObjectTokenCategory> cat;
+    HRESULT hr = CoCreateInstance(
+        CLSID_SpObjectTokenCategory, nullptr,
+        CLSCTX_ALL, IID_PPV_ARGS(cat.GetAddressOf()));
+    if (FAILED(hr)) return hr;
+
+    hr = cat->SetId(SPCAT_RECOGNIZERS, FALSE);
+    if (FAILED(hr)) return hr;
+
+    ComPtr<IEnumSpObjectTokens> enumTok;
+    hr = cat->EnumTokens(
+        pszReqAttribs,
+        pszOptAttribs,
+        enumTok.GetAddressOf());
+    if (FAILED(hr)) return hr;
+
+    // The first token returned is the best match
+    hr = enumTok->Next(1, ppToken, nullptr);
+    return (hr == S_OK && *ppToken) ? S_OK : SPERR_NOT_FOUND;
+}
 
 // ---------------------------------------------------------------------------
 // VoiceInputImpl
@@ -177,7 +227,7 @@ private:
         wchar_t attr[64];
         std::swprintf(attr, 64, L"Language=%X", static_cast<unsigned>(lid));
         ComPtr<ISpObjectToken> token;
-        if (SUCCEEDED(SpFindBestToken(SPCAT_RECOGNIZERS, attr, nullptr, &token)) && token) {
+        if (SUCCEEDED(SpFindBestTokenLocal(attr, nullptr, token.GetAddressOf())) && token) {
             m_recognizer->SetRecognizer(token.Get());
         }
         // Failure is acceptable: shared recognizer uses the system default language.
@@ -221,7 +271,7 @@ private:
                             const wchar_t* word = pPhrase->pElements[i].pszDisplayText;
                             partial += word ? word : L"";
                         }
-                        // Estimate VU level from word count (1 word ≈ 0.35, 5+ ≈ 0.85)
+                        // Estimate VU level from word count (1 word ~ 0.35, 5+ ~ 0.85)
                         const float lvl = std::min(0.90f, 0.30f + static_cast<float>(n) * 0.11f);
                         UpdateState([&partial, lvl](VoiceInputState& s) {
                             s.partial = partial;
@@ -259,7 +309,7 @@ private:
 
             default: break;
             }
-            SpClearEvent(&evt);
+            SpClearEventInline(&evt);
         }
     }
 
