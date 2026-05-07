@@ -497,6 +497,14 @@ private:
 
     // -------------------------------------------------------------------------
     // Controller state handler  (called from InputEngine thread @ 250 Hz)
+    //
+    // NOTE: VirtualKeyboard::Update() is intentionally NOT called here.
+    //       The render thread (OverlayWindow::RenderFrame at ~60 Hz) drives
+    //       the keyboard via m_keyboard.Update(m_lastState, dt).  Calling
+    //       Update() from both threads simultaneously was causing ~31x
+    //       duplicate NavigateTo() calls per stick flick (the root cause of
+    //       all keyboard navigation bugs).  The input thread only checks
+    //       IsOpen() to decide input routing.
     // -------------------------------------------------------------------------
 
     void OnControllerState(const ControllerState& state) {
@@ -562,10 +570,13 @@ private:
             return;
         }
 
+        // Keyboard is open: only forward state to the render thread via PostState.
+        // The render thread drives VirtualKeyboard::Update() exclusively.
+        // We still re-enable the mouse if the keyboard just closed.
         if (kbOpen) {
-            m_overlay->GetVirtualKeyboard().Update(state, dt * 0.001f);
             if (!m_overlay->GetVirtualKeyboard().IsOpen() && m_mode == InputMode::Cursor)
                 m_virtualMouse->SetEnabled(true);
+            m_overlay->PostState(state);
             m_prevButtons = state.buttons;
             return;
         }
