@@ -1,24 +1,25 @@
-// VoiceInput.cpp  –  SAPI 5 continuous dictation
+// VoiceInput.cpp  -  SAPI 5 continuous dictation
 // Supports ru-RU (primary) and en-US (secondary).
 //
 // SAPI dictation grammar loads automatically; no custom grammar XML is needed.
-// Recognition events are received via ISpNotifySource::SetNotifySink and
-// dispatched on the calling (main) thread through a queued approach:
-// the recognition event callback posts a WM_APP message to a helper HWND
-// created on the main thread, so all OnResult/OnState calls happen safely.
+// Recognition events are received via ISpNotifySource::SetNotifyWindowMessage
+// and dispatched on the main thread through a message-only HWND, so all
+// OnResult/OnState calls happen on whichever thread pumps messages for that
+// HWND (typically the main application thread).
 //
 // Build requirements:
-//   sapi.lib  (add to enjoystick_app target's PRIVATE link libs)
+//   sapi.lib, ole32.lib, oleaut32.lib  (listed in voice/CMakeLists.txt)
+//   Windows SDK >= 10.0 (SAPI 5.4)
 
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
 #endif
 #include <Windows.h>
-#include <atlbase.h>  // CComPtr / CComQIPtr
+#include <wrl/client.h>   // Microsoft::WRL::ComPtr
 
 // SAPI headers (shipped with the Windows SDK)
 #include <sapi.h>
-#include <sphelper.h>   // SpFindBestToken, etc.
+#include <sphelper.h>     // SpFindBestToken, SpClearEvent
 
 #pragma comment(lib, "sapi.lib")
 
@@ -26,32 +27,17 @@
 
 #include <atomic>
 #include <mutex>
-#include <queue>
 #include <string>
-#include <thread>
 #include <cassert>
 #include <cmath>
+#include <cstdio>
 
 namespace enjoystick::voice {
 
-// ---------------------------------------------------------------------------
-// Language profiles
-// ---------------------------------------------------------------------------
-struct LangProfile {
-    const wchar_t* bcp47;      // BCP-47 tag used by SAPI
-    const wchar_t* lcid_str;   // language ID as decimal string for SpFindBestToken
-    LANGID          langid;
-};
+using Microsoft::WRL::ComPtr;
 
-static constexpr LangProfile kLangProfiles[] = {
-    { L"ru-RU", L"409",  MAKELANGID(LANG_RUSSIAN,  SUBLANG_DEFAULT) },
-    { L"en-US", L"409",  MAKELANGID(LANG_ENGLISH,  SUBLANG_ENGLISH_US) },
-};
-
-// Message posted to the dispatch window
-static constexpr UINT WM_VOICE_RESULT  = WM_APP + 50;
-static constexpr UINT WM_VOICE_STATE   = WM_APP + 51;
-static constexpr UINT WM_VOICE_ERROR   = WM_APP + 52;
+// Message posted to the dispatch window by SAPI when events are available
+static constexpr UINT WM_VOICE_EVENT = WM_APP + 50;
 
 // ---------------------------------------------------------------------------
 // VoiceInputImpl
@@ -59,27 +45,22 @@ static constexpr UINT WM_VOICE_ERROR   = WM_APP + 52;
 class VoiceInputImpl final : public VoiceInput {
 public:
     VoiceInputImpl() {
-        // Create an invisible message-only window for safe cross-thread dispatch
         WNDCLASSEXW wc{};
         wc.cbSize        = sizeof(wc);
         wc.lpfnWndProc   = DispatchWndProc;
         wc.hInstance     = GetModuleHandleW(nullptr);
-        wc.lpszClassName = L"VoiceInputDispatch";
-        RegisterClassExW(&wc);  // ignore duplicate registration
+        wc.lpszClassName = L"EnjoyStickVoiceDispatch";
+        RegisterClassExW(&wc);  // harmless if already registered
         m_dispatchHwnd = CreateWindowExW(
-            0, L"VoiceInputDispatch", L"", 0,
+            0, L"EnjoyStickVoiceDispatch", L"", 0,
             0, 0, 0, 0,
             HWND_MESSAGE, nullptr,
             GetModuleHandleW(nullptr), this);
-        if (m_dispatchHwnd) {
-            SetWindowLongPtrW(m_dispatchHwnd, GWLP_USERDATA,
-                reinterpret_cast<LONG_PTR>(this));
-        }
     }
 
     ~VoiceInputImpl() override {
         StopInternal();
-        if (m_dispatchHwnd) DestroyWindow(m_dispatchHwnd);
+        if (m_dispatchHwnd) { DestroyWindow(m_dispatchHwnd); m_dispatchHwnd = nullptr; }
     }
 
     // ---- Configuration ---------------------------------------------------
@@ -88,15 +69,13 @@ public:
     void SetOnState (OnStateCallback  cb) override { m_onState  = std::move(cb); }
     void SetOnError (OnErrorCallback  cb) override { m_onError  = std::move(cb); }
 
-    // ---- Start / Stop ---------------------------------------------------
+    // ---- Start / Stop ----------------------------------------------------
     bool Start() override {
         if (m_listening.load()) return true;
         return StartInternal();
     }
 
-    void Stop() override {
-        StopInternal();
-    }
+    void Stop() override { StopInternal(); }
 
     void CycleLanguage() override {
         const bool wasListening = m_listening.load();
@@ -116,52 +95,64 @@ public:
     }
 
 private:
-    // ---------- SAPI helpers ----------------------------------------------
+    // ---------- SAPI lifetime ---------------------------------------------
 
     bool StartInternal() {
-        HRESULT hr = S_OK;
+        HRESULT hr;
 
-        hr = m_recognizer.CoCreateInstance(CLSID_SpSharedRecognizer);
+        // Try shared recognizer first (uses existing Windows speech profile)
+        hr = m_recognizer.Get() ? S_OK
+             : m_recognizer.ReleaseAndGetAddressOf(), S_FALSE;
+        m_recognizer = nullptr;
+        hr = CoCreateInstance(CLSID_SpSharedRecognizer, nullptr,
+                              CLSCTX_ALL, IID_PPV_ARGS(m_recognizer.GetAddressOf()));
         if (FAILED(hr)) {
-            hr = m_recognizer.CoCreateInstance(CLSID_SpInprocRecognizer);
-            if (FAILED(hr)) { ReportError(L"SAPI: cannot create recognizer"); return false; }
+            hr = CoCreateInstance(CLSID_SpInprocRecognizer, nullptr,
+                                  CLSCTX_ALL, IID_PPV_ARGS(m_recognizer.GetAddressOf()));
+            if (FAILED(hr)) {
+                ReportError(L"SAPI: cannot create speech recognizer (HR=0x",  hr);
+                return false;
+            }
         }
 
         hr = m_recognizer->CreateRecoContext(m_context.ReleaseAndGetAddressOf());
-        if (FAILED(hr)) { ReportError(L"SAPI: cannot create reco context"); return false; }
+        if (FAILED(hr)) { ReportError(L"SAPI: CreateRecoContext failed", hr); return false; }
 
-        // Route recognition events to our dispatch window via SetNotifyWindowMessage
+        // Route SAPI events to our message-only window
         hr = m_context->SetNotifyWindowMessage(
-            m_dispatchHwnd, WM_VOICE_RESULT, 0, 0);
-        if (FAILED(hr)) { ReportError(L"SAPI: SetNotifyWindowMessage failed"); return false; }
+            m_dispatchHwnd, WM_VOICE_EVENT, 0, 0);
+        if (FAILED(hr)) { ReportError(L"SAPI: SetNotifyWindowMessage failed", hr); return false; }
 
-        hr = m_context->SetInterest(
-            SPFEI(SPEI_RECOGNITION) | SPFEI(SPEI_SOUND_START) | SPFEI(SPEI_SOUND_END)
-            | SPFEI(SPEI_HYPOTHESIS) | SPFEI(SPEI_RECO_STATE_CHANGE),
-            SPFEI(SPEI_RECOGNITION) | SPFEI(SPEI_SOUND_START) | SPFEI(SPEI_SOUND_END)
-            | SPFEI(SPEI_HYPOTHESIS) | SPFEI(SPEI_RECO_STATE_CHANGE));
-        if (FAILED(hr)) { ReportError(L"SAPI: SetInterest failed"); return false; }
+        const ULONGLONG interestMask =
+            SPFEI(SPEI_RECOGNITION)      |
+            SPFEI(SPEI_HYPOTHESIS)       |
+            SPFEI(SPEI_SOUND_START)      |
+            SPFEI(SPEI_SOUND_END)        |
+            SPFEI(SPEI_PHRASE_START)     |
+            SPFEI(SPEI_RECO_STATE_CHANGE);
+        hr = m_context->SetInterest(interestMask, interestMask);
+        if (FAILED(hr)) { ReportError(L"SAPI: SetInterest failed", hr); return false; }
 
-        // Load dictation grammar
         hr = m_context->CreateGrammar(1, m_grammar.ReleaseAndGetAddressOf());
-        if (FAILED(hr)) { ReportError(L"SAPI: CreateGrammar failed"); return false; }
+        if (FAILED(hr)) { ReportError(L"SAPI: CreateGrammar failed", hr); return false; }
 
         hr = m_grammar->LoadDictation(nullptr, SPLO_STATIC);
-        if (FAILED(hr)) { ReportError(L"SAPI: LoadDictation failed"); return false; }
+        if (FAILED(hr)) { ReportError(L"SAPI: LoadDictation failed", hr); return false; }
 
         hr = m_grammar->SetDictationState(SPRS_ACTIVE);
-        if (FAILED(hr)) { ReportError(L"SAPI: SetDictationState failed"); return false; }
+        if (FAILED(hr)) { ReportError(L"SAPI: SetDictationState failed", hr); return false; }
 
-        // Set recognition language via audio input object language
-        // (Full token selection is not required for shared recognizer;
-        //  for inproc we try to select the best matching token)
         TrySetLanguageToken();
 
-        // Set audio state to active
         m_recognizer->SetRecoState(SPRST_ACTIVE);
 
         m_listening.store(true);
-        UpdateState([](VoiceInputState& s) { s.listening = true; s.recognizing = false; });
+        UpdateState([](VoiceInputState& s) {
+            s.listening   = true;
+            s.recognizing = false;
+            s.level       = 0.0f;
+            s.partial     = L"";
+        });
         return true;
     }
 
@@ -171,15 +162,15 @@ private:
 
         if (m_grammar) {
             m_grammar->SetDictationState(SPRS_INACTIVE);
-            m_grammar.Reset();
+            m_grammar = nullptr;
         }
         if (m_context) {
             m_context->SetNotifyWindowMessage(nullptr, 0, 0, 0);
-            m_context.Reset();
+            m_context = nullptr;
         }
         if (m_recognizer) {
             m_recognizer->SetRecoState(SPRST_INACTIVE);
-            m_recognizer.Reset();
+            m_recognizer = nullptr;
         }
         UpdateState([](VoiceInputState& s) {
             s.listening   = false;
@@ -191,25 +182,20 @@ private:
 
     void TrySetLanguageToken() {
         if (!m_recognizer) return;
-        // Build attribute query for the desired language
-        const bool isRu = (m_lang == VoiceLanguage::Russian);
-        // Language attribute value is the hex LANGID
-        wchar_t langAttr[64];
-        const LANGID lid = isRu
+        const LANGID lid = (m_lang == VoiceLanguage::Russian)
             ? MAKELANGID(LANG_RUSSIAN, SUBLANG_DEFAULT)
             : MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US);
+        wchar_t langAttr[64];
         std::swprintf(langAttr, 64, L"Language=%X", static_cast<unsigned>(lid));
 
-        CComPtr<ISpObjectToken> token;
-        HRESULT hr = SpFindBestToken(SPCAT_RECOGNIZERS, langAttr, nullptr, &token);
-        if (SUCCEEDED(hr) && token) {
-            m_recognizer->SetRecognizer(token);
+        ComPtr<ISpObjectToken> token;
+        if (SUCCEEDED(SpFindBestToken(SPCAT_RECOGNIZERS, langAttr, nullptr, &token)) && token) {
+            m_recognizer->SetRecognizer(token.Get());
         }
-        // Even if token selection fails the shared recognizer will use
-        // whatever language profile Windows has active — acceptable fallback.
+        // Failure is acceptable: shared recognizer uses system default language.
     }
 
-    // ---- Event processing (called on main thread via WM_VOICE_RESULT) ----
+    // ---------- Event processing (main thread via WM_VOICE_EVENT) ---------
 
     void ProcessSapiEvents() {
         if (!m_context) return;
@@ -218,8 +204,13 @@ private:
         ULONG   fetched = 0;
         while (SUCCEEDED(m_context->GetEvents(1, &evt, &fetched)) && fetched > 0) {
             switch (evt.eEventId) {
+
             case SPEI_SOUND_START:
-                UpdateState([](VoiceInputState& s) { s.recognizing = true; });
+            case SPEI_PHRASE_START:
+                UpdateState([](VoiceInputState& s) {
+                    s.recognizing = true;
+                    s.level       = 0.70f;  // ramp up on speech start
+                });
                 break;
 
             case SPEI_SOUND_END:
@@ -231,23 +222,26 @@ private:
                 break;
 
             case SPEI_HYPOTHESIS: {
-                // Partial result — update the preview text
+                // Partial result: preview text + level estimated from word count
                 ISpRecoResult* pResult = reinterpret_cast<ISpRecoResult*>(evt.lParam);
                 if (pResult) {
                     SPPHRASE* pPhrase = nullptr;
                     if (SUCCEEDED(pResult->GetPhrase(&pPhrase)) && pPhrase) {
-                        if (pPhrase->pElements) {
-                            std::wstring partial;
-                            for (ULONG i = 0; i < pPhrase->Rule.ulCountOfElements; ++i) {
-                                if (i > 0) partial += L' ';
-                                partial += pPhrase->pElements[i].pszDisplayText
-                                    ? pPhrase->pElements[i].pszDisplayText
-                                    : L"";
-                            }
-                            UpdateState([&partial](VoiceInputState& s) {
-                                s.partial = partial;
-                            });
+                        std::wstring partial;
+                        const ULONG n = pPhrase->Rule.ulCountOfElements;
+                        for (ULONG i = 0; i < n; ++i) {
+                            if (i > 0) partial += L' ';
+                            const wchar_t* word = pPhrase->pElements[i].pszDisplayText;
+                            partial += word ? word : L"";
                         }
+                        // Estimate audio level from number of recognised words:
+                        // 1 word ≈ 0.35, 3 words ≈ 0.65, 5+ words ≈ 0.85
+                        const float estLevel = std::min(0.90f,
+                            0.30f + static_cast<float>(n) * 0.11f);
+                        UpdateState([&partial, estLevel](VoiceInputState& s) {
+                            s.partial = partial;
+                            s.level   = estLevel;
+                        });
                         CoTaskMemFree(pPhrase);
                     }
                 }
@@ -258,15 +252,15 @@ private:
                 ISpRecoResult* pResult = reinterpret_cast<ISpRecoResult*>(evt.lParam);
                 if (pResult) {
                     wchar_t* pText = nullptr;
-                    if (SUCCEEDED(pResult->GetText(SP_GETWHOLEPHRASE, SP_GETWHOLEPHRASE,
-                                                   TRUE, &pText, nullptr))
-                        && pText && pText[0] != L'\0')
-                    {
+                    const HRESULT hrGet = pResult->GetText(
+                        SP_GETWHOLEPHRASE, SP_GETWHOLEPHRASE,
+                        TRUE, &pText, nullptr);
+                    if (SUCCEEDED(hrGet) && pText && pText[0] != L'\0') {
                         std::wstring result = pText;
                         CoTaskMemFree(pText);
-
                         UpdateState([](VoiceInputState& s) {
                             s.recognizing = false;
+                            s.level       = 0.0f;
                             s.partial     = L"";
                         });
                         if (m_onResult) m_onResult(result);
@@ -280,11 +274,11 @@ private:
             default:
                 break;
             }
-            ::SpClearEvent(&evt);
+            SpClearEvent(&evt);
         }
     }
 
-    // ---- State helpers ---------------------------------------------------
+    // ---------- State helpers ---------------------------------------------
 
     template<typename Fn>
     void UpdateState(Fn fn) {
@@ -297,35 +291,41 @@ private:
         if (m_onState) m_onState(snap);
     }
 
-    void ReportError(const wchar_t* msg) {
-        if (m_onError) m_onError(msg);
+    void ReportError(const wchar_t* msg, HRESULT hr = S_OK) {
+        if (!m_onError) return;
+        if (hr != S_OK) {
+            wchar_t buf[256];
+            std::swprintf(buf, 256, L"%ls 0x%08X", msg, static_cast<unsigned>(hr));
+            m_onError(buf);
+        } else {
+            m_onError(msg);
+        }
     }
 
-    // ---- Dispatch window -------------------------------------------------
+    // ---------- Dispatch window -------------------------------------------
 
     static LRESULT CALLBACK DispatchWndProc(
         HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) noexcept
     {
-        auto* self = reinterpret_cast<VoiceInputImpl*>(
-            GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-
         if (msg == WM_CREATE) {
             auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA,
                 reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
             return 0;
         }
-        if (msg == WM_VOICE_RESULT && self) {
+        auto* self = reinterpret_cast<VoiceInputImpl*>(
+            GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        if (msg == WM_VOICE_EVENT && self) {
             self->ProcessSapiEvents();
             return 0;
         }
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
 
-    // ---- Members ---------------------------------------------------------
-    CComPtr<ISpRecognizer>    m_recognizer;
-    CComPtr<ISpRecoContext>   m_context;
-    CComPtr<ISpRecoGrammar>   m_grammar;
+    // ---------- Members ---------------------------------------------------
+    ComPtr<ISpRecognizer>   m_recognizer;
+    ComPtr<ISpRecoContext>  m_context;
+    ComPtr<ISpRecoGrammar>  m_grammar;
 
     HWND              m_dispatchHwnd = nullptr;
     VoiceLanguage     m_lang         = VoiceLanguage::Russian;
