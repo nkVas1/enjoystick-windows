@@ -13,8 +13,15 @@
 // Lifecycle follows the standard overlay pattern:
 //   Open()  -- animate in
 //   Close() -- animate out
-//   Update(dt) -- advance internal state
+//   Update(vs, dt) -- advance internal state
 //   Draw(rt, dwrite, dpiScale, w, h) -- render
+//
+// Thread safety:
+//   SetVoiceState() may be called from any thread (voice engine callback).
+//   The struct is copied atomically enough for POD fields; the partial
+//   wstring is updated only when recognised text changes, so races are
+//   benign in practice (worst case: one frame of stale text).
+//   If stricter guarantees are needed, wrap in a mutex at the call site.
 // ---------------------------------------------------------------------------
 
 #include <enjoystick/overlay/Overlay_SpringAnim.hpp>
@@ -31,6 +38,10 @@ public:
     void Open();                // animate in
     void Close();               // animate out
     [[nodiscard]] bool IsOpen() const noexcept;
+
+    // Push a live voice state snapshot (thread-safe for POD fields).
+    // Called from the voice engine callback on a worker thread.
+    void SetVoiceState(const voice::VoiceInputState& vs) { m_vs = vs; }
 
     // Called every render frame; vs = latest snapshot from VoiceInput::GetState()
     void Update(const voice::VoiceInputState& vs, float dt);

@@ -104,14 +104,12 @@ void VoiceInputHUD::Draw(
     const float cr  = 18.0f  * s;
     const float px  = (screenW - pw) * 0.5f;
     const float py  = screenH * 0.62f;
+    const float cx  = px + pw * 0.5f;
+    const float cy  = py + ph * 0.5f;
 
     // Scale-pop from centre
-    const float sc   = m_panelSpring.value;
-    const float scCl = std::clamp(sc, 0.0f, 1.2f);
+    const float scCl = std::clamp(m_panelSpring.value, 0.0f, 1.2f);
 
-    // Apply scale transform around panel centre
-    const float cx = px + pw * 0.5f;
-    const float cy = py + ph * 0.5f;
     D2D1_MATRIX_3X2_F oldTransform;
     rt->GetTransform(&oldTransform);
     D2D1_MATRIX_3X2_F scaleT = D2D1::Matrix3x2F::Scale(
@@ -126,7 +124,7 @@ void VoiceInputHUD::Draw(
         if (b) { D2D1_ROUNDED_RECT rr{D2D1::RectF(px,py,px+pw,py+ph),cr,cr};
                  rt->FillRoundedRectangle(rr, b.Get()); }
     }
-    // ---- Border glow (gold when recognizing, softer when idle)
+    // ---- Border glow (bright when recognizing, soft pulse when idle)
     {
         const float glowA = m_vs.recognizing
             ? 0.90f
@@ -166,22 +164,18 @@ void VoiceInputHUD::Draw(
         if (b) rt->FillEllipse(
             D2D1::Ellipse(D2D1::Point2F(micCX, micCY), micR, micR), b.Get());
     }
-    // Mic symbol (simple rect + arc approximation via geometry)
+    // Mic symbol (capsule body + stand line)
     {
-        // Draw a stylised ♪ microphone shape: vertical rect + small semicircle stand
         const float mw = 6.0f * s;
         const float mh = 11.0f * s;
-        const D2D1_COLOR_F symCol = Tok::SurfaceBase(0.95f * ease);
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-        rt->CreateSolidColorBrush(symCol, b.GetAddressOf());
+        rt->CreateSolidColorBrush(Tok::SurfaceBase(0.95f * ease), b.GetAddressOf());
         if (b) {
-            // Capsule body
             D2D1_ROUNDED_RECT cap{ D2D1::RectF(
                 micCX - mw*0.5f, micCY - mh*0.5f,
                 micCX + mw*0.5f, micCY + mh*0.5f),
                 mw*0.5f, mw*0.5f };
             rt->FillRoundedRectangle(cap, b.Get());
-            // Stand line
             rt->DrawLine(
                 D2D1::Point2F(micCX, micCY + mh*0.5f),
                 D2D1::Point2F(micCX, micCY + mh*0.5f + 3.0f*s),
@@ -189,7 +183,7 @@ void VoiceInputHUD::Draw(
         }
     }
 
-    // ---- Language badge (top-right of mic)
+    // ---- Language badge (top-right of mic circle)
     if (dwrite && !m_langLabel.empty()) {
         Microsoft::WRL::ComPtr<IDWriteTextFormat> fmt;
         dwrite->CreateTextFormat(L"Segoe UI", nullptr,
@@ -222,9 +216,8 @@ void VoiceInputHUD::Draw(
         const float tx  = px + 90.0f * s;
         const float tw  = pw - 90.0f * s - 16.0f * s;
 
-        // Status label
-        const wchar_t* statusStr = m_vs.recognizing ? L"Listening…"
-                                 : m_vs.listening    ? L"Say something…"
+        const wchar_t* statusStr = m_vs.recognizing ? L"Listening\u2026"
+                                 : m_vs.listening    ? L"Say something\u2026"
                                  : L"Voice input";
         Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtStatus;
         dwrite->CreateTextFormat(L"Segoe UI", nullptr,
@@ -242,14 +235,13 @@ void VoiceInputHUD::Draw(
                 D2D1::RectF(tx, cy - 28.0f*s, tx+tw, cy), b.Get());
         }
 
-        // Partial result (with horizontal clip)
+        // Partial result with horizontal clip
         if (!m_vs.partial.empty()) {
             Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtP;
             dwrite->CreateTextFormat(L"Segoe UI", nullptr,
                 DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_ITALIC,
                 DWRITE_FONT_STRETCH_NORMAL, 12.0f * s, L"ru-ru", fmtP.GetAddressOf());
             if (fmtP) {
-                // Push a clip rect so partial text doesn't overflow the panel
                 rt->PushAxisAlignedClip(
                     D2D1::RectF(tx, cy, tx+tw, cy + 24.0f*s),
                     D2D1_ANTIALIAS_MODE_ALIASED);
@@ -259,13 +251,14 @@ void VoiceInputHUD::Draw(
                     m_vs.partial.c_str(),
                     static_cast<UINT32>(m_vs.partial.size()),
                     fmtP.Get(),
-                    D2D1::RectF(tx - m_partialScrollX, cy, tx+tw*3.0f, cy+24.0f*s),
+                    D2D1::RectF(tx - m_partialScrollX, cy, tx + tw*3.0f, cy + 24.0f*s),
                     b.Get());
                 rt->PopAxisAlignedClip();
             }
         }
 
-        // Hint line
+        // Hint line: cancel + language cycle
+        static constexpr wchar_t kHint[] = L"\u25C6 cancel  \u2665 switch lang";
         Microsoft::WRL::ComPtr<IDWriteTextFormat> fmtHint;
         dwrite->CreateTextFormat(L"Segoe UI", nullptr,
             DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
@@ -274,14 +267,15 @@ void VoiceInputHUD::Draw(
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
             rt->CreateSolidColorBrush(Tok::ChromeMute(0.45f*ease), b.GetAddressOf());
             if (b) rt->DrawText(
-                L"\u25C6 cancel  \u2665 switch lang",
-                35, fmtHint.Get(),
+                kHint,
+                static_cast<UINT32>(std::wcslen(kHint)),
+                fmtHint.Get(),
                 D2D1::RectF(tx, cy + 26.0f*s, tx+tw, cy + 42.0f*s),
                 b.Get());
         }
     }
 
-    // ---- VU bar (bottom of panel, full width)
+    // ---- VU bar (bottom of panel, full width minus padding)
     {
         const float barH   = 3.5f * s;
         const float barY   = py + ph - barH - 6.0f * s;
@@ -303,7 +297,6 @@ void VoiceInputHUD::Draw(
     }
 
     rt->SetTransform(oldTransform);
-    (void)kPif;
 }
 
 } // namespace enjoystick::overlay
