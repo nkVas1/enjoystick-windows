@@ -188,6 +188,8 @@ void ControlsOverlay::Open() {
 void ControlsOverlay::Close() {
     if (m_state == State::Hidden || m_state == State::Closing) return;
     m_state = State::Closing;
+    m_stickWasActive    = false;
+    m_scrollRyWasActive = false;
     m_panelSpring.SetTarget(0.0f);
 }
 bool ControlsOverlay::IsOpen() const noexcept { return m_state != State::Hidden; }
@@ -232,12 +234,8 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
     const bool dUp    = btn(Button::DPadUp);
     const bool dDown  = btn(Button::DPadDown);
 
-    if (east && !m_prevEast) {
-        Close();
-        goto done;
-    }
-
-    // Helper: reset hysteresis when changing section
+    // Helper: reset hysteresis when changing section (declared before any
+    // early-exit so MSVC does not raise C2362 "skips initialisation").
     auto resetSectionNav = [&]() {
         m_stickActive      = false;
         m_stickWasActive   = false;
@@ -246,6 +244,16 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
         m_scrollRyActive   = false;
         m_scrollRyWasActive= false;
     };
+
+    if (east && !m_prevEast) {
+        Close();
+        m_prevEast   = east;
+        m_prevDLeft  = dLeft;
+        m_prevDRight = dRight;
+        m_prevDUp    = dUp;
+        m_prevDDown  = dDown;
+        return;
+    }
 
     // ---- Section navigation (DPad Left / Right)
     if (dRight && !m_prevDRight) {
@@ -362,7 +370,6 @@ void ControlsOverlay::Update(const ControllerState& state, float dt) {
         }
     }
 
-done:
     m_prevEast   = east;
     m_prevDLeft  = dLeft;
     m_prevDRight = dRight;
