@@ -27,7 +27,7 @@ static constexpr float kPi = static_cast<float>(M_PI);
 namespace enjoystick::overlay {
 
 // ---------------------------------------------------------------------------
-// Layout constants  (kTbH_base = 0 — text bar removed)
+// Layout constants
 // ---------------------------------------------------------------------------
 static constexpr float kKeyW_base    = 88.0f;
 static constexpr float kKeyH_base    = 72.0f;
@@ -41,7 +41,6 @@ static constexpr float kFSpec_base   = 22.0f;
 static constexpr float kFHint_base   = 13.5f;
 static constexpr float kAccentH_base =  3.0f;
 
-// Sub-label font sizes
 static constexpr float kFSubShift_base =  9.0f;
 static constexpr float kFSubSym_base   =  8.0f;
 
@@ -183,7 +182,7 @@ void VirtualKeyboard::Open(const std::wstring& seed) {
     m_glowPhase     = 0.0f;
     m_state         = State::Opening;
     m_stickCooldown = 0.0f; m_stickActive = false;
-    m_stickHoldTime = 0.0f;
+    m_stickHoldTime = 0.0f; m_stickMag    = 0.0f;
     m_dpadHeld      = false; m_dpadTimer = 0.0f;
     m_dpadDirRow    = 0; m_dpadDirCol = 0;
     m_typeDebounce  = 0.0f;
@@ -401,7 +400,7 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
         }
     }
 
-    // DPad navigation
+    // ---- DPad navigation
     {
         const int32_t dr = dDown ? 1 : (dUp   ? -1 : 0);
         const int32_t dc = dRight? 1 : (dLeft ? -1 : 0);
@@ -426,73 +425,61 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
         }
     }
 
-    // Left-stick navigation
+    // ---- Left-stick navigation (left stick ONLY — right stick is not used)
+    //
+    // The repeat interval is scaled by the analog magnitude of the stick:
+    //   full deflection  -> interval * 0.55  (fast)
+    //   half deflection  -> interval * 0.77  (medium)
+    //   near-deadzone    -> interval * 1.00  (slow, precise)
+    // This makes navigation feel proportional to stick pressure.
     {
         const float lx = state.leftStick.x;
         const float ly = state.leftStick.y;
-        const float dz = kSnapDeadzone;
-        const bool  hx = std::abs(lx) > dz;
-        const bool  hy = std::abs(ly) > dz && !hx;
+        // Prefer horizontal if |lx| >= |ly|, else vertical.
+        const bool  hx = std::abs(lx) >= std::abs(ly) && std::abs(lx) > kSnapDeadzone;
+        const bool  hy = !hx && std::abs(ly) > kSnapDeadzone;
+
         if (hx || hy) {
+            // Analog magnitude normalised to [0,1] beyond deadzone.
+            const float rawMag  = hx ? std::abs(lx) : std::abs(ly);
+            const float normMag = std::min(1.0f,
+                (rawMag - kSnapDeadzone) / (1.0f - kSnapDeadzone));
+            // Smooth the magnitude slightly to avoid sudden speed jumps.
+            m_stickMag = m_stickMag + (normMag - m_stickMag) * std::min(1.0f, dt * 12.0f);
+
             if (!m_stickActive) {
                 m_stickActive   = true;
                 m_stickHoldTime = 0.0f;
+                m_stickMag      = normMag;
                 m_stickCooldown = kStickRepeatFirst;
-                if (hx) NavigateTo(m_row,         m_col + (lx > 0 ? 1 : -1));
-                else    NavigateTo(m_row + (ly > 0 ? -1 : 1), m_col);
+                if (hx) NavigateTo(m_row,         m_col + (lx > 0.0f ? 1 : -1));
+                else    NavigateTo(m_row + (ly > 0.0f ? -1 : 1), m_col);
             } else {
                 m_stickHoldTime += dt;
                 m_stickCooldown -= dt;
                 if (m_stickCooldown <= 0.0f) {
-                    const float accelT = std::max(0.0f,
+                    const float accelT   = std::max(0.0f,
                         (m_stickHoldTime - kStickRepeatAccelStart) / kStickRepeatAccelRange);
                     const float blend    = std::min(1.0f, accelT * accelT);
-                    const float interval = kStickRepeatNext + (kStickRepeatFast - kStickRepeatNext) * blend;
+                    float interval = kStickRepeatNext + (kStickRepeatFast - kStickRepeatNext) * blend;
+                    // Scale interval by inverse of analog magnitude:
+                    //   full push   -> *0.55 (faster)
+                    //   gentle push -> *1.00 (slower)
+                    const float speedScale = 1.0f - m_stickMag * 0.45f;
+                    interval *= speedScale;
                     m_stickCooldown = interval;
-                    if (hx) NavigateTo(m_row,         m_col + (lx > 0 ? 1 : -1));
-                    else    NavigateTo(m_row + (ly > 0 ? -1 : 1), m_col);
+                    if (hx) NavigateTo(m_row,         m_col + (lx > 0.0f ? 1 : -1));
+                    else    NavigateTo(m_row + (ly > 0.0f ? -1 : 1), m_col);
                 }
             }
         } else {
             m_stickActive   = false;
             m_stickCooldown = 0.0f;
             m_stickHoldTime = 0.0f;
+            m_stickMag      = 0.0f;
         }
     }
-
-    // Right-stick proximity hover
-    {
-        const float rx = state.rightStick.x;
-        const float ry_s = state.rightStick.y;
-        const float rmag = std::sqrt(rx * rx + ry_s * ry_s);
-        if (rmag > kRightStickDz) {
-            const float sx = m_screenW * 0.5f + rx * m_screenW * 0.46f;
-            const float sy = m_screenH * 0.5f + ry_s * m_screenH * 0.46f;
-            const float proximityR = kProximityRadius * m_dpiScale;
-
-            float   bestDist = proximityR;
-            int32_t bestRow  = m_row;
-            int32_t bestCol  = m_col;
-            bool    found    = false;
-
-            for (int32_t ri = 0; ri < static_cast<int32_t>(m_rows.size()); ++ri) {
-                const int32_t nc = RowKeyCount(ri);
-                for (int32_t ci = 0; ci < nc; ++ci) {
-                    const Vec2 kc = KeyCentrePixel(ri, ci, m_dpiScale, m_screenW, m_screenH);
-                    const float dx = kc.x - sx;
-                    const float dy = kc.y - sy;
-                    const float d  = std::sqrt(dx * dx + dy * dy);
-                    if (d < bestDist) {
-                        bestDist = d;
-                        bestRow  = ri;
-                        bestCol  = ci;
-                        found    = true;
-                    }
-                }
-            }
-            if (found) NavigateTo(bestRow, bestCol);
-        }
-    }
+    // Right stick: intentionally not used for keyboard navigation.
 
 done:
     m_prevSouth = south; m_prevEast  = east;
@@ -603,10 +590,6 @@ static void DrawHintChip(
     (void)ease;
 }
 
-// Draw a small sub-label in a corner of a key rect.
-// cornerX / cornerY: top-left of the key face rect.
-// kw / kh: key face width / height.
-// The text is right-aligned and placed in the corner specified by (isRight, isBottom).
 static void DrawSubLabel(
     ID2D1RenderTarget* rt,
     IDWriteFactory*    dwrite,
@@ -858,12 +841,9 @@ void VirtualKeyboard::Draw(
             const float sRy = kCy - skh * 0.5f;
             const float cr  = kCorner * sc2;
 
-            // Is this the backspace key?
             const bool isBs = k.isSpecial && (k.label == L"\u232B");
 
-            // ---- Key face fill
             if (isBs) {
-                // AmberWarm tinted fill for destructive key
                 Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
                 rt->CreateSolidColorBrush(
                     sel ? Tok::AmberWarm(0.22f * ease) : Tok::SurfaceSunken(0.90f * ease),
@@ -879,7 +859,6 @@ void VirtualKeyboard::Draw(
                          rt->FillRoundedRectangle(rr, b.Get()); }
             }
 
-            // ---- Inset bevel
             { const float ins = 2.4f * s;
               Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
               rt->CreateSolidColorBrush(
@@ -890,9 +869,7 @@ void VirtualKeyboard::Draw(
                   std::max(cr-ins,0.0f), std::max(cr-ins,0.0f)};
                   rt->FillRoundedRectangle(rr, b.Get()); } }
 
-            // ---- Border / selection ring
             if (sel) {
-                // For backspace selected: AmberWarm glow ring
                 const D2D1_COLOR_F ringCol = isBs
                     ? Tok::AmberWarm(0.88f * ease)
                     : Tok::GoldHi(0.90f * ease);
@@ -910,7 +887,6 @@ void VirtualKeyboard::Draw(
                            std::max(cr-g,0.0f), std::max(cr-g,0.0f)};
                            rt->DrawRoundedRectangle(rr, b.Get(), 1.0f*s); } }
             } else {
-                // Backspace unselected: subtle AmberWarm border
                 const D2D1_COLOR_F borderCol = isBs
                     ? Tok::AmberWarm(0.38f * ease)
                     : Tok::InkLine(0.72f * ease);
@@ -920,7 +896,6 @@ void VirtualKeyboard::Draw(
                          rt->DrawRoundedRectangle(rr, b.Get(), isBs ? 1.1f : 0.7f); }
             }
 
-            // ---- Shadow bevel bottom
             { const float bi = 1.0f;
               Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
               rt->CreateSolidColorBrush(
@@ -931,12 +906,10 @@ void VirtualKeyboard::Draw(
                   std::max(cr-bi,0.0f), std::max(cr-bi,0.0f)};
                   rt->DrawRoundedRectangle(rr, b.Get(), 0.5f); } }
 
-            // ---- Specular arc
             if (fac) DrawArcSpecular(rt, fac.Get(),
                 kCx, sRy + skh * 0.28f, skw * 0.26f, skh * 0.18f,
                 (sel ? 0.10f : 0.04f) * ease);
 
-            // ---- Main label
             if (dwrite) {
                 const std::wstring disp = KeyDisplay(k);
                 if (!disp.empty()) {
@@ -970,15 +943,10 @@ void VirtualKeyboard::Draw(
                 }
             }
 
-            // ---- Sub-labels (shift / sym character in corners)
-            // Only shown on non-special, non-wide keys.
-            // Not shown when that layer is already active (no redundancy).
             if (dwrite && !k.isSpecial && k.widthMul <= 1.05f) {
-                // Top-right: shift-layer label (hidden in Sym layer or when Shift/Caps active)
                 const bool showShift = (m_layer == Layer::Alpha && !m_shift && !m_caps)
                                     || (m_layer == Layer::Cyr);
                 if (showShift && k.shiftLabel != k.label) {
-                    // For Alpha layer: show uppercase; for Cyr layer: show cyr-shift
                     const std::wstring& subTxt = (m_layer == Layer::Cyr)
                         ? k.cyrShift : k.shiftLabel;
                     if (subTxt != k.cyrLabel && subTxt != k.label) {
@@ -987,10 +955,9 @@ void VirtualKeyboard::Draw(
                             subTxt.c_str(),
                             kFSubShift_base * s * sc2,
                             (sel ? 0.55f : 0.38f) * ease,
-                            true, false);  // top-right
+                            true, false);
                     }
                 }
-                // Bottom-right: sym-layer label (hidden when Sym layer is active)
                 if (m_layer != Layer::Sym && m_layer != Layer::Cyr) {
                     if (!k.symLabel.empty() && k.symLabel != k.label
                         && k.symLabel != k.shiftLabel) {
@@ -999,7 +966,7 @@ void VirtualKeyboard::Draw(
                             k.symLabel.c_str(),
                             kFSubSym_base * s * sc2,
                             (sel ? 0.45f : 0.28f) * ease,
-                            true, true);  // bottom-right
+                            true, true);
                     }
                 }
             }
