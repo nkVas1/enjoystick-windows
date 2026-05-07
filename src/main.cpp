@@ -1,11 +1,10 @@
 #include <enjoystick/app/Application.hpp>
 
-// WIN32_LEAN_AND_MEAN is already injected by CMake via target_compile_definitions;
-// guard so the manual define becomes a no-op and avoids C4005 redefinition.
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
 #endif
 #include <Windows.h>
+#include <objbase.h>  // CoInitializeEx / CoUninitialize
 #include <stdexcept>
 #include <string>
 
@@ -22,7 +21,6 @@ int WINAPI wWinMain(
     _In_ LPWSTR  lpCmdLine,
     _In_ int)
 {
-    // Suppress C4100: lpCmdLine is passed to Application for future flag parsing.
     (void)lpCmdLine;
 
     // Ensure only one instance runs at a time.
@@ -32,16 +30,24 @@ int WINAPI wWinMain(
         return 0;
     }
 
+    // Initialise COM (apartment-threaded) for SAPI, shell operations, etc.
+    // The dispatch HWND for VoiceInput lives on this thread and receives
+    // WM_VOICE_EVENT messages pumped by Application::Run()'s GetMessage loop.
+    const HRESULT hrCom = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool comInited = SUCCEEDED(hrCom);  // S_FALSE = already initialised by another library
+
+    int exitCode = 0;
     try {
         auto app = enjoystick::app::Application::Create();
         app->Init();
-        const int result = app->Run();
-        if (hMutex) ReleaseMutex(hMutex);
-        return result;
+        exitCode = app->Run();
     } catch (const std::exception& ex) {
         MessageBoxA(nullptr, ex.what(), "EnjoyStick \xe2\x80\x94 Fatal Error",
                     MB_ICONERROR | MB_OK);
-        if (hMutex) ReleaseMutex(hMutex);
-        return 1;
+        exitCode = 1;
     }
+
+    if (comInited) CoUninitialize();
+    if (hMutex) ReleaseMutex(hMutex);
+    return exitCode;
 }

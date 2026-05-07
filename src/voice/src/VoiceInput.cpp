@@ -4,18 +4,17 @@
 // SAPI dictation grammar loads automatically; no custom grammar XML is needed.
 // Recognition events are received via ISpNotifySource::SetNotifyWindowMessage
 // and dispatched on the main thread through a message-only HWND, so all
-// OnResult/OnState calls happen on whichever thread pumps messages for that
-// HWND (typically the main application thread).
+// OnResult/OnState calls happen on the thread that owns the HWND (main thread).
 //
 // Build requirements:
 //   sapi.lib, ole32.lib, oleaut32.lib  (listed in voice/CMakeLists.txt)
-//   Windows SDK >= 10.0 (SAPI 5.4)
+//   CoInitializeEx() must be called on the owning thread before Start().
 
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
 #endif
 #include <Windows.h>
-#include <wrl/client.h>   // Microsoft::WRL::ComPtr
+#include <wrl/client.h>   // Microsoft::WRL::ComPtr  (no ATL required)
 
 // SAPI headers (shipped with the Windows SDK)
 #include <sapi.h>
@@ -98,52 +97,52 @@ private:
     // ---------- SAPI lifetime ---------------------------------------------
 
     bool StartInternal() {
+        // Release any leftover COM objects before recreating
+        m_grammar    = nullptr;
+        m_context    = nullptr;
+        m_recognizer = nullptr;
+
         HRESULT hr;
 
-        // Try shared recognizer first (uses existing Windows speech profile)
-        hr = m_recognizer.Get() ? S_OK
-             : m_recognizer.ReleaseAndGetAddressOf(), S_FALSE;
-        m_recognizer = nullptr;
+        // Try shared recognizer first (reuses existing Windows speech profile)
         hr = CoCreateInstance(CLSID_SpSharedRecognizer, nullptr,
                               CLSCTX_ALL, IID_PPV_ARGS(m_recognizer.GetAddressOf()));
         if (FAILED(hr)) {
             hr = CoCreateInstance(CLSID_SpInprocRecognizer, nullptr,
                                   CLSCTX_ALL, IID_PPV_ARGS(m_recognizer.GetAddressOf()));
             if (FAILED(hr)) {
-                ReportError(L"SAPI: cannot create speech recognizer (HR=0x",  hr);
+                ReportError(L"SAPI: cannot create recognizer", hr);
                 return false;
             }
         }
 
         hr = m_recognizer->CreateRecoContext(m_context.ReleaseAndGetAddressOf());
-        if (FAILED(hr)) { ReportError(L"SAPI: CreateRecoContext failed", hr); return false; }
+        if (FAILED(hr)) { ReportError(L"SAPI: CreateRecoContext", hr); return false; }
 
-        // Route SAPI events to our message-only window
-        hr = m_context->SetNotifyWindowMessage(
-            m_dispatchHwnd, WM_VOICE_EVENT, 0, 0);
-        if (FAILED(hr)) { ReportError(L"SAPI: SetNotifyWindowMessage failed", hr); return false; }
+        // Route SAPI events to our message-only window on the main thread
+        hr = m_context->SetNotifyWindowMessage(m_dispatchHwnd, WM_VOICE_EVENT, 0, 0);
+        if (FAILED(hr)) { ReportError(L"SAPI: SetNotifyWindowMessage", hr); return false; }
 
-        const ULONGLONG interestMask =
+        const ULONGLONG interest =
             SPFEI(SPEI_RECOGNITION)      |
             SPFEI(SPEI_HYPOTHESIS)       |
             SPFEI(SPEI_SOUND_START)      |
             SPFEI(SPEI_SOUND_END)        |
             SPFEI(SPEI_PHRASE_START)     |
             SPFEI(SPEI_RECO_STATE_CHANGE);
-        hr = m_context->SetInterest(interestMask, interestMask);
-        if (FAILED(hr)) { ReportError(L"SAPI: SetInterest failed", hr); return false; }
+        hr = m_context->SetInterest(interest, interest);
+        if (FAILED(hr)) { ReportError(L"SAPI: SetInterest", hr); return false; }
 
         hr = m_context->CreateGrammar(1, m_grammar.ReleaseAndGetAddressOf());
-        if (FAILED(hr)) { ReportError(L"SAPI: CreateGrammar failed", hr); return false; }
+        if (FAILED(hr)) { ReportError(L"SAPI: CreateGrammar", hr); return false; }
 
         hr = m_grammar->LoadDictation(nullptr, SPLO_STATIC);
-        if (FAILED(hr)) { ReportError(L"SAPI: LoadDictation failed", hr); return false; }
+        if (FAILED(hr)) { ReportError(L"SAPI: LoadDictation", hr); return false; }
 
         hr = m_grammar->SetDictationState(SPRS_ACTIVE);
-        if (FAILED(hr)) { ReportError(L"SAPI: SetDictationState failed", hr); return false; }
+        if (FAILED(hr)) { ReportError(L"SAPI: SetDictationState", hr); return false; }
 
         TrySetLanguageToken();
-
         m_recognizer->SetRecoState(SPRST_ACTIVE);
 
         m_listening.store(true);
@@ -159,19 +158,9 @@ private:
     void StopInternal() {
         if (!m_listening.load()) return;
         m_listening.store(false);
-
-        if (m_grammar) {
-            m_grammar->SetDictationState(SPRS_INACTIVE);
-            m_grammar = nullptr;
-        }
-        if (m_context) {
-            m_context->SetNotifyWindowMessage(nullptr, 0, 0, 0);
-            m_context = nullptr;
-        }
-        if (m_recognizer) {
-            m_recognizer->SetRecoState(SPRST_INACTIVE);
-            m_recognizer = nullptr;
-        }
+        if (m_grammar)    { m_grammar->SetDictationState(SPRS_INACTIVE); m_grammar = nullptr; }
+        if (m_context)    { m_context->SetNotifyWindowMessage(nullptr, 0, 0, 0); m_context = nullptr; }
+        if (m_recognizer) { m_recognizer->SetRecoState(SPRST_INACTIVE); m_recognizer = nullptr; }
         UpdateState([](VoiceInputState& s) {
             s.listening   = false;
             s.recognizing = false;
@@ -183,16 +172,15 @@ private:
     void TrySetLanguageToken() {
         if (!m_recognizer) return;
         const LANGID lid = (m_lang == VoiceLanguage::Russian)
-            ? MAKELANGID(LANG_RUSSIAN, SUBLANG_DEFAULT)
-            : MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US);
-        wchar_t langAttr[64];
-        std::swprintf(langAttr, 64, L"Language=%X", static_cast<unsigned>(lid));
-
+            ? MAKELANGID(LANG_RUSSIAN,  SUBLANG_DEFAULT)
+            : MAKELANGID(LANG_ENGLISH,  SUBLANG_ENGLISH_US);
+        wchar_t attr[64];
+        std::swprintf(attr, 64, L"Language=%X", static_cast<unsigned>(lid));
         ComPtr<ISpObjectToken> token;
-        if (SUCCEEDED(SpFindBestToken(SPCAT_RECOGNIZERS, langAttr, nullptr, &token)) && token) {
+        if (SUCCEEDED(SpFindBestToken(SPCAT_RECOGNIZERS, attr, nullptr, &token)) && token) {
             m_recognizer->SetRecognizer(token.Get());
         }
-        // Failure is acceptable: shared recognizer uses system default language.
+        // Failure is acceptable: shared recognizer uses the system default language.
     }
 
     // ---------- Event processing (main thread via WM_VOICE_EVENT) ---------
@@ -209,7 +197,7 @@ private:
             case SPEI_PHRASE_START:
                 UpdateState([](VoiceInputState& s) {
                     s.recognizing = true;
-                    s.level       = 0.70f;  // ramp up on speech start
+                    s.level       = 0.70f;
                 });
                 break;
 
@@ -222,7 +210,6 @@ private:
                 break;
 
             case SPEI_HYPOTHESIS: {
-                // Partial result: preview text + level estimated from word count
                 ISpRecoResult* pResult = reinterpret_cast<ISpRecoResult*>(evt.lParam);
                 if (pResult) {
                     SPPHRASE* pPhrase = nullptr;
@@ -234,13 +221,11 @@ private:
                             const wchar_t* word = pPhrase->pElements[i].pszDisplayText;
                             partial += word ? word : L"";
                         }
-                        // Estimate audio level from number of recognised words:
-                        // 1 word ≈ 0.35, 3 words ≈ 0.65, 5+ words ≈ 0.85
-                        const float estLevel = std::min(0.90f,
-                            0.30f + static_cast<float>(n) * 0.11f);
-                        UpdateState([&partial, estLevel](VoiceInputState& s) {
+                        // Estimate VU level from word count (1 word ≈ 0.35, 5+ ≈ 0.85)
+                        const float lvl = std::min(0.90f, 0.30f + static_cast<float>(n) * 0.11f);
+                        UpdateState([&partial, lvl](VoiceInputState& s) {
                             s.partial = partial;
-                            s.level   = estLevel;
+                            s.level   = lvl;
                         });
                         CoTaskMemFree(pPhrase);
                     }
@@ -252,10 +237,11 @@ private:
                 ISpRecoResult* pResult = reinterpret_cast<ISpRecoResult*>(evt.lParam);
                 if (pResult) {
                     wchar_t* pText = nullptr;
-                    const HRESULT hrGet = pResult->GetText(
-                        SP_GETWHOLEPHRASE, SP_GETWHOLEPHRASE,
-                        TRUE, &pText, nullptr);
-                    if (SUCCEEDED(hrGet) && pText && pText[0] != L'\0') {
+                    if (SUCCEEDED(pResult->GetText(
+                            SP_GETWHOLEPHRASE, SP_GETWHOLEPHRASE,
+                            TRUE, &pText, nullptr))
+                        && pText && pText[0] != L'\0')
+                    {
                         std::wstring result = pText;
                         CoTaskMemFree(pText);
                         UpdateState([](VoiceInputState& s) {
@@ -271,8 +257,7 @@ private:
                 break;
             }
 
-            default:
-                break;
+            default: break;
             }
             SpClearEvent(&evt);
         }
@@ -293,13 +278,12 @@ private:
 
     void ReportError(const wchar_t* msg, HRESULT hr = S_OK) {
         if (!m_onError) return;
-        if (hr != S_OK) {
-            wchar_t buf[256];
-            std::swprintf(buf, 256, L"%ls 0x%08X", msg, static_cast<unsigned>(hr));
-            m_onError(buf);
-        } else {
-            m_onError(msg);
-        }
+        wchar_t buf[256];
+        if (FAILED(hr))
+            std::swprintf(buf, 256, L"%ls (HR=0x%08X)", msg, static_cast<unsigned>(hr));
+        else
+            std::swprintf(buf, 256, L"%ls", msg);
+        m_onError(buf);
     }
 
     // ---------- Dispatch window -------------------------------------------

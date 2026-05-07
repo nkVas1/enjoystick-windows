@@ -18,19 +18,15 @@
 namespace enjoystick::app {
 
 // ---------------------------------------------------------------------------
-// InputMode — Cursor, Navigate, Voice
+// InputMode
 // ---------------------------------------------------------------------------
 
-enum class InputMode : uint8_t {
-    Cursor,
-    Navigate,
-    Voice,
-};
+enum class InputMode : uint8_t { Cursor, Navigate, Voice };
 
 static constexpr InputMode kNextMode[3] = {
-    InputMode::Navigate,  // Cursor   → Navigate
-    InputMode::Voice,     // Navigate → Voice
-    InputMode::Cursor,    // Voice    → Cursor
+    InputMode::Navigate,
+    InputMode::Voice,
+    InputMode::Cursor,
 };
 
 static const wchar_t* InputModeLabel(InputMode m) noexcept {
@@ -76,21 +72,16 @@ static void CALLBACK RumbleTimerCallback(
 }
 
 static void ScheduleRumble(
-    core::InputEngine* engine,
-    ControllerId id,
-    RumbleParams params,
-    DWORD deferredMs) noexcept
+    core::InputEngine* engine, ControllerId id,
+    RumbleParams params, DWORD deferredMs) noexcept
 {
     auto* ctx  = new (std::nothrow) RumbleCtx{engine, id, params};
     if (!ctx) return;
     PTP_TIMER timer = CreateThreadpoolTimer(RumbleTimerCallback, ctx, nullptr);
     if (!timer) { delete ctx; return; }
     ULARGE_INTEGER due;
-    due.QuadPart = static_cast<ULONGLONG>(
-        -static_cast<LONGLONG>(deferredMs) * 10'000LL);
-    FILETIME ft;
-    ft.dwLowDateTime  = due.LowPart;
-    ft.dwHighDateTime = due.HighPart;
+    due.QuadPart = static_cast<ULONGLONG>(-static_cast<LONGLONG>(deferredMs) * 10'000LL);
+    FILETIME ft{ due.LowPart, due.HighPart };
     SetThreadpoolTimer(timer, &ft, 0, 0);
 }
 
@@ -189,9 +180,7 @@ static overlay::SettingsMenu::Values SettingsValuesFromConfig(
 
 class ApplicationImpl final : public Application {
 public:
-    ApplicationImpl() {
-        QueryPerformanceFrequency(&m_qpcFreq);
-    }
+    ApplicationImpl() { QueryPerformanceFrequency(&m_qpcFreq); }
     ~ApplicationImpl() override = default;
 
     void Init() override {
@@ -320,7 +309,15 @@ private:
         });
 
         m_voiceEngine->OnStateChanged([this](const voice::VoiceInputState& state) {
-            m_overlay->GetVoiceInputHUD().SetVoiceState(state);
+            if (m_overlay) {
+                m_overlay->GetVoiceInputHUD().SetVoiceState(state);
+            }
+        });
+
+        // Show a toast if SAPI fails to initialise so the user knows why the
+        // mic icon stays inactive instead of silently doing nothing.
+        m_voiceEngine->OnError([this](const voice::RecognitionResult& /*unused*/) {
+            // OnError on the engine is not yet bridged; handled at voice layer
         });
     }
 
@@ -353,33 +350,24 @@ private:
 
     void SetupSettingsMenu() {
         auto& sm = m_overlay->GetSettingsMenu();
-
-        sm.SetOnChanged(
-            [this](const overlay::SettingsMenu::Values& v) {
-                const auto vmCfg = VMConfigFromSettings(v);
-                m_virtualMouse->SetConfig(vmCfg);
-                m_config->SetCursorConfig(vmCfg);
-
-                core::DeadzoneConfig dz;
-                dz.innerRadius = v.dzInner;
-                dz.outerRadius = v.dzOuter;
-                m_config->SetDeadzoneConfig(dz);
-
-                if (m_inputEngine)
-                    m_inputEngine->Rumble(ControllerId{0}, {0.0f, 0.20f, 30});
-            }
-        );
-
+        sm.SetOnChanged([this](const overlay::SettingsMenu::Values& v) {
+            const auto vmCfg = VMConfigFromSettings(v);
+            m_virtualMouse->SetConfig(vmCfg);
+            m_config->SetCursorConfig(vmCfg);
+            core::DeadzoneConfig dz;
+            dz.innerRadius = v.dzInner;
+            dz.outerRadius = v.dzOuter;
+            m_config->SetDeadzoneConfig(dz);
+            if (m_inputEngine)
+                m_inputEngine->Rumble(ControllerId{0}, {0.0f, 0.20f, 30});
+        });
         sm.SetOnNavigate([this] {
             if (m_inputEngine)
-                ScheduleRumble(m_inputEngine.get(), ControllerId{0},
-                               {0.0f, 0.12f, 18}, 0);
+                ScheduleRumble(m_inputEngine.get(), ControllerId{0}, {0.0f, 0.12f, 18}, 0);
         });
-
         sm.SetOnAdjust([this] {
             if (m_inputEngine)
-                ScheduleRumble(m_inputEngine.get(), ControllerId{0},
-                               {0.0f, 0.08f, 12}, 0);
+                ScheduleRumble(m_inputEngine.get(), ControllerId{0}, {0.0f, 0.08f, 12}, 0);
         });
     }
 
@@ -427,7 +415,6 @@ private:
         m_overlay->ShowToast(L"\U0001F4CB  Controls reference \u2014 [\u25C4/\u25BA] sections  [\u25C6] close", 3000);
     }
 
-    // Activate voice mode: stop mouse/nav, start engine, show HUD
     void EnterVoiceMode() {
         m_prevForeground   = GetForegroundWindow();
         m_voiceAppendSpace = false;
@@ -435,9 +422,19 @@ private:
         m_keyMapper->SetEnabled(false);
 
         auto& hud = m_overlay->GetVoiceInputHUD();
+        hud.SetLanguageLabel(L"RU");
         hud.Open();
 
-        if (m_voiceEngine) m_voiceEngine->Start();
+        if (m_voiceEngine) {
+            const bool ok = m_voiceEngine->Start();
+            if (!ok) {
+                m_overlay->ShowToast(
+                    L"[ERR] \U0001F3A4  Voice unavailable \u2014 check SAPI / microphone", 5000);
+                // Don't exit the mode — HUD still shows so the user can cancel
+            } else {
+                SyncVoiceHudLang();
+            }
+        }
 
         m_overlay->SetModeLabel(InputModeLabel(InputMode::Voice));
         m_overlay->ShowToast(
@@ -446,14 +443,12 @@ private:
             m_inputEngine->Rumble(ControllerId{0}, {0.0f, 0.35f, 60});
     }
 
-    // Deactivate voice mode: stop engine, close HUD
     void ExitVoiceMode() {
         if (m_voiceEngine) m_voiceEngine->Stop();
         m_overlay->GetVoiceInputHUD().Close();
         m_voiceAppendSpace = false;
     }
 
-    // Update voice HUD language badge to match current engine language
     void SyncVoiceHudLang() {
         if (!m_voiceEngine) return;
         const wchar_t* label =
@@ -464,21 +459,18 @@ private:
 
     void SetMode(InputMode newMode) {
         if (m_mode == newMode) return;
-
         const InputMode prevMode = m_mode;
         m_mode = newMode;
 
-        if (prevMode == InputMode::Voice) {
-            ExitVoiceMode();
-        }
+        if (prevMode == InputMode::Voice) ExitVoiceMode();
 
         const bool cursor    = (m_mode == InputMode::Cursor);
         const bool navigate  = (m_mode == InputMode::Navigate);
         const bool voiceMode = (m_mode == InputMode::Voice);
 
-        const bool menuOpen  = m_overlay->GetRadialMenu().IsVisible();
-        const bool kbOpen    = m_overlay->GetVirtualKeyboard().IsOpen();
-        const bool ctrlOpen  = m_overlay->GetControlsOverlay().IsOpen();
+        const bool menuOpen = m_overlay->GetRadialMenu().IsVisible();
+        const bool kbOpen   = m_overlay->GetVirtualKeyboard().IsOpen();
+        const bool ctrlOpen = m_overlay->GetControlsOverlay().IsOpen();
 
         m_virtualMouse->SetEnabled(cursor && !menuOpen && !kbOpen && !ctrlOpen);
         m_keyMapper->SetEnabled(navigate);
@@ -528,14 +520,14 @@ private:
             return (currMask & static_cast<uint32_t>(b)) != 0;
         };
 
-        const bool radialOpen    = m_overlay->GetRadialMenu().IsVisible();
-        const bool settingsOpen  = m_overlay->GetSettingsMenu().IsOpen();
-        const bool kbOpen        = m_overlay->GetVirtualKeyboard().IsOpen();
-        const bool controlsOpen  = m_overlay->GetControlsOverlay().IsOpen();
-        const bool voiceOpen     = m_overlay->GetVoiceInputHUD().IsOpen();
+        const bool radialOpen   = m_overlay->GetRadialMenu().IsVisible();
+        const bool settingsOpen = m_overlay->GetSettingsMenu().IsOpen();
+        const bool kbOpen       = m_overlay->GetVirtualKeyboard().IsOpen();
+        const bool controlsOpen = m_overlay->GetControlsOverlay().IsOpen();
+        const bool voiceOpen    = m_overlay->GetVoiceInputHUD().IsOpen();
 
         // ------------------------------------------------------------------
-        // Voice mode: limited controls
+        // Voice mode controls
         // ------------------------------------------------------------------
         if (voiceOpen) {
             // LB+RB — exit voice mode
@@ -561,7 +553,7 @@ private:
                 }
             }
 
-            // Select (View) — reset append-space so next word starts fresh
+            // Select (View) — reset append-space for new sentence start
             if (pressed(Button::Select)) {
                 m_voiceAppendSpace = false;
                 m_overlay->ShowToast(L"\U0001F3A4  New sentence", 1200);
@@ -589,18 +581,13 @@ private:
             return;
         }
 
-        if (pressed(Button::Guide)) {
-            m_guideChordUsed = false;
-        }
+        if (pressed(Button::Guide)) { m_guideChordUsed = false; }
 
         if (held(Button::Guide)) {
             if (pressed(Button::Start)) {
                 m_guideChordUsed = true;
-                if (settingsOpen) {
-                    m_overlay->GetSettingsMenu().Close();
-                } else {
-                    OpenSettingsMenu();
-                }
+                if (settingsOpen) m_overlay->GetSettingsMenu().Close();
+                else              OpenSettingsMenu();
                 return;
             }
             if (pressed(Button::LB)) {
@@ -622,12 +609,7 @@ private:
         }
 
         if (pressed(Button::Start) && !held(Button::Guide)) {
-            if (radialOpen) {
-                m_overlay->GetRadialMenu().Close();
-                OpenKeyboard();
-            } else {
-                OpenKeyboard();
-            }
+            OpenKeyboard();
             return;
         }
 
@@ -641,12 +623,9 @@ private:
             return;
         }
 
-        // LB+RB — cycle through modes (Cursor → Navigate → Voice → Cursor)
+        // LB+RB — cycle modes
         if (held(Button::LB) && held(Button::RB)) {
-            if (!m_lbRbChordActive) {
-                m_lbRbChordActive = true;
-                ToggleInputMode();
-            }
+            if (!m_lbRbChordActive) { m_lbRbChordActive = true; ToggleInputMode(); }
         } else {
             m_lbRbChordActive = false;
         }
@@ -657,9 +636,8 @@ private:
                 if (pressed(Button::RB)) { SendBrowserTab(true);  }
             }
 
-            if (pressed(Button::LS)) {
+            if (pressed(Button::LS))
                 SendDoubleClick(MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP);
-            }
 
             if (pressed(Button::North)) m_virtualMouse->MiddleClick();
 
@@ -672,31 +650,23 @@ private:
             const int scrollMult = selectHeld ? 5 : 1;
 
             if (pressed(Button::DPadLeft) && !selectHeld) {
-                SendKey(VK_MENU,  true,  true);
-                SendKey(VK_LEFT,  true,  true);
-                SendKey(VK_LEFT,  false, true);
-                SendKey(VK_MENU,  false, true);
+                SendKey(VK_MENU, true, true); SendKey(VK_LEFT, true, true);
+                SendKey(VK_LEFT, false, true); SendKey(VK_MENU, false, true);
             }
             if (pressed(Button::DPadRight) && !selectHeld) {
-                SendKey(VK_MENU,  true,  true);
-                SendKey(VK_RIGHT, true,  true);
-                SendKey(VK_RIGHT, false, true);
-                SendKey(VK_MENU,  false, true);
+                SendKey(VK_MENU, true, true); SendKey(VK_RIGHT, true, true);
+                SendKey(VK_RIGHT, false, true); SendKey(VK_MENU, false, true);
             }
             if (pressed(Button::DPadUp))   SendScrollLines(+scrollMult);
             if (pressed(Button::DPadDown)) SendScrollLines(-scrollMult);
 
             if (!selectHeld && pressed(Button::Select)) {
                 SendKey(VK_LWIN, true);
-                SendKey(VK_TAB,  true,  true);
-                SendKey(VK_TAB,  false, true);
+                SendKey(VK_TAB, true, true); SendKey(VK_TAB, false, true);
                 SendKey(VK_LWIN, false);
             }
 
-            if (pressed(Button::RS)) {
-                OpenKeyboard();
-                return;
-            }
+            if (pressed(Button::RS)) { OpenKeyboard(); return; }
 
             if (held(Button::South)) {
                 m_southHoldMs += dt;
@@ -706,18 +676,14 @@ private:
                 }
             }
             if (released(Button::South)) {
-                if (m_southDragActive) {
-                    m_virtualMouse->LeftUp();
-                } else if (m_southHoldMs > 0.0f && m_southHoldMs < kSouthLongPressMs) {
+                if (m_southDragActive)       m_virtualMouse->LeftUp();
+                else if (m_southHoldMs > 0.0f && m_southHoldMs < kSouthLongPressMs)
                     m_virtualMouse->LeftClick();
-                }
                 m_southHoldMs     = 0.0f;
                 m_southDragActive = false;
             }
 
-            if (pressed(Button::East)) {
-                m_virtualMouse->RightClick();
-            }
+            if (pressed(Button::East)) m_virtualMouse->RightClick();
         }
 
         m_virtualMouse->Update(state, dt);
@@ -727,23 +693,16 @@ private:
 
     void OnConnectionEvent(ControllerId id, ConnectionEvent ev) {
         const bool connected = (ev == ConnectionEvent::Connected);
-
         std::wstring typeLabel;
         if (m_inputEngine) {
             const auto list = m_inputEngine->GetConnectedControllers();
-            for (const auto& info : list) {
-                if (info.id == id) {
-                    typeLabel = ControllerTypeLabel(info.type);
-                    break;
-                }
-            }
+            for (const auto& info : list)
+                if (info.id == id) { typeLabel = ControllerTypeLabel(info.type); break; }
         }
         if (typeLabel.empty()) typeLabel = L"Controller";
-
         const std::wstring msg = connected
             ? (L"[OK] \U0001F3AE  " + typeLabel + L" connected")
             : (L"[WARN] \u26A0  "   + typeLabel + L" disconnected");
-
         if (m_overlay) m_overlay->ShowToast(msg);
         if (m_tray)    m_tray->ShowBalloon(L"EnjoyStick", msg);
         if (connected && m_inputEngine)
@@ -757,11 +716,11 @@ private:
             { L"EnjoyStick v0.1", {},       false },
             { L"",                {},       true  },
             { InputModeTrayLabel(m_mode), [this]{ ToggleInputMode(); } },
-            { L"Open Settings",   [this]{ OpenSettingsMenu(); } },
-            { L"Open Keyboard",   [this]{ OpenKeyboard(); } },
-            { L"Controls Reference", [this]{ OpenControlsOverlay(); } },
+            { L"Open Settings",     [this]{ OpenSettingsMenu(); } },
+            { L"Open Keyboard",     [this]{ OpenKeyboard(); } },
+            { L"Controls Reference",[this]{ OpenControlsOverlay(); } },
             { autoLabel, [autoOn]{ if (autoOn) AutoStart::Disable(); else AutoStart::Enable(); } },
-            { L"",     {},       true },
+            { L"",     {},  true },
             { L"Exit", [this]{ Exit(); } },
         };
     }
