@@ -543,32 +543,49 @@ void SettingsMenu::Draw(
     }
     if (fac) DrawPanelChrome(rt, fac.Get(), px, py, pw, totalH, cr, s, ease);
 
-    // ---- Selection cursor spring: compute the Y pixel target for m_selectedRow
-    //      and snap/drive the spring toward it each Draw call (Draw is const,
-    //      but m_selCursorSpring is mutable).
+    // ---------------------------------------------------------------------------
+    // Selection cursor spring: compute selPixY using the SAME header-skip logic
+    // as the render loop below. This ensures the spring target always matches
+    // the actual drawn Y position of the selected row.
+    // ---------------------------------------------------------------------------
     {
-        // Walk rows to find the Y centre of the selected row inside the panel
         float walkY   = listAreaTop;
         float selPixY = listAreaTop + ph_row * 0.5f;  // fallback
-        int32_t dataSeen = 0;
+        int32_t dataWalk = 0;
+
         for (int32_t i = 0; i < totalRows; ++i) {
             const auto& r = m_rows[static_cast<size_t>(i)];
             const float rh = (r.type == RowType::SectionHeader) ? ph_hdr : ph_row;
-            bool rowVisible = false;
+
             if (r.type == RowType::SectionHeader) {
-                rowVisible = true;  // headers always occupy vertical space
+                // Replicate the render loop's header-visibility check:
+                // header is rendered only if at least one of its data rows is visible.
+                int32_t nextData = dataWalk;
+                bool headerVisible = false;
+                for (int32_t j = i + 1; j < totalRows; ++j) {
+                    if (m_rows[static_cast<size_t>(j)].type == RowType::SectionHeader) break;
+                    if (nextData >= m_scrollOffset && nextData < m_scrollOffset + kVisibleRows) {
+                        headerVisible = true;
+                        break;
+                    }
+                    ++nextData;
+                }
+                if (!headerVisible) continue;  // skip: same as render loop
+                // Headers are never selected, just accumulate height
+                walkY += rh + gap;
             } else {
-                rowVisible = (dataSeen >= m_scrollOffset &&
-                              dataSeen < m_scrollOffset + kVisibleRows);
-                ++dataSeen;
-            }
-            if (rowVisible) {
+                // Data row: check scroll visibility
+                const bool rowVisible = (dataWalk >= m_scrollOffset &&
+                                         dataWalk < m_scrollOffset + kVisibleRows);
+                ++dataWalk;
+                if (!rowVisible) continue;
                 if (i == m_selectedRow) {
                     selPixY = walkY + rh * 0.5f;
                 }
                 walkY += rh + gap;
             }
         }
+
         if (!m_selCursorInit) {
             m_selCursorSpring.Snap(selPixY);
             m_selCursorInit = true;

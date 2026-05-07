@@ -98,21 +98,19 @@ private:
     float m_repeatTimer  = 0.0f;
 
     // -----------------------------------------------------------------------
-    // Navigation timing  –  "heavy magnetic" feel
+    // Navigation timing – comfortable, responsive feel
     //
-    //  kSnapFirst 2.20s : a short flick always moves exactly ONE row,
-    //                     no matter how long the stick is held casually.
-    //  kSnapNext  0.55s : slow repeat once the user clearly holds the stick,
-    //                     giving a weighty, deliberate cadence.
-    //  kSnapFast  0.075s: top speed only after ~1.6s of continuous hold.
-    //  kNavDeadzone 0.82: require a confident deflection to start moving.
+    //  kSnapFirst 0.45s : first auto-repeat delay after a row change.
+    //  kSnapNext  0.13s : repeat interval for sustained navigation.
+    //  kSnapFast  0.055s: top speed after sustained hold.
+    //  kNavDeadzone 0.52: moderate stick deflection required.
     // -----------------------------------------------------------------------
-    static constexpr float kSnapFirst      = 2.20f;   // was 1.50 – much heavier
-    static constexpr float kSnapNext       = 0.55f;   // was 0.40
-    static constexpr float kSnapFast       = 0.075f;
-    static constexpr float kNavAccelStart  = 1.8f;    // was 1.6
-    static constexpr float kNavAccelRange  = 1.00f;   // was 0.80
-    static constexpr float kNavDeadzone    = 0.82f;   // was 0.72  (more deliberate)
+    static constexpr float kSnapFirst      = 0.45f;
+    static constexpr float kSnapNext       = 0.13f;
+    static constexpr float kSnapFast       = 0.055f;
+    static constexpr float kNavAccelStart  = 0.70f;
+    static constexpr float kNavAccelRange  = 0.55f;
+    static constexpr float kNavDeadzone    = 0.52f;
     static constexpr float kAnimMs         = 160.0f;
 
     bool  m_stickNavActive    = false;

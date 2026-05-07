@@ -94,27 +94,26 @@ private:
     int32_t m_col = 0;
 
     // -------------------------------------------------------------------------
-    // Left-stick navigation timing (seconds)  –  "heavy magnetic" feel
+    // Left-stick navigation timing (seconds)
     //
-    // kSnapDeadzone 0.90: require a very deliberate stick push (90% axis).
+    // kSnapDeadzone 0.55: moderate stick push required (good balance).
     //
-    // kStickRepeatFirst 2.20s: a short flick ALWAYS moves exactly one key;
-    //   the cursor pops/bounces onto the target via the cursor spring.
-    // kStickRepeatNext  0.55s: slow repeat cadence for weighty magnet feel.
-    // kStickRepeatFast  0.075s: maximum repeat rate only after long hold.
+    // kStickRepeatFirst 0.50s: short initial delay before auto-repeat starts.
+    // kStickRepeatNext  0.14s: comfortable repeat cadence.
+    // kStickRepeatFast  0.055s: maximum repeat rate after sustained hold.
     // -------------------------------------------------------------------------
     float  m_stickCooldown    = 0.0f;
     float  m_stickHoldTime    = 0.0f;
-    static constexpr float kStickRepeatFirst      = 2.20f;   // was 1.50
-    static constexpr float kStickRepeatNext       = 0.55f;   // was 0.40
-    static constexpr float kStickRepeatFast       = 0.075f;
-    static constexpr float kStickRepeatAccelStart = 1.80f;   // was 1.60
-    static constexpr float kStickRepeatAccelRange = 1.00f;   // was 0.80
-    static constexpr float kSnapDeadzone          = 0.90f;   // was 0.88
+    static constexpr float kStickRepeatFirst      = 0.50f;
+    static constexpr float kStickRepeatNext       = 0.14f;
+    static constexpr float kStickRepeatFast       = 0.055f;
+    static constexpr float kStickRepeatAccelStart = 0.80f;
+    static constexpr float kStickRepeatAccelRange = 0.60f;
+    static constexpr float kSnapDeadzone          = 0.55f;
     bool   m_stickActive = false;
 
-    static constexpr float kDPadFirst = 0.70f;
-    static constexpr float kDPadNext  = 0.18f;
+    static constexpr float kDPadFirst = 0.32f;
+    static constexpr float kDPadNext  = 0.09f;
     bool    m_dpadHeld    = false;
     float   m_dpadTimer   = 0.0f;
     int32_t m_dpadDirRow  = 0;
