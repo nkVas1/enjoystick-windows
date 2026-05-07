@@ -10,12 +10,6 @@
 #include <cmath>
 #include <cwchar>
 
-#ifndef M_PI
-static constexpr double M_PI = 3.14159265358979323846;
-#endif
-static constexpr float kPif = static_cast<float>(M_PI);
-(void)kPif;
-
 namespace enjoystick::overlay {
 
 // ---------------------------------------------------------------------------
