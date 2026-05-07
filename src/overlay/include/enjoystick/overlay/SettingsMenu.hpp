@@ -106,36 +106,31 @@ private:
     // -----------------------------------------------------------------------
     // Navigation timing — single-step policy with hysteresis
     //
-    // HYSTERESIS:
-    //   Physical sticks bounce through a threshold on the return path.
-    //   Using one threshold for both activate and deactivate allows the
-    //   bounce to clear-and-re-set the active flag, firing multiple first
-    //   steps per flick.
+    // kSnapDeadzone: stick must exceed this to register a step.
+    // kSnapRelease:  stick must drop BELOW this to reset the axis.
+    //   The gap [kSnapRelease .. kSnapDeadzone] is the hysteresis band;
+    //   the stick must fully retreat below kSnapRelease before the next
+    //   first-step can fire.  Identical fix to VirtualKeyboard (2026-05-07).
     //
-    //   Fix: two thresholds.
-    //     kNavDeadzone = 0.62  — above this: axis activates (first step fires)
-    //     kNavRelease  = 0.28  — below this: axis resets (gate for next flick)
-    //   Band [0.28, 0.62] absorbs all bounce: active stays true until the
-    //   stick fully retreats, so exactly one first-step fires per flick.
-    //
-    // kSnapGate:    hold this long (s) before auto-repeat begins (1.0 s).
-    // kSnapCadence: flat repeat interval (no acceleration, 0.22 s).
+    // kSnapGate:     hold this many seconds before auto-repeat begins (1.0 s).
+    // kSnapCadence:  flat repeat interval after the gate.
     // -----------------------------------------------------------------------
-    static constexpr float kSnapGate      = 1.00f;   // s before first repeat
+    static constexpr float kSnapDeadzone  = 0.62f;   // activate threshold
+    static constexpr float kSnapRelease   = 0.25f;   // deactivate threshold (hysteresis)
+    static constexpr float kSnapGate      = 1.00f;   // s before first repeat (was 1.5)
     static constexpr float kSnapCadence   = 0.22f;   // s between repeats (flat)
-    static constexpr float kNavDeadzone   = 0.62f;   // activate threshold
-    static constexpr float kNavRelease    = 0.28f;   // deactivate threshold (hysteresis)
+    static constexpr float kNavDeadzone   = 0.62f;   // alias kept for value-adjust axis
     static constexpr float kAnimMs        = 160.0f;
 
-    // Y-axis (row navigation)
+    // Y-axis (row navigation) — with hysteresis
     bool  m_stickNavActive    = false;
-    bool  m_stickNavWasActive = false;  // hysteresis: stays true until |ly|<kNavRelease
+    bool  m_stickNavReleased  = true;   // true = ready for next flick
     float m_stickNavCooldown  = 0.0f;
     float m_stickNavHoldTime  = 0.0f;
 
-    // X-axis (slider adjust)
+    // X-axis (tab switch / value adjust) — with hysteresis
     bool  m_stickLxActive     = false;
-    bool  m_stickLxWasActive  = false;  // hysteresis: stays true until |lx|<kNavRelease
+    bool  m_stickLxReleased   = true;   // true = ready for next flick
     float m_stickLxCooldown   = 0.0f;
 
     bool  m_dpadVertHeld      = false;
