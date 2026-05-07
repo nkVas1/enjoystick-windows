@@ -16,10 +16,10 @@
 #include <Windows.h>
 #include <wrl/client.h>   // Microsoft::WRL::ComPtr  (no ATL required)
 
-// SAPI headers (shipped with the Windows SDK)
-// NOTE: sphelper.h is intentionally NOT included here because it pulls in
-//       atlbase.h which requires the ATL/MFC optional workload.  Instead we
-//       provide inline replacements for the two helpers we need.
+// SAPI headers (shipped with the Windows SDK).
+// NOTE: sphelper.h is intentionally NOT included: it hard-includes atlbase.h
+//       which requires the ATL/MFC optional workload.  We provide inline
+//       replacements for the two helpers we need (SpClearEvent, SpFindBestToken).
 #include <sapi.h>
 
 #pragma comment(lib, "sapi.lib")
@@ -37,8 +37,12 @@ namespace enjoystick::voice {
 
 using Microsoft::WRL::ComPtr;
 
-// Message posted to the dispatch window by SAPI when events are available
+// Message posted to the dispatch window by SAPI when events are available.
 static constexpr UINT WM_VOICE_EVENT = WM_APP + 50;
+
+// SPERR_NOT_FOUND is defined in sphelper.h which we don't include.
+// The numeric value matches the SDK definition: 0x80045003.
+static constexpr HRESULT kSPERR_NOT_FOUND = static_cast<HRESULT>(0x80045003L);
 
 // ---------------------------------------------------------------------------
 // ATL-free replacements for sphelper.h utilities
@@ -47,7 +51,6 @@ static constexpr UINT WM_VOICE_EVENT = WM_APP + 50;
 /// Free any CoTask-allocated strings inside a SPEVENT, then zero it.
 static inline void SpClearEventInline(SPEVENT* pEvt) noexcept {
     if (!pEvt) return;
-    // Only SPET_LPARAM_IS_STRING events own the lParam string.
     if (SPET_LPARAM_IS_STRING ==
         static_cast<SPEVENTLPARAMTYPE>(HIWORD(pEvt->wParam)))
     {
@@ -56,13 +59,13 @@ static inline void SpClearEventInline(SPEVENT* pEvt) noexcept {
     *pEvt = SPEVENT{};
 }
 
-/// Find the best SAPI recognizer token matching `pszReqAttribs`.
+/// Find the best SAPI recognizer token matching pszReqAttribs.
 /// Equivalent to SpFindBestToken(SPCAT_RECOGNIZERS, ...) from sphelper.h
 /// but implemented via raw COM without ATL.
 static HRESULT SpFindBestTokenLocal(
-    const wchar_t*    pszReqAttribs,
-    const wchar_t*    pszOptAttribs,
-    ISpObjectToken**  ppToken) noexcept
+    const wchar_t*   pszReqAttribs,
+    const wchar_t*   pszOptAttribs,
+    ISpObjectToken** ppToken) noexcept
 {
     if (!ppToken) return E_POINTER;
     *ppToken = nullptr;
@@ -77,15 +80,15 @@ static HRESULT SpFindBestTokenLocal(
     if (FAILED(hr)) return hr;
 
     ComPtr<IEnumSpObjectTokens> enumTok;
-    hr = cat->EnumTokens(
-        pszReqAttribs,
-        pszOptAttribs,
-        enumTok.GetAddressOf());
+    hr = cat->EnumTokens(pszReqAttribs, pszOptAttribs, enumTok.GetAddressOf());
     if (FAILED(hr)) return hr;
 
-    // The first token returned is the best match
-    hr = enumTok->Next(1, ppToken, nullptr);
-    return (hr == S_OK && *ppToken) ? S_OK : SPERR_NOT_FOUND;
+    // The first token returned is the best match.
+    ULONG fetched = 0;
+    hr = enumTok->Next(1, ppToken, &fetched);
+    if (SUCCEEDED(hr) && fetched == 1 && *ppToken) return S_OK;
+    if (*ppToken) { (*ppToken)->Release(); *ppToken = nullptr; }
+    return kSPERR_NOT_FOUND;
 }
 
 // ---------------------------------------------------------------------------
@@ -112,18 +115,15 @@ public:
         if (m_dispatchHwnd) { DestroyWindow(m_dispatchHwnd); m_dispatchHwnd = nullptr; }
     }
 
-    // ---- Configuration ---------------------------------------------------
     void SetLanguage(VoiceLanguage lang) override { m_lang = lang; }
     void SetOnResult(OnResultCallback cb) override { m_onResult = std::move(cb); }
     void SetOnState (OnStateCallback  cb) override { m_onState  = std::move(cb); }
     void SetOnError (OnErrorCallback  cb) override { m_onError  = std::move(cb); }
 
-    // ---- Start / Stop ----------------------------------------------------
     bool Start() override {
         if (m_listening.load()) return true;
         return StartInternal();
     }
-
     void Stop() override { StopInternal(); }
 
     void CycleLanguage() override {
@@ -135,7 +135,6 @@ public:
         if (wasListening) StartInternal();
     }
 
-    // ---- Inspection ------------------------------------------------------
     bool            IsListening()  const noexcept override { return m_listening.load(); }
     VoiceLanguage   GetLanguage()  const noexcept override { return m_lang; }
     VoiceInputState GetState()     const noexcept override {
@@ -144,32 +143,24 @@ public:
     }
 
 private:
-    // ---------- SAPI lifetime ---------------------------------------------
-
     bool StartInternal() {
-        // Release any leftover COM objects before recreating
         m_grammar    = nullptr;
         m_context    = nullptr;
         m_recognizer = nullptr;
 
         HRESULT hr;
 
-        // Try shared recognizer first (reuses existing Windows speech profile)
         hr = CoCreateInstance(CLSID_SpSharedRecognizer, nullptr,
                               CLSCTX_ALL, IID_PPV_ARGS(m_recognizer.GetAddressOf()));
         if (FAILED(hr)) {
             hr = CoCreateInstance(CLSID_SpInprocRecognizer, nullptr,
                                   CLSCTX_ALL, IID_PPV_ARGS(m_recognizer.GetAddressOf()));
-            if (FAILED(hr)) {
-                ReportError(L"SAPI: cannot create recognizer", hr);
-                return false;
-            }
+            if (FAILED(hr)) { ReportError(L"SAPI: cannot create recognizer", hr); return false; }
         }
 
         hr = m_recognizer->CreateRecoContext(m_context.ReleaseAndGetAddressOf());
         if (FAILED(hr)) { ReportError(L"SAPI: CreateRecoContext", hr); return false; }
 
-        // Route SAPI events to our message-only window on the main thread
         hr = m_context->SetNotifyWindowMessage(m_dispatchHwnd, WM_VOICE_EVENT, 0, 0);
         if (FAILED(hr)) { ReportError(L"SAPI: SetNotifyWindowMessage", hr); return false; }
 
@@ -208,9 +199,9 @@ private:
     void StopInternal() {
         if (!m_listening.load()) return;
         m_listening.store(false);
-        if (m_grammar)    { m_grammar->SetDictationState(SPRS_INACTIVE); m_grammar = nullptr; }
+        if (m_grammar)    { m_grammar->SetDictationState(SPRS_INACTIVE);    m_grammar    = nullptr; }
         if (m_context)    { m_context->SetNotifyWindowMessage(nullptr, 0, 0, 0); m_context = nullptr; }
-        if (m_recognizer) { m_recognizer->SetRecoState(SPRST_INACTIVE); m_recognizer = nullptr; }
+        if (m_recognizer) { m_recognizer->SetRecoState(SPRST_INACTIVE);     m_recognizer = nullptr; }
         UpdateState([](VoiceInputState& s) {
             s.listening   = false;
             s.recognizing = false;
@@ -222,18 +213,15 @@ private:
     void TrySetLanguageToken() {
         if (!m_recognizer) return;
         const LANGID lid = (m_lang == VoiceLanguage::Russian)
-            ? MAKELANGID(LANG_RUSSIAN,  SUBLANG_DEFAULT)
-            : MAKELANGID(LANG_ENGLISH,  SUBLANG_ENGLISH_US);
+            ? MAKELANGID(LANG_RUSSIAN, SUBLANG_DEFAULT)
+            : MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US);
         wchar_t attr[64];
         std::swprintf(attr, 64, L"Language=%X", static_cast<unsigned>(lid));
         ComPtr<ISpObjectToken> token;
-        if (SUCCEEDED(SpFindBestTokenLocal(attr, nullptr, token.GetAddressOf())) && token) {
+        if (SUCCEEDED(SpFindBestTokenLocal(attr, nullptr, token.GetAddressOf())) && token)
             m_recognizer->SetRecognizer(token.Get());
-        }
         // Failure is acceptable: shared recognizer uses the system default language.
     }
-
-    // ---------- Event processing (main thread via WM_VOICE_EVENT) ---------
 
     void ProcessSapiEvents() {
         if (!m_context) return;
@@ -271,7 +259,6 @@ private:
                             const wchar_t* word = pPhrase->pElements[i].pszDisplayText;
                             partial += word ? word : L"";
                         }
-                        // Estimate VU level from word count (1 word ~ 0.35, 5+ ~ 0.85)
                         const float lvl = std::min(0.90f, 0.30f + static_cast<float>(n) * 0.11f);
                         UpdateState([&partial, lvl](VoiceInputState& s) {
                             s.partial = partial;
@@ -287,9 +274,10 @@ private:
                 ISpRecoResult* pResult = reinterpret_cast<ISpRecoResult*>(evt.lParam);
                 if (pResult) {
                     wchar_t* pText = nullptr;
-                    if (SUCCEEDED(pResult->GetText(
-                            SP_GETWHOLEPHRASE, SP_GETWHOLEPHRASE,
-                            TRUE, &pText, nullptr))
+                    // SP_GETWHOLEPHRASE is (SPPHRASERNG)(-1); cast to ULONG to
+                    // suppress C4245 signed/unsigned mismatch warning.
+                    const ULONG kWhole = static_cast<ULONG>(SP_GETWHOLEPHRASE);
+                    if (SUCCEEDED(pResult->GetText(kWhole, kWhole, TRUE, &pText, nullptr))
                         && pText && pText[0] != L'\0')
                     {
                         std::wstring result = pText;
@@ -313,8 +301,6 @@ private:
         }
     }
 
-    // ---------- State helpers ---------------------------------------------
-
     template<typename Fn>
     void UpdateState(Fn fn) {
         VoiceInputState snap;
@@ -336,8 +322,6 @@ private:
         m_onError(buf);
     }
 
-    // ---------- Dispatch window -------------------------------------------
-
     static LRESULT CALLBACK DispatchWndProc(
         HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) noexcept
     {
@@ -356,20 +340,19 @@ private:
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
 
-    // ---------- Members ---------------------------------------------------
     ComPtr<ISpRecognizer>   m_recognizer;
     ComPtr<ISpRecoContext>  m_context;
     ComPtr<ISpRecoGrammar>  m_grammar;
 
-    HWND              m_dispatchHwnd = nullptr;
-    VoiceLanguage     m_lang         = VoiceLanguage::Russian;
-    std::atomic<bool> m_listening    { false };
-    mutable std::mutex    m_stateMtx;
-    VoiceInputState   m_state;
+    HWND               m_dispatchHwnd = nullptr;
+    VoiceLanguage      m_lang         = VoiceLanguage::Russian;
+    std::atomic<bool>  m_listening    { false };
+    mutable std::mutex m_stateMtx;
+    VoiceInputState    m_state;
 
-    OnResultCallback  m_onResult;
-    OnStateCallback   m_onState;
-    OnErrorCallback   m_onError;
+    OnResultCallback   m_onResult;
+    OnStateCallback    m_onState;
+    OnErrorCallback    m_onError;
 };
 
 std::unique_ptr<VoiceInput> VoiceInput::Create() {
