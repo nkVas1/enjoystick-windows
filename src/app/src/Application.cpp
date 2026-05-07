@@ -286,7 +286,6 @@ public:
     void Exit() override { PostQuitMessage(0); }
 
     void ToggleInputMode() override {
-        // Cycle: Cursor → Navigate → Voice → Cursor
         SetMode(kNextMode[static_cast<int>(m_mode)]);
     }
 
@@ -299,15 +298,12 @@ private:
         if (!m_voiceEngine) return;
 
         m_voiceEngine->OnResult([this](const voice::RecognitionResult& res) {
-            // Type the recognised text into the active window
             const auto& text = res.text;
             if (text.empty()) return;
 
-            // Bring back the previously focused window before typing
             if (m_prevForeground && m_prevForeground != GetConsoleWindow())
                 SetForegroundWindow(m_prevForeground);
 
-            // Prefix with a space when appending to existing text
             const std::wstring toType = (m_voiceAppendSpace ? L" " : L"") + text;
             m_voiceAppendSpace = true;
 
@@ -324,7 +320,6 @@ private:
         });
 
         m_voiceEngine->OnStateChanged([this](const voice::VoiceInputState& state) {
-            // Forward state snapshot to overlay for live VU + partial text display
             m_overlay->GetVoiceInputHUD().SetVoiceState(state);
         });
     }
@@ -445,7 +440,8 @@ private:
         if (m_voiceEngine) m_voiceEngine->Start();
 
         m_overlay->SetModeLabel(InputModeLabel(InputMode::Voice));
-        m_overlay->ShowToast(L"\U0001F3A4  Voice mode \u2014 LB+RB to exit", 3000);
+        m_overlay->ShowToast(
+            L"\U0001F3A4  Voice mode \u2014 LB+RB exit  \u2665 lang", 3500);
         if (m_inputEngine)
             m_inputEngine->Rumble(ControllerId{0}, {0.0f, 0.35f, 60});
     }
@@ -457,18 +453,25 @@ private:
         m_voiceAppendSpace = false;
     }
 
+    // Update voice HUD language badge to match current engine language
+    void SyncVoiceHudLang() {
+        if (!m_voiceEngine) return;
+        const wchar_t* label =
+            (m_voiceEngine->GetLanguage() == voice::VoiceLanguage::Russian)
+            ? L"RU" : L"EN";
+        m_overlay->GetVoiceInputHUD().SetLanguageLabel(label);
+    }
+
     void SetMode(InputMode newMode) {
         if (m_mode == newMode) return;
 
         const InputMode prevMode = m_mode;
         m_mode = newMode;
 
-        // Leave previous mode
         if (prevMode == InputMode::Voice) {
             ExitVoiceMode();
         }
 
-        // Enter new mode
         const bool cursor    = (m_mode == InputMode::Cursor);
         const bool navigate  = (m_mode == InputMode::Navigate);
         const bool voiceMode = (m_mode == InputMode::Voice);
@@ -532,17 +535,38 @@ private:
         const bool voiceOpen     = m_overlay->GetVoiceInputHUD().IsOpen();
 
         // ------------------------------------------------------------------
-        // Voice mode: very limited controls (just LB+RB to exit)
+        // Voice mode: limited controls
         // ------------------------------------------------------------------
         if (voiceOpen) {
+            // LB+RB — exit voice mode
             if (held(Button::LB) && held(Button::RB)) {
                 if (!m_lbRbChordActive) {
                     m_lbRbChordActive = true;
-                    ToggleInputMode(); // exits voice, enters cursor
+                    ToggleInputMode();
                 }
             } else {
                 m_lbRbChordActive = false;
             }
+
+            // West (B on Xbox) — cycle recognition language RU↔EN
+            if (pressed(Button::West)) {
+                if (m_voiceEngine) {
+                    m_voiceEngine->CycleLanguage();
+                    SyncVoiceHudLang();
+                    const wchar_t* langName =
+                        (m_voiceEngine->GetLanguage() == voice::VoiceLanguage::Russian)
+                        ? L"Russian (RU)" : L"English (EN)";
+                    m_overlay->ShowToast(
+                        std::wstring(L"\U0001F3A4  Language: ") + langName, 2000);
+                }
+            }
+
+            // Select (View) — reset append-space so next word starts fresh
+            if (pressed(Button::Select)) {
+                m_voiceAppendSpace = false;
+                m_overlay->ShowToast(L"\U0001F3A4  New sentence", 1200);
+            }
+
             m_overlay->PostState(state);
             return;
         }
