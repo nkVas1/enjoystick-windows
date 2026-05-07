@@ -408,8 +408,6 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     }
 
     // ---- DPad navigation
-    // Single-step policy: first step fires immediately, then waits kDPadFirst
-    // before starting a slow flat repeat at kDPadCadence (no acceleration).
     {
         const int32_t dr = dDown ? 1 : (dUp   ? -1 : 0);
         const int32_t dc = dRight? 1 : (dLeft ? -1 : 0);
@@ -434,60 +432,65 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
         }
     }
 
-    // ---- Left-stick navigation  (independent X and Y axes)
+    // ---- Left-stick navigation (independent axes, hysteresis deadzone)
     //
-    // ROOT-CAUSE FIX: The previous implementation used a single shared
-    // active/cooldown state and picked the axis with:
-    //   hx = |lx| >= |ly|  (prefer horizontal)
-    // This caused horizontal steps whenever the stick was deflected
-    // diagonally, even when the user clearly intended vertical movement.
+    // HYSTERESIS:
+    //   Activation  threshold: kSnapDeadzone = 0.60  (fires first step)
+    //   Deactivation threshold: kSnapRelease  = 0.25  (resets for next flick)
     //
-    // New design:
-    //   - X and Y each have their own active flag and cooldown timer.
-    //   - An axis fires only when it exceeds kSnapDeadzone AND it
-    //     dominates the other axis by at least kAxisDominance (1.5x).
-    //     "Ambiguous" diagonals (neither dominates) suppress both axes.
-    //   - First step fires immediately on crossing the threshold.
-    //   - Auto-repeat begins only after kStickRepeatGate seconds of
-    //     continuous hold, then repeats every kStickRepeatCadence
-    //     seconds with no acceleration.
-    //   - Releasing a stick (dropping below kSnapDeadzone or losing
-    //     dominance) immediately resets that axis's state, so the next
-    //     push fires a fresh first step.
+    // The wide gap [0.25 .. 0.60] is the hysteresis band.  While the stick
+    // is in this band on the return stroke, the axis stays 'active' (locked)
+    // and no new first-step fires.  Only once |value| < 0.25 is the axis
+    // reset, allowing the next flick to produce exactly one step.
+    //
+    // DOMINANCE: an axis only fires when it is kAxisDominance (1.5x) larger
+    // than the other axis, preventing diagonal bleed.
     {
         const float lx  = state.leftStick.x;
         const float ly  = state.leftStick.y;
         const float alx = std::abs(lx);
         const float aly = std::abs(ly);
 
-        // X axis: active when |lx| exceeds deadzone AND dominates Y
-        const bool hxActive = alx > kSnapDeadzone && alx > aly * kAxisDominance;
-        // Y axis: active when |ly| exceeds deadzone AND dominates X
-        const bool hyActive = aly > kSnapDeadzone && aly > alx * kAxisDominance;
+        // -- X axis --
+        //
+        // canActivateX: the stick is pushed far enough right/left AND dominates Y.
+        // deactivateX:  the stick has returned to rest (below kSnapRelease).
+        //
+        // Crucially, 'canActivateX' being false while the stick is in the
+        // hysteresis band does NOT deactivate the axis — deactivation requires
+        // explicitly dropping below kSnapRelease.
+        const bool canActivateX = (alx > kSnapDeadzone) && (alx > aly * kAxisDominance);
+        const bool deactivateX  = (alx < kSnapRelease);
 
-        // -- X axis state machine --
-        if (hxActive) {
+        if (canActivateX) {
             const int32_t dc = (lx > 0.0f) ? 1 : -1;
             if (!m_stickActiveX) {
+                // First step: arm the axis and fire immediately.
                 m_stickActiveX   = true;
                 m_stickCooldownX = kStickRepeatGate;
                 NavigateTo(m_row, m_col + dc);
             } else {
+                // Auto-repeat after gate.
                 m_stickCooldownX -= dt;
                 if (m_stickCooldownX <= 0.0f) {
                     m_stickCooldownX = kStickRepeatCadence;
                     NavigateTo(m_row, m_col + dc);
                 }
             }
-        } else {
+        } else if (deactivateX) {
+            // Stick fully at rest: ready for next flick.
             m_stickActiveX   = false;
             m_stickCooldownX = 0.0f;
         }
+        // else: stick is in hysteresis band [kSnapRelease .. kSnapDeadzone]
+        //       — do nothing; keep m_stickActiveX as-is.
 
-        // -- Y axis state machine --
-        // XInput convention: ly > 0 = stick pushed UP = navigate to row above (row-1)
-        //                    ly < 0 = stick pushed DOWN = navigate to row below (row+1)
-        if (hyActive) {
+        // -- Y axis --
+        // XInput: ly > 0 = UP (row - 1),  ly < 0 = DOWN (row + 1)
+        const bool canActivateY = (aly > kSnapDeadzone) && (aly > alx * kAxisDominance);
+        const bool deactivateY  = (aly < kSnapRelease);
+
+        if (canActivateY) {
             const int32_t dr = (ly > 0.0f) ? -1 : 1;
             if (!m_stickActiveY) {
                 m_stickActiveY   = true;
@@ -500,12 +503,11 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
                     NavigateTo(m_row + dr, m_col);
                 }
             }
-        } else {
+        } else if (deactivateY) {
             m_stickActiveY   = false;
             m_stickCooldownY = 0.0f;
         }
     }
-    // Right stick: intentionally not used for keyboard navigation.
 
 done:
     m_prevSouth = south; m_prevEast  = east;
