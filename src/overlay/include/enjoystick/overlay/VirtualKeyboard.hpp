@@ -25,6 +25,15 @@ namespace enjoystick::overlay {
 // Axis convention (XInput):
 //   lx > 0 = right, lx < 0 = left
 //   ly > 0 = UP,    ly < 0 = DOWN
+//
+// Stick navigation policy (single-step):
+//   - Crossing the deadzone fires exactly ONE step immediately.
+//   - Auto-repeat does NOT start until the stick has been held
+//     continuously for kStickRepeatGate seconds (1.5 s).
+//   - After that gate, repeats fire every kStickRepeatCadence seconds
+//     (0.22 s) with NO further acceleration.
+//   This means a 1–1.5 s hold always moves exactly one key, making
+//   deliberate single-key navigation reliable and predictable.
 // ---------------------------------------------------------------------------
 
 class VirtualKeyboard {
@@ -93,32 +102,31 @@ private:
     int32_t m_col = 0;
 
     // -------------------------------------------------------------------------
-    // Left-stick navigation timing (seconds)
+    // Left-stick navigation timing
     //
-    // kSnapDeadzone 0.42: comfortable activation threshold — responds to a
-    //   deliberate push without firing on incidental contact.
-    //
-    // kStickRepeatFirst 0.32s: short initial delay before auto-repeat starts.
-    // kStickRepeatNext  0.10s: comfortable repeat cadence — one key per tick.
-    // kStickRepeatFast  0.048s: maximum repeat rate after sustained hold.
-    //
-    // Analog magnitude scaling: full stick deflection yields ~55% of the base
-    // interval, gentle push stays at 100% — navigation speed is proportional
-    // to how hard the stick is pushed.
+    // SINGLE-STEP POLICY:
+    //   kSnapDeadzone     — stick must exceed this to register intent.
+    //   kStickRepeatGate  — how long (s) the stick must be held before
+    //                       auto-repeat begins.  1.5 s means a normal
+    //                       deliberate 1-second hold never repeats.
+    //   kStickRepeatCadence — interval between repeat steps after the
+    //                       gate.  Kept slow and flat (no acceleration)
+    //                       so every repeat step is equally intentional.
     // -------------------------------------------------------------------------
-    float  m_stickCooldown    = 0.0f;
-    float  m_stickHoldTime    = 0.0f;
-    float  m_stickMag         = 0.0f;   // smoothed analog magnitude [0,1]
-    static constexpr float kStickRepeatFirst      = 0.32f;
-    static constexpr float kStickRepeatNext       = 0.10f;
-    static constexpr float kStickRepeatFast       = 0.048f;
-    static constexpr float kStickRepeatAccelStart = 0.65f;
-    static constexpr float kStickRepeatAccelRange = 0.45f;
-    static constexpr float kSnapDeadzone          = 0.42f;
-    bool   m_stickActive = false;
+    static constexpr float kSnapDeadzone         = 0.42f;
+    static constexpr float kStickRepeatGate      = 1.50f;  // seconds before first repeat
+    static constexpr float kStickRepeatCadence   = 0.22f;  // seconds between repeats (flat)
 
-    static constexpr float kDPadFirst = 0.32f;
-    static constexpr float kDPadNext  = 0.09f;
+    float  m_stickCooldown    = 0.0f;  // time remaining until next repeat step
+    float  m_stickHoldTime    = 0.0f;  // total time stick has been held
+    bool   m_stickActive      = false;
+
+    // -------------------------------------------------------------------------
+    // DPad navigation timing  (same single-step policy)
+    // -------------------------------------------------------------------------
+    static constexpr float kDPadFirst   = 1.50f;  // gate before repeat
+    static constexpr float kDPadCadence = 0.22f;  // repeat cadence (flat)
+
     bool    m_dpadHeld    = false;
     float   m_dpadTimer   = 0.0f;
     int32_t m_dpadDirRow  = 0;

@@ -104,15 +104,19 @@ private:
     float m_animProgress = 0.0f;
 
     // -----------------------------------------------------------------------
-    // Navigation timing – deliberate, tactile feel
+    // Navigation timing — single-step policy
+    //
+    // First step fires immediately on stick/dpad activation.
+    // kSnapGate: stick must be held this long (s) before auto-repeat begins.
+    //            Set to 1.5 s so a 1–1.5 s deliberate hold = exactly 1 step.
+    // kSnapCadence: flat repeat interval after the gate (no acceleration).
+    //              0.22 s keeps repeated navigation slow and intentional.
+    // kNavDeadzone: stick must exceed this to register.
     // -----------------------------------------------------------------------
-    static constexpr float kSnapFirst      = 0.55f;
-    static constexpr float kSnapNext       = 0.18f;
-    static constexpr float kSnapFast       = 0.085f;
-    static constexpr float kNavAccelStart  = 0.80f;
-    static constexpr float kNavAccelRange  = 0.55f;
-    static constexpr float kNavDeadzone    = 0.62f;
-    static constexpr float kAnimMs         = 160.0f;
+    static constexpr float kSnapGate      = 1.50f;   // s before first repeat
+    static constexpr float kSnapCadence   = 0.22f;   // s between repeats (flat)
+    static constexpr float kNavDeadzone   = 0.62f;
+    static constexpr float kAnimMs        = 160.0f;
 
     bool  m_stickNavActive    = false;
     float m_stickNavCooldown  = 0.0f;
