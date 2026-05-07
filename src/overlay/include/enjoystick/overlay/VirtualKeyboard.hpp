@@ -121,14 +121,15 @@ private:
     // kAxisDominance: one axis must be 1.5x the other to activate;
     //   ambiguous diagonals suppress both axes.
     //
-    // kStickRepeatGate: hold this long (s) before auto-repeat begins.
-    //   1.0 s is comfortable for deliberate navigation while still preventing
-    //   unintentional repeat on a normal single-key flick.
+    // kStickRepeatGate: hold this long before auto-repeat begins (1.0 s).
+    //   Reduced from 3.0 s (post-bugfix conservatism) to 1.0 s — still well
+    //   above any deliberate single-flick, but noticeably snappier for
+    //   held navigation.
     // -------------------------------------------------------------------------
     static constexpr float kSnapDeadzone         = 0.60f;  // activate threshold
     static constexpr float kSnapRelease          = 0.25f;  // deactivate threshold (hysteresis)
     static constexpr float kAxisDominance        = 1.5f;   // |dominant| > |other|*1.5
-    static constexpr float kStickRepeatGate      = 1.00f;  // s before first repeat
+    static constexpr float kStickRepeatGate      = 1.00f;  // s before first repeat (was 3.0)
     static constexpr float kStickRepeatCadence   = 0.22f;  // s between repeats (flat)
 
     // X axis (left/right) — independent state
@@ -147,7 +148,7 @@ private:
     // -------------------------------------------------------------------------
     // DPad navigation timing
     // -------------------------------------------------------------------------
-    static constexpr float kDPadFirst   = 0.80f;  // s before first DPad repeat
+    static constexpr float kDPadFirst   = 0.80f;  // s before first DPad repeat (was 1.5)
     static constexpr float kDPadCadence = 0.22f;
 
     bool    m_dpadHeld    = false;
