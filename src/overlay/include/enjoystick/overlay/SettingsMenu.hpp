@@ -34,6 +34,25 @@ public:
     // Action IDs fired via OnAction callback
     enum class ActionId : uint8_t { SaveProfile, LoadProfile };
 
+    // Row types — public so that free helpers in SettingsMenu.cpp can use them
+    enum class RowType  : uint8_t { FloatSlider, BoolToggle, ActionButton };
+
+    struct Row {
+        const wchar_t* label   = nullptr;
+        RowType        type    = RowType::FloatSlider;
+        float          min     = 0.0f, max = 1.0f, step = 0.1f;
+        float*         fTarget = nullptr;
+        bool*          bTarget = nullptr;
+        const wchar_t* unit    = nullptr;
+        ActionId       actionId = ActionId::SaveProfile;
+    };
+
+    // Tab descriptor — public so that FlatRowIndex() in SettingsMenu.cpp compiles
+    struct Tab {
+        const wchar_t*   title;
+        std::vector<Row> rows;
+    };
+
     using OnChangedCallback  = std::function<void(const Values&)>;
     using OnNavigateCallback = std::function<void()>;
     using OnAdjustCallback   = std::function<void()>;
@@ -58,24 +77,7 @@ public:
     void SetOnAction  (OnActionCallback   cb) { m_onAction   = std::move(cb); }
 
 private:
-    enum class RowType  : uint8_t { FloatSlider, BoolToggle, ActionButton };
     enum class State    : uint8_t { Hidden, Opening, Visible, Closing };
-
-    struct Row {
-        const wchar_t* label   = nullptr;
-        RowType        type    = RowType::FloatSlider;
-        float          min     = 0.0f, max = 1.0f, step = 0.1f;
-        float*         fTarget = nullptr;
-        bool*          bTarget = nullptr;
-        const wchar_t* unit    = nullptr;
-        ActionId       actionId = ActionId::SaveProfile;
-    };
-
-    // Tab descriptor: title + owned rows
-    struct Tab {
-        const wchar_t*   title;
-        std::vector<Row> rows;
-    };
 
     void BuildTabs();
     bool IsInteractiveRow(int32_t tabIdx, int32_t rowIdx) const noexcept;
@@ -86,7 +88,7 @@ private:
     void UpdateAnimation(float dt);
     void OnRowChanged(int32_t newRow);
     void RebuildToggleSprings();
-    void SwitchTab(int32_t dir);  // dir = +1 or -1
+    void SwitchTab(int32_t dir);
 
     OnChangedCallback  m_onChange;
     OnNavigateCallback m_onNavigate;
@@ -103,11 +105,6 @@ private:
 
     // -----------------------------------------------------------------------
     // Navigation timing – deliberate, tactile feel
-    //
-    //  kSnapFirst 0.55s : comfortable initial auto-repeat delay.
-    //  kSnapNext  0.18s : repeat interval — one row per tick, not multiple.
-    //  kSnapFast  0.085s: max speed after sustained hold (not too aggressive).
-    //  kNavDeadzone 0.62: requires a definite push to activate navigation.
     // -----------------------------------------------------------------------
     static constexpr float kSnapFirst      = 0.55f;
     static constexpr float kSnapNext       = 0.18f;
@@ -117,24 +114,19 @@ private:
     static constexpr float kNavDeadzone    = 0.62f;
     static constexpr float kAnimMs         = 160.0f;
 
-    // Row navigation (left-stick Y / DPad vertical)
     bool  m_stickNavActive    = false;
     float m_stickNavCooldown  = 0.0f;
     float m_stickNavHoldTime  = 0.0f;
 
-    // Slider adjustment (left-stick X)
     bool  m_stickLxActive     = false;
     float m_stickLxCooldown   = 0.0f;
 
-    // DPad vertical
     bool  m_dpadVertHeld      = false;
     float m_dpadVertTimer     = 0.0f;
 
-    // DPad horizontal (slider adjust)
     bool  m_dpadHorzHeld      = false;
     float m_dpadHorzTimer     = 0.0f;
 
-    // Tab switch (LB/RB or DPad left/right when no slider is focused)
     bool  m_lbHeld  = false;
     bool  m_rbHeld  = false;
     bool  m_prevLB  = false;
@@ -144,11 +136,9 @@ private:
     bool m_prevDUp   = false, m_prevDDown = false;
     bool m_prevDLeft = false, m_prevDRight= false;
 
-    // Selection cursor spring
     mutable FloatSpring m_selCursorSpring;
     mutable bool        m_selCursorInit = false;
 
-    // Tab indicator slide spring: value = tab index in float space
     mutable FloatSpring m_tabIndicatorSpring;
     mutable bool        m_tabIndicatorInit = false;
 
