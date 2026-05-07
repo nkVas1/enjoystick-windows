@@ -13,7 +13,7 @@ interface IDWriteInlineObject;
 namespace enjoystick::overlay {
 
 // ---------------------------------------------------------------------------
-// SettingsMenu
+// SettingsMenu  — tab-based layout, no scrolling
 // ---------------------------------------------------------------------------
 class SettingsMenu {
 public:
@@ -35,9 +35,9 @@ public:
     enum class ActionId : uint8_t { SaveProfile, LoadProfile };
 
     using OnChangedCallback  = std::function<void(const Values&)>;
-    using OnNavigateCallback = std::function<void()>;  // fired on every row hop
-    using OnAdjustCallback   = std::function<void()>;  // fired on every slider nudge
-    using OnActionCallback   = std::function<void(ActionId)>;  // fired on Save/Load
+    using OnNavigateCallback = std::function<void()>;
+    using OnAdjustCallback   = std::function<void()>;
+    using OnActionCallback   = std::function<void(ActionId)>;
 
     explicit SettingsMenu(OnChangedCallback onChange = nullptr);
 
@@ -58,12 +58,12 @@ public:
     void SetOnAction  (OnActionCallback   cb) { m_onAction   = std::move(cb); }
 
 private:
-    enum class RowType  : uint8_t { SectionHeader, FloatSlider, BoolToggle, ActionButton };
+    enum class RowType  : uint8_t { FloatSlider, BoolToggle, ActionButton };
     enum class State    : uint8_t { Hidden, Opening, Visible, Closing };
 
     struct Row {
         const wchar_t* label   = nullptr;
-        RowType        type    = RowType::SectionHeader;
+        RowType        type    = RowType::FloatSlider;
         float          min     = 0.0f, max = 1.0f, step = 0.1f;
         float*         fTarget = nullptr;
         bool*          bTarget = nullptr;
@@ -71,15 +71,22 @@ private:
         ActionId       actionId = ActionId::SaveProfile;
     };
 
-    void BuildRows();
-    bool IsInteractiveRow(int32_t idx) const noexcept;
-    int32_t NextInteractiveRow(int32_t from, int32_t dir) const noexcept;
+    // Tab descriptor: title + owned rows
+    struct Tab {
+        const wchar_t*   title;
+        std::vector<Row> rows;
+    };
+
+    void BuildTabs();
+    bool IsInteractiveRow(int32_t tabIdx, int32_t rowIdx) const noexcept;
+    int32_t NextInteractiveRow(int32_t tabIdx, int32_t from, int32_t dir) const noexcept;
     void AdjustSelected(float direction, bool repeat);
     void CommitChange();
-    void ActivateSelected();       // fires ActionButton or toggles Bool
+    void ActivateSelected();
     void UpdateAnimation(float dt);
     void OnRowChanged(int32_t newRow);
     void RebuildToggleSprings();
+    void SwitchTab(int32_t dir);  // dir = +1 or -1
 
     OnChangedCallback  m_onChange;
     OnNavigateCallback m_onNavigate;
@@ -87,53 +94,63 @@ private:
     OnActionCallback   m_onAction;
 
     Values m_values;
-    std::vector<Row> m_rows;
+    std::vector<Tab> m_tabs;
+    int32_t m_activeTab    = 0;
     int32_t m_selectedRow  = 0;
-    int32_t m_scrollOffset = 0;
-
-    static constexpr int32_t kVisibleRows = 10;
 
     State m_state        = State::Hidden;
     float m_animProgress = 0.0f;
-    float m_repeatTimer  = 0.0f;
 
     // -----------------------------------------------------------------------
-    // Navigation timing – comfortable, responsive feel
+    // Navigation timing – deliberate, tactile feel
     //
-    //  kSnapFirst 0.45s : first auto-repeat delay after a row change.
-    //  kSnapNext  0.13s : repeat interval for sustained navigation.
-    //  kSnapFast  0.055s: top speed after sustained hold.
-    //  kNavDeadzone 0.52: moderate stick deflection required.
+    //  kSnapFirst 0.55s : comfortable initial auto-repeat delay.
+    //  kSnapNext  0.18s : repeat interval — one row per tick, not multiple.
+    //  kSnapFast  0.085s: max speed after sustained hold (not too aggressive).
+    //  kNavDeadzone 0.62: requires a definite push to activate navigation.
     // -----------------------------------------------------------------------
-    static constexpr float kSnapFirst      = 0.45f;
-    static constexpr float kSnapNext       = 0.13f;
-    static constexpr float kSnapFast       = 0.055f;
-    static constexpr float kNavAccelStart  = 0.70f;
+    static constexpr float kSnapFirst      = 0.55f;
+    static constexpr float kSnapNext       = 0.18f;
+    static constexpr float kSnapFast       = 0.085f;
+    static constexpr float kNavAccelStart  = 0.80f;
     static constexpr float kNavAccelRange  = 0.55f;
-    static constexpr float kNavDeadzone    = 0.52f;
+    static constexpr float kNavDeadzone    = 0.62f;
     static constexpr float kAnimMs         = 160.0f;
 
+    // Row navigation (left-stick Y / DPad vertical)
     bool  m_stickNavActive    = false;
     float m_stickNavCooldown  = 0.0f;
     float m_stickNavHoldTime  = 0.0f;
+
+    // Slider adjustment (left-stick X)
     bool  m_stickLxActive     = false;
     float m_stickLxCooldown   = 0.0f;
+
+    // DPad vertical
     bool  m_dpadVertHeld      = false;
     float m_dpadVertTimer     = 0.0f;
+
+    // DPad horizontal (slider adjust)
     bool  m_dpadHorzHeld      = false;
     float m_dpadHorzTimer     = 0.0f;
+
+    // Tab switch (LB/RB or DPad left/right when no slider is focused)
+    bool  m_lbHeld  = false;
+    bool  m_rbHeld  = false;
+    bool  m_prevLB  = false;
+    bool  m_prevRB  = false;
 
     bool m_prevSouth = false, m_prevEast  = false, m_prevNorth = false;
     bool m_prevDUp   = false, m_prevDDown = false;
     bool m_prevDLeft = false, m_prevDRight= false;
 
-    // -----------------------------------------------------------------------
-    // Selection cursor spring  – drives the animated row-highlight position
-    //   stiffness=600, damping=30  → snappy overshoot that "bounces" onto
-    //   the new row, exactly the magnetic pogo feeling requested.
-    // -----------------------------------------------------------------------
-    mutable FloatSpring m_selCursorSpring;   // value = logical Y pixel of selection bar
+    // Selection cursor spring
+    mutable FloatSpring m_selCursorSpring;
     mutable bool        m_selCursorInit = false;
+
+    // Tab indicator slide spring: value = tab index in float space
+    mutable FloatSpring m_tabIndicatorSpring;
+    mutable bool        m_tabIndicatorInit = false;
 
     static constexpr float kTrailDecayMs  = 160.0f;
     static constexpr float kSelAnimSpeed  = 10.0f;
@@ -141,10 +158,8 @@ private:
     mutable float   m_trailAlpha = 0.0f;
     mutable float   m_selAnimT   = 1.0f;
 
-    // Toggle knob spring: one per row, sized lazily in RebuildToggleSprings().
     mutable std::vector<FloatSpring> m_toggleSprings;
 
-    // ActionButton press flash (alpha 0..1, decays each frame)
     mutable float m_actionFlashAlpha = 0.0f;
     mutable int32_t m_actionFlashRow = -1;
 
