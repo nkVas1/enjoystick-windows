@@ -45,18 +45,20 @@ private:
     State   m_state        = State::Hidden;
 
     // ---- Navigation timings -------------------------------------------------
-    // kScrollRyDz raised 0.40 → 0.65: the right stick must be pushed past
-    // 65% of full deflection before scroll is triggered, preventing
-    // accidental scroll from resting-position drift or brief brush.
+    // Single-step policy: a stick deflection held for up to 1.5 s must
+    // produce exactly ONE navigation event.  Auto-repeat only begins after
+    // kStickFirst / kScrollFirst seconds and then fires at the flat cadence.
     //
-    // kStickFirst raised 0.70 → 1.00 s: deliberate hold required to tab.
-    // kScrollFirst raised 0.65 → 0.90 s: deliberate hold required to scroll.
-    // kScrollNext  raised 0.22 → 0.30 s: slower repeat cadence.
-    static constexpr float kStickFirst  = 1.00f;   // was 0.70
-    static constexpr float kStickNext   = 0.45f;   // was 0.35
-    static constexpr float kScrollFirst = 0.90f;   // was 0.65
-    static constexpr float kScrollNext  = 0.30f;   // was 0.22
-    static constexpr float kScrollRyDz  = 0.65f;   // was 0.40  <-- key fix
+    // kStickFirst  = 1.50 s  — section-switch gate (was 1.00 s)
+    // kStickNext   = 0.25 s  — flat repeat cadence after gate (was 0.45 s)
+    // kScrollFirst = 1.50 s  — scroll-row gate, same policy (was 0.90 s)
+    // kScrollNext  = 0.20 s  — flat cadence after gate (was 0.30 s)
+    // kScrollRyDz  = 0.65    — right-stick scroll deadzone (unchanged)
+    static constexpr float kStickFirst  = 1.50f;   // s before first section repeat
+    static constexpr float kStickNext   = 0.25f;   // s between repeats (flat)
+    static constexpr float kScrollFirst = 1.50f;   // s before first scroll repeat
+    static constexpr float kScrollNext  = 0.20f;   // s between scroll repeats (flat)
+    static constexpr float kScrollRyDz  = 0.65f;   // right-stick scroll deadzone
 
     float m_stickCooldown  = 0.0f;
     bool  m_stickActive    = false;
