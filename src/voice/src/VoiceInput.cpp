@@ -8,7 +8,8 @@
 //
 // Build requirements:
 //   sapi.lib, ole32.lib, oleaut32.lib  (listed in voice/CMakeLists.txt)
-//   CoInitializeEx() must be called on the owning thread before Start().
+//   CoInitializeEx() is called automatically inside Start() on first use;
+//   it is safe to call it again if the host already initialised COM.
 
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
@@ -83,7 +84,6 @@ static HRESULT SpFindBestTokenLocal(
     hr = cat->EnumTokens(pszReqAttribs, pszOptAttribs, enumTok.GetAddressOf());
     if (FAILED(hr)) return hr;
 
-    // The first token returned is the best match.
     ULONG fetched = 0;
     hr = enumTok->Next(1, ppToken, &fetched);
     if (SUCCEEDED(hr) && fetched == 1 && *ppToken) return S_OK;
@@ -113,6 +113,7 @@ public:
     ~VoiceInputImpl() override {
         StopInternal();
         if (m_dispatchHwnd) { DestroyWindow(m_dispatchHwnd); m_dispatchHwnd = nullptr; }
+        if (m_comInitialised) { CoUninitialize(); m_comInitialised = false; }
     }
 
     void SetLanguage(VoiceLanguage lang) override { m_lang = lang; }
@@ -143,19 +144,56 @@ public:
     }
 
 private:
+    // -------------------------------------------------------------------------
+    // EnsureComInitialised
+    //
+    // COM must be initialised on the thread that owns m_dispatchHwnd (main
+    // thread).  We call CoInitializeEx(APARTMENTTHREADED) once, tolerate
+    // RPC_E_CHANGED_MODE (COM already initialised with a different model), and
+    // track whether WE called it so we can pair with CoUninitialize on destroy.
+    // -------------------------------------------------------------------------
+    bool EnsureComInitialised() {
+        if (m_comInitialised) return true;
+        const HRESULT hr = CoInitializeEx(
+            nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        if (SUCCEEDED(hr)) {
+            // S_OK           = we initialised COM
+            // S_FALSE        = COM already initialised with the SAME model on this thread
+            m_comInitialised = true;
+            return true;
+        }
+        if (hr == RPC_E_CHANGED_MODE) {
+            // COM is already initialised with a different concurrency model
+            // (e.g. COINIT_MULTITHREADED).  SAPI works fine in an MTA as well;
+            // we must NOT call CoUninitialize, so leave m_comInitialised = false.
+            return true;
+        }
+        // Genuine failure (out of memory, etc.)
+        ReportError(L"COM init failed before SAPI start", hr);
+        return false;
+    }
+
     bool StartInternal() {
+        if (!EnsureComInitialised()) return false;
+
+        // Release any previously allocated COM objects before re-creating them.
         m_grammar    = nullptr;
         m_context    = nullptr;
         m_recognizer = nullptr;
 
         HRESULT hr;
 
+        // Prefer shared recognizer (lower latency, shares mic with other apps).
+        // Fall back to in-process if the shared recognizer is unavailable.
         hr = CoCreateInstance(CLSID_SpSharedRecognizer, nullptr,
                               CLSCTX_ALL, IID_PPV_ARGS(m_recognizer.GetAddressOf()));
         if (FAILED(hr)) {
             hr = CoCreateInstance(CLSID_SpInprocRecognizer, nullptr,
                                   CLSCTX_ALL, IID_PPV_ARGS(m_recognizer.GetAddressOf()));
-            if (FAILED(hr)) { ReportError(L"SAPI: cannot create recognizer", hr); return false; }
+            if (FAILED(hr)) {
+                ReportError(L"SAPI: cannot create recognizer (SAPI may not be installed)", hr);
+                return false;
+            }
         }
 
         hr = m_recognizer->CreateRecoContext(m_context.ReleaseAndGetAddressOf());
@@ -178,7 +216,11 @@ private:
         if (FAILED(hr)) { ReportError(L"SAPI: CreateGrammar", hr); return false; }
 
         hr = m_grammar->LoadDictation(nullptr, SPLO_STATIC);
-        if (FAILED(hr)) { ReportError(L"SAPI: LoadDictation", hr); return false; }
+        if (FAILED(hr)) {
+            // LoadDictation fails if no speech recognition language pack is installed.
+            ReportError(L"SAPI: LoadDictation failed \u2014 install a Speech Recognition language pack", hr);
+            return false;
+        }
 
         hr = m_grammar->SetDictationState(SPRS_ACTIVE);
         if (FAILED(hr)) { ReportError(L"SAPI: SetDictationState", hr); return false; }
@@ -199,9 +241,25 @@ private:
     void StopInternal() {
         if (!m_listening.load()) return;
         m_listening.store(false);
-        if (m_grammar)    { m_grammar->SetDictationState(SPRS_INACTIVE);    m_grammar    = nullptr; }
-        if (m_context)    { m_context->SetNotifyWindowMessage(nullptr, 0, 0, 0); m_context = nullptr; }
-        if (m_recognizer) { m_recognizer->SetRecoState(SPRST_INACTIVE);     m_recognizer = nullptr; }
+
+        // Tear down in reverse dependency order:
+        //  1. deactivate grammar  (so SAPI stops feeding new events)
+        //  2. detach the window notification  (no more WM_VOICE_EVENT posts)
+        //  3. release context / recognizer
+        if (m_grammar) {
+            m_grammar->SetDictationState(SPRS_INACTIVE);
+            m_grammar = nullptr;
+        }
+        if (m_context) {
+            if (m_dispatchHwnd)
+                m_context->SetNotifyWindowMessage(nullptr, 0, 0, 0);
+            m_context = nullptr;
+        }
+        if (m_recognizer) {
+            m_recognizer->SetRecoState(SPRST_INACTIVE);
+            m_recognizer = nullptr;
+        }
+
         UpdateState([](VoiceInputState& s) {
             s.listening   = false;
             s.recognizing = false;
@@ -274,8 +332,6 @@ private:
                 ISpRecoResult* pResult = reinterpret_cast<ISpRecoResult*>(evt.lParam);
                 if (pResult) {
                     wchar_t* pText = nullptr;
-                    // SP_GETWHOLEPHRASE is (SPPHRASERNG)(-1); cast to ULONG to
-                    // suppress C4245 signed/unsigned mismatch warning.
                     const ULONG kWhole = static_cast<ULONG>(SP_GETWHOLEPHRASE);
                     if (SUCCEEDED(pResult->GetText(kWhole, kWhole, TRUE, &pText, nullptr))
                         && pText && pText[0] != L'\0')
@@ -344,9 +400,10 @@ private:
     ComPtr<ISpRecoContext>  m_context;
     ComPtr<ISpRecoGrammar>  m_grammar;
 
-    HWND               m_dispatchHwnd = nullptr;
-    VoiceLanguage      m_lang         = VoiceLanguage::Russian;
-    std::atomic<bool>  m_listening    { false };
+    HWND               m_dispatchHwnd  = nullptr;
+    VoiceLanguage      m_lang          = VoiceLanguage::Russian;
+    std::atomic<bool>  m_listening     { false };
+    bool               m_comInitialised = false;
     mutable std::mutex m_stateMtx;
     VoiceInputState    m_state;
 
