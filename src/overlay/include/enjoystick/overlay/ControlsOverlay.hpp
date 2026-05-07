@@ -45,29 +45,38 @@ private:
     State   m_state        = State::Hidden;
 
     // ---- Navigation timings -------------------------------------------------
-    // Single-step policy: a stick deflection held for up to 1.5 s must
-    // produce exactly ONE navigation event.  Auto-repeat only begins after
-    // kStickFirst / kScrollFirst seconds and then fires at the flat cadence.
+    // HYSTERESIS (same fix as VirtualKeyboard / SettingsMenu, 2026-05-07):
+    //   kStickDeadzone / kScrollRyDz  = activate thresholds.
+    //   kStickRelease  / kScrollRyRelease = deactivate thresholds.
+    //   The stick must retreat below the release threshold before a new
+    //   first-step can fire; intermediate values are silently ignored.
     //
-    // kStickFirst  = 1.50 s  — section-switch gate (was 1.00 s)
-    // kStickNext   = 0.25 s  — flat repeat cadence after gate (was 0.45 s)
-    // kScrollFirst = 1.50 s  — scroll-row gate, same policy (was 0.90 s)
-    // kScrollNext  = 0.20 s  — flat cadence after gate (was 0.30 s)
-    // kScrollRyDz  = 0.65    — right-stick scroll deadzone (unchanged)
-    static constexpr float kStickFirst  = 1.50f;   // s before first section repeat
-    static constexpr float kStickNext   = 0.25f;   // s between repeats (flat)
-    static constexpr float kScrollFirst = 1.50f;   // s before first scroll repeat
-    static constexpr float kScrollNext  = 0.20f;   // s between scroll repeats (flat)
-    static constexpr float kScrollRyDz  = 0.65f;   // right-stick scroll deadzone
+    // kStickFirst  = 1.00 s  — section-switch gate (was 1.50 s)
+    // kStickNext   = 0.25 s  — flat repeat cadence after gate
+    // kScrollFirst = 1.00 s  — scroll-row gate (was 1.50 s)
+    // kScrollNext  = 0.20 s  — flat cadence after gate
+    static constexpr float kStickDeadzone   = 0.50f;   // activate threshold (left stick X)
+    static constexpr float kStickRelease    = 0.28f;   // deactivate threshold (hysteresis)
+    static constexpr float kStickFirst      = 1.00f;   // s before first section repeat
+    static constexpr float kStickNext       = 0.25f;   // s between repeats (flat)
+    static constexpr float kScrollRyDz      = 0.65f;   // activate threshold (right stick Y)
+    static constexpr float kScrollRyRelease = 0.30f;   // deactivate threshold (hysteresis)
+    static constexpr float kScrollFirst     = 1.00f;   // s before first scroll repeat
+    static constexpr float kScrollNext      = 0.20f;   // s between scroll repeats (flat)
 
-    float m_stickCooldown  = 0.0f;
-    bool  m_stickActive    = false;
+    // Left Stick X (section switch) — hysteresis pair
+    float m_stickCooldown    = 0.0f;
+    bool  m_stickActive      = false;
+    bool  m_stickWasActive   = false;  // true while |lx| >= kStickDeadzone
 
+    // DPad scroll
     bool  m_scrollDpadHeld  = false;
     float m_scrollDpadTimer = 0.0f;
 
-    bool  m_scrollRyActive   = false;
-    float m_scrollRyCooldown = 0.0f;
+    // Right Stick Y (scroll) — hysteresis pair
+    bool  m_scrollRyActive    = false;
+    bool  m_scrollRyWasActive = false; // true while |ry| >= kScrollRyDz
+    float m_scrollRyCooldown  = 0.0f;
 
     mutable FloatSpring m_panelSpring;
     mutable FloatSpring m_tabSpring;
