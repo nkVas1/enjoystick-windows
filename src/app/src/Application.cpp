@@ -10,42 +10,39 @@
 #include <Windows.h>
 #include <shlobj.h>
 #include <shellapi.h>
+#include <mmdeviceapi.h>
+#include <endpointvolume.h>
+#include <wrl/client.h>
 
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <cmath>
+
+#pragma comment(lib, "ole32.lib")
 
 namespace enjoystick::app {
 
 // ---------------------------------------------------------------------------
-// InputMode — Cursor, Navigate, Voice
+// InputMode — Cursor, Voice only (Navigate removed)
 // ---------------------------------------------------------------------------
 
 enum class InputMode : uint8_t {
     Cursor,
-    Navigate,
     Voice,
-};
-
-static constexpr InputMode kNextMode[3] = {
-    InputMode::Navigate,  // Cursor   -> Navigate
-    InputMode::Voice,     // Navigate -> Voice
-    InputMode::Cursor,    // Voice    -> Cursor
 };
 
 static const wchar_t* InputModeLabel(InputMode m) noexcept {
     switch (m) {
-        case InputMode::Navigate: return L"\u2B06  Navigate mode";
-        case InputMode::Voice:    return L"\U0001F3A4  Voice mode";
-        default:                  return L"\U0001F5B1  Cursor mode";
+        case InputMode::Voice: return L"\U0001F3A4  Voice mode";
+        default:               return L"\U0001F5B1  Cursor mode";
     }
 }
 
 static const wchar_t* InputModeTrayLabel(InputMode m) noexcept {
     switch (m) {
-        case InputMode::Navigate: return L"Switch to Voice mode";
-        case InputMode::Voice:    return L"Switch to Cursor mode";
-        default:                  return L"Switch to Navigate mode";
+        case InputMode::Voice: return L"Switch to Cursor mode";
+        default:               return L"Switch to Voice mode";
     }
 }
 
@@ -138,6 +135,54 @@ static void SendDoubleClick(DWORD flags_down, DWORD flags_up) noexcept {
     SendInput(2, inp, sizeof(INPUT));
     Sleep(gap);
     SendInput(2, inp, sizeof(INPUT));
+}
+
+// ---------------------------------------------------------------------------
+// Zoom (Ctrl+Wheel) helper
+// Sends one Ctrl+WheelUp or Ctrl+WheelDown tick.
+// ---------------------------------------------------------------------------
+static void SendZoomScroll(int ticks) noexcept {
+    // ticks > 0 = zoom in, ticks < 0 = zoom out
+    SendKey(VK_CONTROL, true);
+    INPUT inp{};
+    inp.type         = INPUT_MOUSE;
+    inp.mi.dwFlags   = MOUSEEVENTF_WHEEL;
+    inp.mi.mouseData = static_cast<DWORD>(ticks * WHEEL_DELTA);
+    SendInput(1, &inp, sizeof(INPUT));
+    SendKey(VK_CONTROL, false);
+}
+
+// ---------------------------------------------------------------------------
+// System volume helper — adjusts master volume by a delta in [-1, +1].
+// Uses IAudioEndpointVolume (Vista+).
+// CoInitialize must have been called on this thread (or COM already init'd).
+// ---------------------------------------------------------------------------
+static void AdjustSystemVolume(float delta) noexcept {
+    // COM may not be initialised on the input thread; use try-init pattern.
+    const HRESULT hrInit = CoInitializeEx(nullptr,
+        COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool didInit = (hrInit == S_OK || hrInit == S_FALSE);
+
+    Microsoft::WRL::ComPtr<IMMDeviceEnumerator> enumerator;
+    if (SUCCEEDED(CoCreateInstance(
+            __uuidof(MMDeviceEnumerator), nullptr,
+            CLSCTX_ALL, IID_PPV_ARGS(enumerator.GetAddressOf()))))  {
+        Microsoft::WRL::ComPtr<IMMDevice> device;
+        if (SUCCEEDED(enumerator->GetDefaultAudioEndpoint(
+                eRender, eMultimedia, device.GetAddressOf()))) {
+            Microsoft::WRL::ComPtr<IAudioEndpointVolume> vol;
+            if (SUCCEEDED(device->Activate(
+                    __uuidof(IAudioEndpointVolume), CLSCTX_ALL,
+                    nullptr, reinterpret_cast<void**>(vol.GetAddressOf())))) {
+                float current = 0.0f;
+                vol->GetMasterVolumeLevelScalar(&current);
+                const float next = std::max(0.0f, std::min(1.0f, current + delta));
+                vol->SetMasterVolumeLevelScalar(next, nullptr);
+            }
+        }
+    }
+
+    if (didInit) CoUninitialize();
 }
 
 } // anonymous namespace
@@ -286,7 +331,7 @@ public:
     void Exit() override { PostQuitMessage(0); }
 
     void ToggleInputMode() override {
-        SetMode(kNextMode[static_cast<int>(m_mode)]);
+        SetMode(m_mode == InputMode::Cursor ? InputMode::Voice : InputMode::Cursor);
     }
 
 private:
@@ -464,16 +509,14 @@ private:
             ExitVoiceMode();
         }
 
-        const bool cursor    = (m_mode == InputMode::Cursor);
-        const bool navigate  = (m_mode == InputMode::Navigate);
         const bool voiceMode = (m_mode == InputMode::Voice);
 
         const bool menuOpen  = m_overlay->GetRadialMenu().IsVisible();
         const bool kbOpen    = m_overlay->GetVirtualKeyboard().IsOpen();
         const bool ctrlOpen  = m_overlay->GetControlsOverlay().IsOpen();
 
-        m_virtualMouse->SetEnabled(cursor && !menuOpen && !kbOpen && !ctrlOpen);
-        m_keyMapper->SetEnabled(navigate);
+        m_virtualMouse->SetEnabled(!voiceMode && !menuOpen && !kbOpen && !ctrlOpen);
+        m_keyMapper->SetEnabled(false);  // KeyboardMapper unused; Navigate mode removed
 
         if (voiceMode) {
             EnterVoiceMode();
@@ -493,26 +536,6 @@ private:
 
     // -------------------------------------------------------------------------
     // Controller state handler  (called from InputEngine thread @ 250 Hz)
-    //
-    // ARCHITECTURE NOTE — single Update() driver per widget:
-    //
-    //   All overlay widgets (VirtualKeyboard, SettingsMenu, ControlsOverlay,
-    //   RadialMenu) are driven EXCLUSIVELY by the render thread via
-    //   OverlayWindow::RenderFrame() (~60 Hz).  The input thread (250 Hz) must
-    //   NOT call widget Update() methods — doing so causes duplicate navigation
-    //   events (~31x per flick) and data races on widget state fields.
-    //
-    //   The input thread's only responsibilities when a widget is open:
-    //     1. Check IsOpen() to decide input routing.
-    //     2. Call PostState() to hand the latest ControllerState to the
-    //        render thread's m_lastState buffer.
-    //     3. Re-enable the virtual mouse if a widget just closed.
-    //
-    //   RadialMenu is an exception: its Update() is called from the input
-    //   thread because it does not use stick-navigation timing (it uses
-    //   right-stick angle which is safe to read from any thread), and it
-    //   was already the single call site.  If it ever gains timing-sensitive
-    //   navigation, move it to the render thread too.
     // -------------------------------------------------------------------------
 
     void OnControllerState(const ControllerState& state) {
@@ -552,7 +575,7 @@ private:
         const bool voiceOpen     = m_overlay->GetVoiceInputHUD().IsOpen();
 
         // ------------------------------------------------------------------
-        // Voice mode
+        // Voice mode — only LB+RB chord exits
         // ------------------------------------------------------------------
         if (voiceOpen) {
             if (held(Button::LB) && held(Button::RB)) {
@@ -568,8 +591,7 @@ private:
         }
 
         // ------------------------------------------------------------------
-        // Controls overlay — render thread drives Update(); we only route
-        // state and watch for close to re-enable the mouse.
+        // Controls overlay
         // ------------------------------------------------------------------
         if (controlsOpen) {
             if (!m_overlay->GetControlsOverlay().IsOpen()) {
@@ -582,7 +604,7 @@ private:
         }
 
         // ------------------------------------------------------------------
-        // Virtual keyboard — render thread drives Update().
+        // Virtual keyboard
         // ------------------------------------------------------------------
         if (kbOpen) {
             if (!m_overlay->GetVirtualKeyboard().IsOpen() && m_mode == InputMode::Cursor)
@@ -592,6 +614,9 @@ private:
             return;
         }
 
+        // ------------------------------------------------------------------
+        // Guide button combos
+        // ------------------------------------------------------------------
         if (pressed(Button::Guide)) {
             m_guideChordUsed = false;
         }
@@ -640,29 +665,121 @@ private:
         }
 
         // ------------------------------------------------------------------
-        // Settings menu — render thread drives Update(); we only PostState.
+        // Settings menu
         // ------------------------------------------------------------------
         if (settingsOpen) {
             m_overlay->PostState(state);
             return;
         }
 
-        // LB+RB — cycle through modes
-        if (held(Button::LB) && held(Button::RB)) {
-            if (!m_lbRbChordActive) {
-                m_lbRbChordActive = true;
-                ToggleInputMode();
-            }
-        } else {
-            m_lbRbChordActive = false;
-        }
-
+        // ------------------------------------------------------------------
+        // Cursor mode input routing
+        // ------------------------------------------------------------------
         if (m_mode == InputMode::Cursor) {
-            if (!held(Button::LB) || !held(Button::RB)) {
-                if (pressed(Button::LB)) { SendBrowserTab(false); }
-                if (pressed(Button::RB)) { SendBrowserTab(true);  }
+            // Track how long LB / RB have been held so we can distinguish
+            // a short tap (tab switch) from a long hold (zoom / volume).
+            const bool lbHeld = held(Button::LB);
+            const bool rbHeld = held(Button::RB);
+
+            if (lbHeld)  m_lbHoldMs += dt;
+            else         m_lbHoldMs = 0.0f;
+
+            if (rbHeld)  m_rbHoldMs += dt;
+            else         m_rbHoldMs = 0.0f;
+
+            // LB + RB chord → cycle mode (Cursor → Voice)
+            if (lbHeld && rbHeld) {
+                if (!m_lbRbChordActive) {
+                    m_lbRbChordActive = true;
+                    ToggleInputMode();
+                }
+                // Mark both as "used for chord" so release won't fire tab.
+                m_lbUsedForHold = true;
+                m_rbUsedForHold = true;
+                m_overlay->PostState(state);
+                m_virtualMouse->Update(state, dt);
+                return;
+            }
+            m_lbRbChordActive = false;
+
+            // ----------------------------------------------------------------
+            // RB hold + left stick Y → Zoom (Ctrl+Wheel)
+            // ----------------------------------------------------------------
+            if (rbHeld && !lbHeld) {
+                m_rbUsedForHold = true;  // suppress tab-switch on release
+
+                const float stickY = state.leftStick.y; // +1 = up, -1 = down
+                if (std::fabs(stickY) > kShoulderStickDeadzone) {
+                    m_zoomAccum += stickY * dt * kZoomTicksPerSecond;
+                    const int ticks = static_cast<int>(m_zoomAccum);
+                    if (ticks != 0) {
+                        m_zoomAccum -= static_cast<float>(ticks);
+                        SendZoomScroll(ticks);
+                    }
+                } else {
+                    // Bleed off small residue when stick returns to centre
+                    m_zoomAccum *= 0.85f;
+                }
+
+                m_overlay->PostState(state);
+                m_virtualMouse->Update(state, dt);
+                return;
             }
 
+            // If RB was just released and was used as a hold modifier,
+            // suppress the tab action.
+            if (released(Button::RB)) {
+                if (m_rbUsedForHold) {
+                    m_rbUsedForHold = false;
+                    m_zoomAccum = 0.0f;
+                } else if (m_rbHoldMs <= kShoulderTapMaxMs) {
+                    // Short tap → next tab
+                    SendBrowserTab(true);
+                }
+                m_rbHoldMs = 0.0f;
+            }
+
+            // ----------------------------------------------------------------
+            // LB hold + left stick X → System volume
+            // ----------------------------------------------------------------
+            if (lbHeld && !rbHeld) {
+                m_lbUsedForHold = true;  // suppress tab-switch on release
+
+                const float stickX = state.leftStick.x; // +1 = right (louder)
+                if (std::fabs(stickX) > kShoulderStickDeadzone) {
+                    m_volAccum += stickX * dt * kVolumeChangePerSecond;
+                    // Apply volume in discrete 1% steps for smooth perceptual control
+                    const int steps = static_cast<int>(m_volAccum * 100.0f);
+                    if (steps != 0) {
+                        const float applied = static_cast<float>(steps) * 0.01f;
+                        m_volAccum -= applied;
+                        AdjustSystemVolume(applied);
+                    }
+                } else {
+                    m_volAccum *= 0.85f;
+                }
+
+                m_overlay->PostState(state);
+                m_virtualMouse->Update(state, dt);
+                return;
+            }
+
+            // If LB was just released and was used as a hold modifier,
+            // suppress the tab action.
+            if (released(Button::LB)) {
+                if (m_lbUsedForHold) {
+                    m_lbUsedForHold = false;
+                    m_volAccum = 0.0f;
+                } else if (m_lbHoldMs <= kShoulderTapMaxMs) {
+                    // Short tap → previous tab
+                    SendBrowserTab(false);
+                }
+                m_lbHoldMs = 0.0f;
+            }
+
+            // ----------------------------------------------------------------
+            // Standard cursor-mode bindings
+            // ----------------------------------------------------------------
             if (pressed(Button::LS)) {
                 SendDoubleClick(MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP);
             }
@@ -804,9 +921,26 @@ private:
 
     HWND           m_prevForeground   = nullptr;
 
+    // South (A/Cross) long-press drag
     static constexpr float kSouthLongPressMs = 600.0f;
     float m_southHoldMs     = 0.0f;
     bool  m_southDragActive = false;
+
+    // Shoulder-button hold state
+    // A shoulder press shorter than kShoulderTapMaxMs and not used as a
+    // modifier is treated as a tab-switch tap.
+    static constexpr float kShoulderTapMaxMs       = 300.0f;  // ms
+    static constexpr float kShoulderStickDeadzone  = 0.20f;   // normalised
+    static constexpr float kZoomTicksPerSecond      = 3.0f;   // scroll ticks/s at full deflection
+    static constexpr float kVolumeChangePerSecond   = 0.40f;  // 40 % volume / s at full deflection
+
+    float m_lbHoldMs       = 0.0f;
+    float m_rbHoldMs       = 0.0f;
+    bool  m_lbUsedForHold  = false;  // was LB used as a modifier this press?
+    bool  m_rbUsedForHold  = false;  // was RB used as a modifier this press?
+
+    float m_zoomAccum = 0.0f;  // fractional zoom scroll accumulator
+    float m_volAccum  = 0.0f;  // fractional volume change accumulator
 };
 
 std::unique_ptr<Application> Application::Create() {
