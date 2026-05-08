@@ -182,11 +182,8 @@ void VirtualKeyboard::Open(const std::wstring& seed) {
     m_glowPhase     = 0.0f;
     m_state         = State::Opening;
 
-    // Legacy single-axis fields (kept for safety)
     m_stickCooldown = 0.0f; m_stickActive = false;
     m_stickHoldTime = 0.0f;
-
-    // Independent per-axis state
     m_stickActiveX   = false; m_stickCooldownX = 0.0f;
     m_stickActiveY   = false; m_stickCooldownY = 0.0f;
 
@@ -292,7 +289,13 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     const bool dLeft = HasButton(state.buttons, Button::DPadLeft);
     const bool dRight= HasButton(state.buttons, Button::DPadRight);
 
-    if (east  && !m_prevEast)  { Close(); goto done; }
+    // East (B) — cancel/close: fire OnClose so the caller can re-enable the
+    // virtual mouse.  OnSubmit is fired for North (Y) and also re-enables it.
+    if (east && !m_prevEast) {
+        Close();
+        if (m_onClose) m_onClose();
+        goto done;
+    }
     if (north && !m_prevNorth) { if (m_onSubmit) m_onSubmit(m_text); Close(); goto done; }
 
     // West (X) — backspace with hold-to-repeat
@@ -433,44 +436,22 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
     }
 
     // ---- Left-stick navigation (independent axes, hysteresis deadzone)
-    //
-    // HYSTERESIS:
-    //   Activation  threshold: kSnapDeadzone = 0.60  (fires first step)
-    //   Deactivation threshold: kSnapRelease  = 0.25  (resets for next flick)
-    //
-    // The wide gap [0.25 .. 0.60] is the hysteresis band.  While the stick
-    // is in this band on the return stroke, the axis stays 'active' (locked)
-    // and no new first-step fires.  Only once |value| < 0.25 is the axis
-    // reset, allowing the next flick to produce exactly one step.
-    //
-    // DOMINANCE: an axis only fires when it is kAxisDominance (1.5x) larger
-    // than the other axis, preventing diagonal bleed.
     {
         const float lx  = state.leftStick.x;
         const float ly  = state.leftStick.y;
         const float alx = std::abs(lx);
         const float aly = std::abs(ly);
 
-        // -- X axis --
-        //
-        // canActivateX: the stick is pushed far enough right/left AND dominates Y.
-        // deactivateX:  the stick has returned to rest (below kSnapRelease).
-        //
-        // Crucially, 'canActivateX' being false while the stick is in the
-        // hysteresis band does NOT deactivate the axis — deactivation requires
-        // explicitly dropping below kSnapRelease.
         const bool canActivateX = (alx > kSnapDeadzone) && (alx > aly * kAxisDominance);
         const bool deactivateX  = (alx < kSnapRelease);
 
         if (canActivateX) {
             const int32_t dc = (lx > 0.0f) ? 1 : -1;
             if (!m_stickActiveX) {
-                // First step: arm the axis and fire immediately.
                 m_stickActiveX   = true;
                 m_stickCooldownX = kStickRepeatGate;
                 NavigateTo(m_row, m_col + dc);
             } else {
-                // Auto-repeat after gate.
                 m_stickCooldownX -= dt;
                 if (m_stickCooldownX <= 0.0f) {
                     m_stickCooldownX = kStickRepeatCadence;
@@ -478,15 +459,10 @@ void VirtualKeyboard::Update(const ControllerState& state, float dt) {
                 }
             }
         } else if (deactivateX) {
-            // Stick fully at rest: ready for next flick.
             m_stickActiveX   = false;
             m_stickCooldownX = 0.0f;
         }
-        // else: stick is in hysteresis band [kSnapRelease .. kSnapDeadzone]
-        //       — do nothing; keep m_stickActiveX as-is.
 
-        // -- Y axis --
-        // XInput: ly > 0 = UP (row - 1),  ly < 0 = DOWN (row + 1)
         const bool canActivateY = (aly > kSnapDeadzone) && (aly > alx * kAxisDominance);
         const bool deactivateY  = (aly < kSnapRelease);
 
@@ -848,7 +824,7 @@ void VirtualKeyboard::Draw(
         }
     }
 
-    // ---- Key rendering -------------------------------------------------------
+    // ---- Key rendering
     for (int32_t ri = 0; ri < static_cast<int32_t>(m_rows.size()); ++ri) {
         const auto& row = m_rows[static_cast<size_t>(ri)];
         const float ry  = keysTop + static_cast<float>(ri) * (kKeyH + kGap);
