@@ -152,8 +152,6 @@ static void SendZoomScroll(int ticks) noexcept {
 
 // ---------------------------------------------------------------------------
 // System volume helper — adjusts master volume by delta in [-1, +1].
-// Uses IAudioEndpointVolume (Vista+). COM is init'd per-call on the input
-// thread (safe: COINIT_APARTMENTTHREADED is re-entrant for the same thread).
 // ---------------------------------------------------------------------------
 static void AdjustSystemVolume(float delta) noexcept {
     const HRESULT hrInit = CoInitializeEx(nullptr,
@@ -184,25 +182,18 @@ static void AdjustSystemVolume(float delta) noexcept {
 
 // ---------------------------------------------------------------------------
 // Volume acceleration curve.
-// holdMs : how long the stick has been continuously pushed past the deadzone.
-// Returns speed in volume-fraction per millisecond (e.g. 0.00001 = 1 %/s).
-//
-// Curve:
-//   0 – kVolAccelStartMs  : kVolSpeedMin  (flat, very fine control)
-//   kVolAccelStartMs – kVolAccelEndMs : ease-in quad ramp to kVolSpeedMax
-//   kVolAccelEndMs+  : kVolSpeedMax    (capped)
 // ---------------------------------------------------------------------------
 static constexpr float kVolSpeedMin      = 0.01f  / 1000.0f;  // 1 %/s  in frac/ms
 static constexpr float kVolSpeedMax      = 20.0f  / 1000.0f;  // 20 %/s in frac/ms
-static constexpr float kVolAccelStartMs  = 500.0f;  // ms before ramp begins
-static constexpr float kVolAccelEndMs    = 2000.0f; // ms at which max speed is reached
+static constexpr float kVolAccelStartMs  = 500.0f;
+static constexpr float kVolAccelEndMs    = 2000.0f;
 static constexpr float kVolStepMin       = 0.005f;  // 0.5 % minimum discrete step
 
 inline float VolumeSpeedFracPerMs(float holdMs) noexcept {
     if (holdMs <= kVolAccelStartMs) return kVolSpeedMin;
     const float t = std::min(1.0f,
         (holdMs - kVolAccelStartMs) / (kVolAccelEndMs - kVolAccelStartMs));
-    return kVolSpeedMin + (kVolSpeedMax - kVolSpeedMin) * (t * t); // ease-in quad
+    return kVolSpeedMin + (kVolSpeedMax - kVolSpeedMin) * (t * t);
 }
 
 } // anonymous namespace
@@ -354,10 +345,6 @@ public:
     }
 
 private:
-    // -------------------------------------------------------------------------
-    // Setup helpers
-    // -------------------------------------------------------------------------
-
     void SetupVoiceEngine() {
         if (!m_voiceEngine) return;
 
@@ -704,7 +691,7 @@ private:
             if (rbHeld)  m_rbHoldMs += dt;
             else         m_rbHoldMs = 0.0f;
 
-            // LB + RB chord — mode toggle (Cursor <-> Voice)
+            // LB + RB chord — mode toggle
             if (lbHeld && rbHeld) {
                 if (!m_lbRbChordActive) {
                     m_lbRbChordActive = true;
@@ -721,15 +708,15 @@ private:
             // ----------------------------------------------------------------
             // RB hold + left stick Y — Zoom (Ctrl+Wheel)
             //
-            // While RB is held we pass a modified ControllerState to
-            // VirtualMouse::Update() with the scroll axis (rightStick.y when
-            // useRightStick==false, leftStick.y when useRightStick==true)
-            // zeroed out so the VirtualMouse scroll accumulator never fires.
+            // kZoomTicksPerSecond is intentionally low (1.2) so that a full
+            // stick push at 250 Hz produces roughly 0.005 ticks per frame,
+            // accumulating to one Ctrl+Wheel tick only every ~0.83 s at full
+            // deflection — a calm, browsable zoom speed.
             // ----------------------------------------------------------------
             if (rbHeld && !lbHeld) {
                 m_rbUsedForHold = true;
 
-                const float stickY = state.leftStick.y; // +1 up = zoom in
+                const float stickY = state.leftStick.y;
                 if (std::fabs(stickY) > kShoulderStickDeadzone) {
                     m_zoomAccum += stickY * dt * kZoomTicksPerSecond;
                     const int ticks = static_cast<int>(m_zoomAccum);
@@ -738,17 +725,16 @@ private:
                         SendZoomScroll(ticks);
                     }
                 } else {
-                    m_zoomAccum *= 0.85f;
+                    // Bleed off residual momentum quickly
+                    m_zoomAccum *= 0.70f;
                 }
 
-                // Build a scroll-suppressed copy of the state for VirtualMouse.
-                // Zero the axis VirtualMouse uses for scroll so it only moves
-                // the cursor without scrolling.
+                // Pass scroll-suppressed state to VirtualMouse
                 ControllerState noScroll = state;
                 if (m_virtualMouse->GetConfig().useRightStick) {
-                    noScroll.leftStick.y = 0.0f;   // scroll axis when useRightStick=true
+                    noScroll.leftStick.y = 0.0f;
                 } else {
-                    noScroll.rightStick.y = 0.0f;  // scroll axis when useRightStick=false
+                    noScroll.rightStick.y = 0.0f;
                 }
 
                 m_overlay->PostState(state);
@@ -767,33 +753,25 @@ private:
             }
 
             // ----------------------------------------------------------------
-            // LB hold + left stick X — System volume with acceleration curve
-            //
-            // m_volStickHoldMs tracks how long the stick has been pushed
-            // continuously past the deadzone in the same direction.
-            // Speed starts at 1 %/s and ramps to 20 %/s after ~2 s of hold.
-            // Letting the stick return to centre resets the timer.
+            // LB hold + left stick X — Volume with acceleration curve
             // ----------------------------------------------------------------
             if (lbHeld && !rbHeld) {
                 m_lbUsedForHold = true;
 
-                const float stickX = state.leftStick.x; // +1 = right = louder
+                const float stickX = state.leftStick.x;
                 if (std::fabs(stickX) > kShoulderStickDeadzone) {
                     m_volStickHoldMs += dt;
 
                     const float speed = VolumeSpeedFracPerMs(m_volStickHoldMs);
-                    // scale by stick deflection magnitude for analogue feel
                     const float deflection = std::min(1.0f,
                         (std::fabs(stickX) - kShoulderStickDeadzone)
                         / (1.0f - kShoulderStickDeadzone));
                     m_volAccum += (stickX > 0 ? 1.0f : -1.0f)
                                   * deflection * speed * dt;
 
-                    // Apply in discrete kVolStepMin steps
                     while (m_volAccum >=  kVolStepMin) { AdjustSystemVolume( kVolStepMin); m_volAccum -= kVolStepMin; }
                     while (m_volAccum <= -kVolStepMin) { AdjustSystemVolume(-kVolStepMin); m_volAccum += kVolStepMin; }
                 } else {
-                    // Stick returned to centre — reset acceleration state
                     m_volStickHoldMs = 0.0f;
                     m_volAccum *= 0.85f;
                 }
@@ -958,28 +936,25 @@ private:
 
     HWND           m_prevForeground   = nullptr;
 
-    // South (A/Cross) long-press drag
     static constexpr float kSouthLongPressMs = 600.0f;
     float m_southHoldMs     = 0.0f;
     bool  m_southDragActive = false;
 
-    // Shoulder-button hold / tap discrimination
-    static constexpr float kShoulderTapMaxMs      = 300.0f;  // ms
-    static constexpr float kShoulderStickDeadzone = 0.20f;   // normalised
+    static constexpr float kShoulderTapMaxMs      = 300.0f;
+    static constexpr float kShoulderStickDeadzone = 0.20f;
 
-    // RB-zoom parameters
-    static constexpr float kZoomTicksPerSecond = 3.0f;  // ctrl+wheel ticks/s at full deflection
+    // RB-zoom: slow and smooth (1.2 ticks/s at full deflection)
+    static constexpr float kZoomTicksPerSecond = 1.2f;
 
     float m_lbHoldMs      = 0.0f;
     float m_rbHoldMs      = 0.0f;
     bool  m_lbUsedForHold = false;
     bool  m_rbUsedForHold = false;
 
-    float m_zoomAccum = 0.0f;  // fractional zoom scroll accumulator
+    float m_zoomAccum = 0.0f;
 
-    // LB-volume parameters
-    float m_volAccum       = 0.0f;  // fractional volume accumulator
-    float m_volStickHoldMs = 0.0f;  // continuous stick-push duration for accel curve
+    float m_volAccum       = 0.0f;
+    float m_volStickHoldMs = 0.0f;
 };
 
 std::unique_ptr<Application> Application::Create() {

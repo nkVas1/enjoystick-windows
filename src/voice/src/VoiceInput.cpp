@@ -41,9 +41,11 @@ using Microsoft::WRL::ComPtr;
 // Message posted to the dispatch window by SAPI when events are available.
 static constexpr UINT WM_VOICE_EVENT = WM_APP + 50;
 
-// SPERR_NOT_FOUND is defined in sphelper.h which we don't include.
-// The numeric value matches the SDK definition: 0x80045003.
-static constexpr HRESULT kSPERR_NOT_FOUND = static_cast<HRESULT>(0x80045003L);
+// SAPI-specific HRESULTs not in public SDK headers
+static constexpr HRESULT kSPERR_NOT_FOUND              = static_cast<HRESULT>(0x80045003L);
+static constexpr HRESULT kSPERR_SHARED_ENGINE_DISABLED = static_cast<HRESULT>(0x80045077L);
+// Generic "shared engine unavailable" code that also appears on some configs
+static constexpr HRESULT kSPERR_RECOGNIZER_NOT_FOUND   = static_cast<HRESULT>(0x80045014L);
 
 // ---------------------------------------------------------------------------
 // ATL-free replacements for sphelper.h utilities
@@ -60,10 +62,9 @@ static inline void SpClearEventInline(SPEVENT* pEvt) noexcept {
     *pEvt = SPEVENT{};
 }
 
-/// Find the best SAPI recognizer token matching pszReqAttribs.
-/// Equivalent to SpFindBestToken(SPCAT_RECOGNIZERS, ...) from sphelper.h
-/// but implemented via raw COM without ATL.
-static HRESULT SpFindBestTokenLocal(
+/// Find the best SAPI token matching pszReqAttribs in the given category.
+static HRESULT SpFindBestTokenInCategory(
+    const wchar_t*   pszCategoryId,
     const wchar_t*   pszReqAttribs,
     const wchar_t*   pszOptAttribs,
     ISpObjectToken** ppToken) noexcept
@@ -77,7 +78,7 @@ static HRESULT SpFindBestTokenLocal(
         CLSCTX_ALL, IID_PPV_ARGS(cat.GetAddressOf()));
     if (FAILED(hr)) return hr;
 
-    hr = cat->SetId(SPCAT_RECOGNIZERS, FALSE);
+    hr = cat->SetId(pszCategoryId, FALSE);
     if (FAILED(hr)) return hr;
 
     ComPtr<IEnumSpObjectTokens> enumTok;
@@ -89,6 +90,15 @@ static HRESULT SpFindBestTokenLocal(
     if (SUCCEEDED(hr) && fetched == 1 && *ppToken) return S_OK;
     if (*ppToken) { (*ppToken)->Release(); *ppToken = nullptr; }
     return kSPERR_NOT_FOUND;
+}
+
+static HRESULT SpFindBestTokenLocal(
+    const wchar_t*   pszReqAttribs,
+    const wchar_t*   pszOptAttribs,
+    ISpObjectToken** ppToken) noexcept
+{
+    return SpFindBestTokenInCategory(
+        SPCAT_RECOGNIZERS, pszReqAttribs, pszOptAttribs, ppToken);
 }
 
 // ---------------------------------------------------------------------------
@@ -146,84 +156,77 @@ public:
 private:
     // -------------------------------------------------------------------------
     // EnsureComInitialised
-    //
-    // COM must be initialised on the thread that owns m_dispatchHwnd (main
-    // thread).  We call CoInitializeEx(APARTMENTTHREADED) once, tolerate
-    // RPC_E_CHANGED_MODE (COM already initialised with a different model), and
-    // track whether WE called it so we can pair with CoUninitialize on destroy.
     // -------------------------------------------------------------------------
     bool EnsureComInitialised() {
         if (m_comInitialised) return true;
         const HRESULT hr = CoInitializeEx(
             nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
         if (SUCCEEDED(hr)) {
-            // S_OK           = we initialised COM
-            // S_FALSE        = COM already initialised with the SAME model on this thread
             m_comInitialised = true;
             return true;
         }
         if (hr == RPC_E_CHANGED_MODE) {
-            // COM is already initialised with a different concurrency model
-            // (e.g. COINIT_MULTITHREADED).  SAPI works fine in an MTA as well;
-            // we must NOT call CoUninitialize, so leave m_comInitialised = false.
+            // COM already init'd with a different model on this thread; SAPI is fine with MTA.
             return true;
         }
-        // Genuine failure (out of memory, etc.)
         ReportError(L"COM init failed before SAPI start", hr);
         return false;
     }
 
+    // -------------------------------------------------------------------------
+    // TryBindAudioInput
+    //
+    // For SpInprocRecognizer we must explicitly bind an audio input device;
+    // otherwise it may fail to start recording on some Windows configurations.
+    // We enumerate SPCAT_AUDIOIN and set the first available token.
+    // Failure is non-fatal: the recognizer will attempt its own default.
+    // -------------------------------------------------------------------------
+    void TryBindAudioInput() noexcept {
+        if (!m_recognizer) return;
+        ComPtr<ISpObjectToken> audioToken;
+        if (SUCCEEDED(SpFindBestTokenInCategory(
+                SPCAT_AUDIOIN, nullptr, nullptr, audioToken.GetAddressOf()))
+            && audioToken)
+        {
+            m_recognizer->SetInput(audioToken.Get(), TRUE);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // StartInternal
+    //
+    // Strategy:
+    //  1. Try SpSharedRecognizer + CreateRecoContext.
+    //     This works when Windows Speech Recognition service is running.
+    //  2. If CreateRecoContext returns SPERR_SHARED_ENGINE_DISABLED (0x80045077)
+    //     or any failure, release and retry with SpInprocRecognizer.
+    //     InprocRecognizer runs fully in-process, needs no Windows service,
+    //     but requires an explicit audio input binding.
+    // -------------------------------------------------------------------------
     bool StartInternal() {
         if (!EnsureComInitialised()) return false;
 
-        // Release any previously allocated COM objects before re-creating them.
         m_grammar    = nullptr;
         m_context    = nullptr;
         m_recognizer = nullptr;
 
-        HRESULT hr;
+        HRESULT hr = TryStartWithRecognizerClsid(
+            CLSID_SpSharedRecognizer, /*bindAudio=*/false);
 
-        // Prefer shared recognizer (lower latency, shares mic with other apps).
-        // Fall back to in-process if the shared recognizer is unavailable.
-        hr = CoCreateInstance(CLSID_SpSharedRecognizer, nullptr,
-                              CLSCTX_ALL, IID_PPV_ARGS(m_recognizer.GetAddressOf()));
         if (FAILED(hr)) {
-            hr = CoCreateInstance(CLSID_SpInprocRecognizer, nullptr,
-                                  CLSCTX_ALL, IID_PPV_ARGS(m_recognizer.GetAddressOf()));
+            // Shared engine unavailable or disabled — fall back to in-process.
+            m_grammar    = nullptr;
+            m_context    = nullptr;
+            m_recognizer = nullptr;
+
+            hr = TryStartWithRecognizerClsid(
+                CLSID_SpInprocRecognizer, /*bindAudio=*/true);
+
             if (FAILED(hr)) {
-                ReportError(L"SAPI: cannot create recognizer (SAPI may not be installed)", hr);
+                // Both failed — nothing more we can do.
                 return false;
             }
         }
-
-        hr = m_recognizer->CreateRecoContext(m_context.ReleaseAndGetAddressOf());
-        if (FAILED(hr)) { ReportError(L"SAPI: CreateRecoContext", hr); return false; }
-
-        hr = m_context->SetNotifyWindowMessage(m_dispatchHwnd, WM_VOICE_EVENT, 0, 0);
-        if (FAILED(hr)) { ReportError(L"SAPI: SetNotifyWindowMessage", hr); return false; }
-
-        const ULONGLONG interest =
-            SPFEI(SPEI_RECOGNITION)      |
-            SPFEI(SPEI_HYPOTHESIS)       |
-            SPFEI(SPEI_SOUND_START)      |
-            SPFEI(SPEI_SOUND_END)        |
-            SPFEI(SPEI_PHRASE_START)     |
-            SPFEI(SPEI_RECO_STATE_CHANGE);
-        hr = m_context->SetInterest(interest, interest);
-        if (FAILED(hr)) { ReportError(L"SAPI: SetInterest", hr); return false; }
-
-        hr = m_context->CreateGrammar(1, m_grammar.ReleaseAndGetAddressOf());
-        if (FAILED(hr)) { ReportError(L"SAPI: CreateGrammar", hr); return false; }
-
-        hr = m_grammar->LoadDictation(nullptr, SPLO_STATIC);
-        if (FAILED(hr)) {
-            // LoadDictation fails if no speech recognition language pack is installed.
-            ReportError(L"SAPI: LoadDictation failed \u2014 install a Speech Recognition language pack", hr);
-            return false;
-        }
-
-        hr = m_grammar->SetDictationState(SPRS_ACTIVE);
-        if (FAILED(hr)) { ReportError(L"SAPI: SetDictationState", hr); return false; }
 
         TrySetLanguageToken();
         m_recognizer->SetRecoState(SPRST_ACTIVE);
@@ -238,14 +241,66 @@ private:
         return true;
     }
 
+    // Returns S_OK on full success, or the first HRESULT failure.
+    // On failure the caller must release m_grammar/m_context/m_recognizer.
+    HRESULT TryStartWithRecognizerClsid(REFCLSID clsid, bool bindAudio) noexcept {
+        HRESULT hr = CoCreateInstance(clsid, nullptr,
+            CLSCTX_ALL, IID_PPV_ARGS(m_recognizer.ReleaseAndGetAddressOf()));
+        if (FAILED(hr)) {
+            if (clsid == CLSID_SpSharedRecognizer) {
+                // Don't report error here; caller will try inproc silently.
+            } else {
+                ReportError(L"SAPI: cannot create in-process recognizer (SAPI may not be installed)", hr);
+            }
+            return hr;
+        }
+
+        if (bindAudio) TryBindAudioInput();
+
+        hr = m_recognizer->CreateRecoContext(m_context.ReleaseAndGetAddressOf());
+        if (FAILED(hr)) {
+            if (clsid == CLSID_SpSharedRecognizer) {
+                // Silently let the caller retry with inproc.
+            } else {
+                ReportError(L"SAPI: CreateRecoContext (in-process)", hr);
+            }
+            return hr;
+        }
+
+        hr = m_context->SetNotifyWindowMessage(m_dispatchHwnd, WM_VOICE_EVENT, 0, 0);
+        if (FAILED(hr)) { ReportError(L"SAPI: SetNotifyWindowMessage", hr); return hr; }
+
+        const ULONGLONG interest =
+            SPFEI(SPEI_RECOGNITION)      |
+            SPFEI(SPEI_HYPOTHESIS)       |
+            SPFEI(SPEI_SOUND_START)      |
+            SPFEI(SPEI_SOUND_END)        |
+            SPFEI(SPEI_PHRASE_START)     |
+            SPFEI(SPEI_RECO_STATE_CHANGE);
+        hr = m_context->SetInterest(interest, interest);
+        if (FAILED(hr)) { ReportError(L"SAPI: SetInterest", hr); return hr; }
+
+        hr = m_context->CreateGrammar(1, m_grammar.ReleaseAndGetAddressOf());
+        if (FAILED(hr)) { ReportError(L"SAPI: CreateGrammar", hr); return hr; }
+
+        hr = m_grammar->LoadDictation(nullptr, SPLO_STATIC);
+        if (FAILED(hr)) {
+            ReportError(
+                L"SAPI: LoadDictation failed \u2014 install a Speech Recognition language pack",
+                hr);
+            return hr;
+        }
+
+        hr = m_grammar->SetDictationState(SPRS_ACTIVE);
+        if (FAILED(hr)) { ReportError(L"SAPI: SetDictationState", hr); return hr; }
+
+        return S_OK;
+    }
+
     void StopInternal() {
         if (!m_listening.load()) return;
         m_listening.store(false);
 
-        // Tear down in reverse dependency order:
-        //  1. deactivate grammar  (so SAPI stops feeding new events)
-        //  2. detach the window notification  (no more WM_VOICE_EVENT posts)
-        //  3. release context / recognizer
         if (m_grammar) {
             m_grammar->SetDictationState(SPRS_INACTIVE);
             m_grammar = nullptr;
@@ -278,7 +333,7 @@ private:
         ComPtr<ISpObjectToken> token;
         if (SUCCEEDED(SpFindBestTokenLocal(attr, nullptr, token.GetAddressOf())) && token)
             m_recognizer->SetRecognizer(token.Get());
-        // Failure is acceptable: shared recognizer uses the system default language.
+        // Failure is acceptable: recognizer uses system default language.
     }
 
     void ProcessSapiEvents() {
