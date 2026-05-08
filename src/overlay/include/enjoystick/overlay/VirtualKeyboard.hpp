@@ -41,6 +41,7 @@ class VirtualKeyboard {
 public:
     using OnCharCallback     = std::function<void(wchar_t ch)>;
     using OnSubmitCallback   = std::function<void(const std::wstring& text)>;
+    using OnCloseCallback    = std::function<void()>;             // B / cancel
     using OnNavigateCallback = std::function<void()>;  // fired on every key hop (haptic)
     using OnTypeCallback     = std::function<void()>;  // fired on every char typed (haptic)
 
@@ -57,6 +58,7 @@ public:
     // ---- Callbacks ----------------------------------------------------------
     void SetOnChar    (OnCharCallback     cb) { m_onChar     = std::move(cb); }
     void SetOnSubmit  (OnSubmitCallback   cb) { m_onSubmit   = std::move(cb); }
+    void SetOnClose   (OnCloseCallback    cb) { m_onClose    = std::move(cb); }
     void SetOnNavigate(OnNavigateCallback cb) { m_onNavigate = std::move(cb); }
     void SetOnType    (OnTypeCallback     cb) { m_onType     = std::move(cb); }
 
@@ -104,43 +106,19 @@ private:
 
     // -------------------------------------------------------------------------
     // Left-stick navigation timing  (independent per-axis, hysteresis deadzone)
-    //
-    // HYSTERESIS FIX (2026-05-07):
-    //   Physical sticks bounce through the threshold on both the outward
-    //   and return paths.  A single-threshold design (activate == deactivate)
-    //   re-triggers m_stickActiveX=false then =true on each bounce crossing,
-    //   firing multiple "first step" NavigateTo() calls per physical flick.
-    //
-    //   Solution: two thresholds.
-    //     kSnapDeadzone  = 0.60  — axis becomes active (first step fires)
-    //     kSnapRelease   = 0.25  — axis resets (next flick will fire first step)
-    //   The gap [0.25, 0.60] is the hysteresis band; the stick must fully
-    //   retreat below 0.25 before a new first-step can fire.  This absorbs
-    //   all physical bounce and guarantees exactly 1 step per flick.
-    //
-    // kAxisDominance: one axis must be 1.5x the other to activate;
-    //   ambiguous diagonals suppress both axes.
-    //
-    // kStickRepeatGate: hold this long before auto-repeat begins (1.0 s).
-    //   Reduced from 3.0 s (post-bugfix conservatism) to 1.0 s — still well
-    //   above any deliberate single-flick, but noticeably snappier for
-    //   held navigation.
     // -------------------------------------------------------------------------
-    static constexpr float kSnapDeadzone         = 0.60f;  // activate threshold
-    static constexpr float kSnapRelease          = 0.25f;  // deactivate threshold (hysteresis)
-    static constexpr float kAxisDominance        = 1.5f;   // |dominant| > |other|*1.5
-    static constexpr float kStickRepeatGate      = 1.00f;  // s before first repeat (was 3.0)
-    static constexpr float kStickRepeatCadence   = 0.22f;  // s between repeats (flat)
+    static constexpr float kSnapDeadzone         = 0.60f;
+    static constexpr float kSnapRelease          = 0.25f;
+    static constexpr float kAxisDominance        = 1.5f;
+    static constexpr float kStickRepeatGate      = 1.00f;
+    static constexpr float kStickRepeatCadence   = 0.22f;
 
-    // X axis (left/right) — independent state
     float  m_stickCooldownX  = 0.0f;
     bool   m_stickActiveX    = false;
 
-    // Y axis (up/down) — independent state
     float  m_stickCooldownY  = 0.0f;
     bool   m_stickActiveY    = false;
 
-    // Legacy aliases (unused by new code, reset in Open())
     float  m_stickCooldown   = 0.0f;
     float  m_stickHoldTime   = 0.0f;
     bool   m_stickActive     = false;
@@ -148,7 +126,7 @@ private:
     // -------------------------------------------------------------------------
     // DPad navigation timing
     // -------------------------------------------------------------------------
-    static constexpr float kDPadFirst   = 0.80f;  // s before first DPad repeat (was 1.5)
+    static constexpr float kDPadFirst   = 0.80f;
     static constexpr float kDPadCadence = 0.22f;
 
     bool    m_dpadHeld    = false;
@@ -206,6 +184,7 @@ private:
 
     OnCharCallback     m_onChar;
     OnSubmitCallback   m_onSubmit;
+    OnCloseCallback    m_onClose;
     OnNavigateCallback m_onNavigate;
     OnTypeCallback     m_onType;
 

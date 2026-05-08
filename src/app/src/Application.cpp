@@ -139,13 +139,16 @@ static void SendDoubleClick(DWORD flags_down, DWORD flags_up) noexcept {
 
 // ---------------------------------------------------------------------------
 // Zoom (Ctrl+Wheel) helper — ticks > 0 = zoom in, ticks < 0 = zoom out.
+// A tick is WHEEL_DELTA/3 (=40) so each step is a finer increment,
+// and kZoomTicksPerSecond is tuned to give a calm, smooth zoom rate.
 // ---------------------------------------------------------------------------
 static void SendZoomScroll(int ticks) noexcept {
     SendKey(VK_CONTROL, true);
     INPUT inp{};
     inp.type         = INPUT_MOUSE;
     inp.mi.dwFlags   = MOUSEEVENTF_WHEEL;
-    inp.mi.mouseData = static_cast<DWORD>(ticks * WHEEL_DELTA);
+    // Use a smaller delta per tick for finer granularity (WHEEL_DELTA/3).
+    inp.mi.mouseData = static_cast<DWORD>(ticks * (WHEEL_DELTA / 3));
     SendInput(1, &inp, sizeof(INPUT));
     SendKey(VK_CONTROL, false);
 }
@@ -456,6 +459,11 @@ private:
             if (m_mode == InputMode::Cursor)
                 m_virtualMouse->SetEnabled(true);
         });
+        // Restore cursor when keyboard is dismissed with B (cancel).
+        kb.SetOnClose([this] {
+            if (m_mode == InputMode::Cursor)
+                m_virtualMouse->SetEnabled(true);
+        });
     }
 
     void OpenSettingsMenu() {
@@ -597,26 +605,21 @@ private:
         }
 
         // ------------------------------------------------------------------
-        // Controls overlay
+        // Controls overlay — feed state to render thread, nothing else.
         // ------------------------------------------------------------------
         if (controlsOpen) {
-            if (!m_overlay->GetControlsOverlay().IsOpen()) {
-                if (m_mode == InputMode::Cursor)
-                    m_virtualMouse->SetEnabled(true);
-            }
             m_overlay->PostState(state);
-            m_prevButtons = state.buttons;
             return;
         }
 
         // ------------------------------------------------------------------
-        // Virtual keyboard
+        // Virtual keyboard — feed state to render thread.
+        // VirtualKeyboard::Update() runs on the render thread and handles
+        // B (cancel / close) and Y (submit) internally.  The OnClose and
+        // OnSubmit callbacks re-enable the virtual mouse.
         // ------------------------------------------------------------------
         if (kbOpen) {
-            if (!m_overlay->GetVirtualKeyboard().IsOpen() && m_mode == InputMode::Cursor)
-                m_virtualMouse->SetEnabled(true);
             m_overlay->PostState(state);
-            m_prevButtons = state.buttons;
             return;
         }
 
@@ -665,8 +668,15 @@ private:
             return;
         }
 
+        // ------------------------------------------------------------------
+        // Radial menu — feed state to render thread.
+        // RadialMenu::Update() runs on the render thread and handles
+        // East (B / Circle) → Close() via m_onClose which re-enables the
+        // virtual mouse.  Driving it only from the render thread avoids the
+        // data race on m_prevEast that caused B-close to be ignored.
+        // ------------------------------------------------------------------
         if (radialOpen) {
-            m_overlay->GetRadialMenu().Update(state, dt * 0.001f);
+            m_overlay->PostState(state);
             return;
         }
 
@@ -708,10 +718,10 @@ private:
             // ----------------------------------------------------------------
             // RB hold + left stick Y — Zoom (Ctrl+Wheel)
             //
-            // kZoomTicksPerSecond is intentionally low (1.2) so that a full
-            // stick push at 250 Hz produces roughly 0.005 ticks per frame,
-            // accumulating to one Ctrl+Wheel tick only every ~0.83 s at full
-            // deflection — a calm, browsable zoom speed.
+            // Each zoom tick sends WHEEL_DELTA/3 = 40 (fine increment).
+            // kZoomTicksPerSecond = 1.8 so at full deflection the accumulator
+            // reaches 1.0 after ~0.56 s → roughly 2 fine ticks/s at full
+            // deflection, which is smooth and controllable.
             // ----------------------------------------------------------------
             if (rbHeld && !lbHeld) {
                 m_rbUsedForHold = true;
@@ -725,7 +735,7 @@ private:
                         SendZoomScroll(ticks);
                     }
                 } else {
-                    // Bleed off residual momentum quickly
+                    // Bleed off residual accumulation
                     m_zoomAccum *= 0.70f;
                 }
 
@@ -943,8 +953,10 @@ private:
     static constexpr float kShoulderTapMaxMs      = 300.0f;
     static constexpr float kShoulderStickDeadzone = 0.20f;
 
-    // RB-zoom: slow and smooth (1.2 ticks/s at full deflection)
-    static constexpr float kZoomTicksPerSecond = 1.2f;
+    // RB-zoom: fine increment per tick (WHEEL_DELTA/3), 1.8 ticks/s max.
+    // At full deflection this yields ~2 fine zoom steps per second —
+    // smooth enough for both browser page zoom and image viewers.
+    static constexpr float kZoomTicksPerSecond = 1.8f;
 
     float m_lbHoldMs      = 0.0f;
     float m_rbHoldMs      = 0.0f;
