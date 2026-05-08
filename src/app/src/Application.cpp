@@ -24,7 +24,7 @@
 namespace enjoystick::app {
 
 // ---------------------------------------------------------------------------
-// InputMode — Cursor, Voice only (Navigate removed)
+// InputMode
 // ---------------------------------------------------------------------------
 
 enum class InputMode : uint8_t {
@@ -138,25 +138,23 @@ static void SendDoubleClick(DWORD flags_down, DWORD flags_up) noexcept {
 }
 
 // ---------------------------------------------------------------------------
-// Zoom (Ctrl+Wheel) helper — ticks > 0 = zoom in, ticks < 0 = zoom out.
-// Each tick sends half a WHEEL_DELTA (60 units) so the zoom step is smaller
-// and smoother than a full notch.  The accumulator rate is also very slow
-// (0.35 ticks/s at full deflection) so the user can nudge zoom precisely.
+// Zoom (Ctrl+Wheel) helper
+// ticks > 0 = zoom in, ticks < 0 = zoom out.
+// Each tick sends WHEEL_DELTA/3 (40 units) so steps are small and smooth.
 // ---------------------------------------------------------------------------
 static void SendZoomScroll(int ticks) noexcept {
-    // Use half-delta per tick for finer, smoother zoom increments.
-    constexpr int kZoomDelta = WHEEL_DELTA / 2;   // 60 units
     SendKey(VK_CONTROL, true);
     INPUT inp{};
     inp.type         = INPUT_MOUSE;
     inp.mi.dwFlags   = MOUSEEVENTF_WHEEL;
-    inp.mi.mouseData = static_cast<DWORD>(ticks * kZoomDelta);
+    // Use fractional delta (WHEEL_DELTA/3) for finer, smoother zoom steps
+    inp.mi.mouseData = static_cast<DWORD>(ticks * (WHEEL_DELTA / 3));
     SendInput(1, &inp, sizeof(INPUT));
     SendKey(VK_CONTROL, false);
 }
 
 // ---------------------------------------------------------------------------
-// System volume helper — adjusts master volume by delta in [-1, +1].
+// System volume helper
 // ---------------------------------------------------------------------------
 static void AdjustSystemVolume(float delta) noexcept {
     const HRESULT hrInit = CoInitializeEx(nullptr,
@@ -188,11 +186,11 @@ static void AdjustSystemVolume(float delta) noexcept {
 // ---------------------------------------------------------------------------
 // Volume acceleration curve.
 // ---------------------------------------------------------------------------
-static constexpr float kVolSpeedMin      = 0.01f  / 1000.0f;  // 1 %/s  in frac/ms
-static constexpr float kVolSpeedMax      = 20.0f  / 1000.0f;  // 20 %/s in frac/ms
+static constexpr float kVolSpeedMin      = 0.01f  / 1000.0f;
+static constexpr float kVolSpeedMax      = 20.0f  / 1000.0f;
 static constexpr float kVolAccelStartMs  = 500.0f;
 static constexpr float kVolAccelEndMs    = 2000.0f;
-static constexpr float kVolStepMin       = 0.005f;  // 0.5 % minimum discrete step
+static constexpr float kVolStepMin       = 0.005f;
 
 inline float VolumeSpeedFracPerMs(float holdMs) noexcept {
     if (holdMs <= kVolAccelStartMs) return kVolSpeedMin;
@@ -463,7 +461,7 @@ private:
                 m_virtualMouse->SetEnabled(true);
         });
 
-        // Re-enable cursor movement when keyboard is dismissed via B (cancel).
+        // Re-enable cursor when keyboard is cancelled with B button
         kb.SetOnClose([this] {
             if (m_mode == InputMode::Cursor)
                 m_virtualMouse->SetEnabled(true);
@@ -618,7 +616,8 @@ private:
         }
 
         // ------------------------------------------------------------------
-        // Virtual keyboard
+        // Virtual keyboard — let render thread drive Update(); we only feed
+        // the latest state snapshot via PostState().
         // ------------------------------------------------------------------
         if (kbOpen) {
             m_overlay->PostState(state);
@@ -672,9 +671,10 @@ private:
         }
 
         // ------------------------------------------------------------------
-        // Radial menu — let the render thread drive Update(); we only feed
-        // it state via PostState().  The RadialMenu's OnClose callback will
-        // re-enable the virtual mouse when it finishes closing.
+        // Radial menu — feed state to render thread; it owns Update().
+        // The render thread calls m_radialMenu.Update(m_lastState, dt) every
+        // frame, which handles East→Close and South→Confirm with correct
+        // edge-detection (no data race on m_prevEast).
         // ------------------------------------------------------------------
         if (radialOpen) {
             m_overlay->PostState(state);
@@ -719,11 +719,10 @@ private:
             // ----------------------------------------------------------------
             // RB hold + left stick Y — Zoom (Ctrl+Wheel)
             //
-            // kZoomTicksPerSecond is intentionally very low (0.35) so a full
-            // stick push at 250 Hz accumulates ~0.0014 ticks/frame, taking
-            // ~2.9 s to reach the first tick.  Each tick is also only half a
-            // WHEEL_DELTA (60 units) making the actual zoom step smaller.
-            // Combined effect: smooth, deliberate zoom with no sudden jumps.
+            // kZoomTicksPerSecond = 0.40: at 250 Hz, full deflection
+            // accumulates 0.0016 ticks/frame → fires once every ~2.5 s.
+            // Each tick sends WHEEL_DELTA/3 (40 units) = sub-notch increment
+            // so zoom feels smooth and controlled in browsers/image viewers.
             // ----------------------------------------------------------------
             if (rbHeld && !lbHeld) {
                 m_rbUsedForHold = true;
@@ -737,11 +736,9 @@ private:
                         SendZoomScroll(ticks);
                     }
                 } else {
-                    // Bleed off residual momentum quickly
                     m_zoomAccum *= 0.70f;
                 }
 
-                // Pass scroll-suppressed state to VirtualMouse
                 ControllerState noScroll = state;
                 if (m_virtualMouse->GetConfig().useRightStick) {
                     noScroll.leftStick.y = 0.0f;
@@ -955,9 +952,9 @@ private:
     static constexpr float kShoulderTapMaxMs      = 300.0f;
     static constexpr float kShoulderStickDeadzone = 0.20f;
 
-    // RB-zoom: very slow and smooth (0.35 ticks/s at full deflection).
-    // Each tick is WHEEL_DELTA/2 = 60 units — half-notch zoom increment.
-    static constexpr float kZoomTicksPerSecond = 0.35f;
+    // RB-zoom: very slow for smooth, comfortable zoom
+    // 0.40 ticks/s × WHEEL_DELTA/3 per tick = gentle sub-notch increments
+    static constexpr float kZoomTicksPerSecond = 0.40f;
 
     float m_lbHoldMs      = 0.0f;
     float m_rbHoldMs      = 0.0f;

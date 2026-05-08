@@ -1,27 +1,18 @@
 #pragma once
 
 // ---------------------------------------------------------------------------
-// VoiceInputHUD
+// VoiceInputHUD  (v2)
 //
-// Overlay component that draws the voice-input indicator:
-//   - Centered animated microphone icon
-//   - Language badge (RU / EN)
-//   - Live partial-result text (scrolls if too wide)
-//   - VU-level bar (audio level animation)
-//   - Pulsing glow ring driven by FloatSpring
-//
-// Lifecycle follows the standard overlay pattern:
-//   Open()  -- animate in
-//   Close() -- animate out
-//   Update(vs, dt) -- advance internal state
-//   Draw(rt, dwrite, dpiScale, w, h) -- render
-//
-// Thread safety:
-//   SetVoiceState() may be called from any thread (voice engine callback).
-//   The struct is copied atomically enough for POD fields; the partial
-//   wstring is updated only when recognised text changes, so races are
-//   benign in practice (worst case: one frame of stale text).
-//   If stricter guarantees are needed, wrap in a mutex at the call site.
+// Redesigned voice-input overlay:
+//   - 480×210 px panel (up from 340×120)
+//   - Left: animated mic visualizer with state-coded colours
+//     (muted = grey, listening = gold dim, recognizing = gold bright)
+//     + spring-driven glow ring + mic level % label
+//   - Right: status label, 16-segment VU bar with colour gradient
+//     (gold→amber→orange-red at loud levels) + waveform animation
+//     + partial-result text with scroll
+//   - Bottom: exit/lang hint line
+//   - Top: accent stripe whose colour changes with mic state
 // ---------------------------------------------------------------------------
 
 #include <enjoystick/overlay/Overlay_SpringAnim.hpp>
@@ -35,43 +26,39 @@ class VoiceInputHUD {
 public:
     VoiceInputHUD() = default;
 
-    void Open();                // animate in
-    void Close();               // animate out
+    void Open();
+    void Close();
     [[nodiscard]] bool IsOpen() const noexcept;
 
-    // Push a live voice state snapshot (thread-safe for POD fields).
-    // Called from the voice engine callback on a worker thread.
     void SetVoiceState(const voice::VoiceInputState& vs) { m_vs = vs; }
 
-    // Called every render frame; vs = latest snapshot from VoiceInput::GetState()
     void Update(const voice::VoiceInputState& vs, float dt);
 
     void Draw(void* renderTargetPtr, void* dwriteFactoryPtr,
               float dpiScale, float screenW, float screenH) const;
 
-    // Language badge text displayed in the HUD (e.g. L"RU" / L"EN")
     void SetLanguageLabel(const wchar_t* label) { m_langLabel = label ? label : L""; }
 
 private:
     enum class State : uint8_t { Hidden, Opening, Visible, Closing };
 
-    State  m_state        = State::Hidden;
-    float  m_animT        = 0.0f;   // 0..1 panel open/close
-    float  m_glowPhase    = 0.0f;   // drives pulsing ring
-    float  m_levelSmooth  = 0.0f;   // smoothed audio level
-    float  m_partialScrollX = 0.0f; // horizontal scroll for long partial text
+    State  m_state           = State::Hidden;
+    float  m_animT           = 0.0f;
+    float  m_glowPhase       = 0.0f;
+    float  m_wavePhase       = 0.0f;   // drives VU bar wave animation
+    float  m_levelSmooth     = 0.0f;
+    float  m_partialScrollX  = 0.0f;
 
-    voice::VoiceInputState m_vs;    // latest state snapshot
+    voice::VoiceInputState m_vs;
     std::wstring           m_langLabel = L"RU";
 
-    // Springs
-    mutable FloatSpring m_panelSpring;      // panel scale pop
-    mutable FloatSpring m_micRingSpring;    // glow ring radius
-    mutable FloatSpring m_levelBarSpring;   // VU bar height
+    mutable FloatSpring m_panelSpring;
+    mutable FloatSpring m_micRingSpring;
+    mutable FloatSpring m_levelBarSpring;
 
-    static constexpr float kAnimSpeed  = 9.0f;   // open/close speed
-    static constexpr float kGlowHz     = 1.8f;   // idle pulse frequency
-    static constexpr float kLevelDecay = 6.0f;   // VU bar decay rate
+    static constexpr float kAnimSpeed  = 9.0f;
+    static constexpr float kGlowHz     = 1.6f;
+    static constexpr float kLevelDecay = 5.0f;
 };
 
 } // namespace enjoystick::overlay
