@@ -58,6 +58,7 @@ public:
     void Show()  override;
     void Hide()  override;
     void PostState(const ControllerState& state) override;
+    void SetVoiceState(const voice::VoiceInputState& vs) override;
     RadialMenu&      GetRadialMenu()      override;
     SettingsMenu&    GetSettingsMenu()    override;
     VirtualKeyboard& GetVirtualKeyboard() override;
@@ -120,7 +121,8 @@ private:
     ControlsOverlay m_controlsOverlay;
     VoiceInputHUD   m_voiceHUD;
 
-    // Thread-safe voice state snapshot (written from Application, read on render thread)
+    // Thread-safe voice state snapshot (written from Application thread via
+    // SetVoiceState(), read on render thread inside RenderFrame).
     mutable std::mutex          m_voiceStateMutex;
     voice::VoiceInputState      m_voiceState;
 

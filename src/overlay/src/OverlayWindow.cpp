@@ -73,6 +73,11 @@ void OverlayWindowImpl::SetModeLabel(std::wstring label) {
     }
 }
 
+void OverlayWindowImpl::SetVoiceState(const voice::VoiceInputState& vs) {
+    std::lock_guard lk(m_voiceStateMutex);
+    m_voiceState = vs;
+}
+
 void OverlayWindowImpl::PostState(const ControllerState& state) {
     const int next = 1 - m_activeBuffer;
     m_stateBuffers[next] = state;
@@ -325,7 +330,8 @@ void OverlayWindowImpl::RenderFrame(float deltaSeconds) {
 
     static const ControllerState kEmpty{};
 
-    // Feed voice state snapshot to HUD every frame
+    // Pull latest voice state snapshot (written from Application thread via
+    // SetVoiceState(), under m_voiceStateMutex) and forward to HUD.
     {
         voice::VoiceInputState vs;
         {
@@ -751,64 +757,4 @@ void OverlayWindowImpl::DrawToasts(ID2D1RenderTarget* rt, float deltaSeconds) {
             Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
             rt->CreateSolidColorBrush(lineCol, b.GetAddressOf());
             if (b) rt->DrawLine(
-                D2D1::Point2F(px + rr, py + 0.9f),
-                D2D1::Point2F(px + pw - rr, py + 0.9f),
-                b.Get(), 1.2f * s);
-        }
-        {
-            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> b;
-            rt->CreateSolidColorBrush(Tok::GoldDeep(0.35f * opacity), b.GetAddressOf());
-            if (b) { D2D1_ROUNDED_RECT pill{D2D1::RectF(px+0.5f,py+0.5f,px+pw-0.5f,py+ph-0.5f),rr,rr};
-                     rt->DrawRoundedRectangle(pill, b.Get(), 0.8f); }
-        }
-        const wchar_t* icon;
-        D2D1_COLOR_F   iconCol;
-        switch (t.category) {
-            case ToastCategory::Success: icon = L"\u2713"; iconCol = Tok::GoldHi(0.90f*opacity);    break;
-            case ToastCategory::Warning: icon = L"\u26A0"; iconCol = Tok::AmberWarm(0.90f*opacity); break;
-            case ToastCategory::Error:   icon = L"\u2715"; iconCol = D2D1::ColorF(0.92f,0.30f,0.26f,0.95f*opacity); break;
-            default:                     icon = L"\u2139"; iconCol = Tok::ChromeMid(0.70f*opacity);  break;
-        }
-        if (m_dwriteFactory) {
-            const float iconW = 32.0f * s;
-            Microsoft::WRL::ComPtr<IDWriteTextFormat> iconf;
-            m_dwriteFactory->CreateTextFormat(L"Segoe UI Symbol", nullptr,
-                DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL, 15.0f * s, L"en-us", iconf.GetAddressOf());
-            if (iconf) {
-                iconf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-                iconf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> ib;
-                rt->CreateSolidColorBrush(iconCol, ib.GetAddressOf());
-                if (ib) rt->DrawText(icon, 1, iconf.Get(),
-                    D2D1::RectF(px, py, px+iconW, py+ph), ib.Get());
-            }
-        }
-        if (m_dwriteFactory) {
-            std::wstring msg = t.message;
-            if (msg.size() > 4 && msg[0] == L'[') {
-                const auto close = msg.find(L']');
-                if (close != std::wstring::npos && close < 8)
-                    msg = msg.substr(close + 1);
-                if (!msg.empty() && msg[0] == L' ') msg = msg.substr(1);
-            }
-            Microsoft::WRL::ComPtr<IDWriteTextFormat> tf;
-            m_dwriteFactory->CreateTextFormat(L"Segoe UI", nullptr,
-                DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL, 14.5f * s, L"en-us", tf.GetAddressOf());
-            if (tf) {
-                tf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-                tf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-                Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> tb;
-                rt->CreateSolidColorBrush(Tok::ChromeHi(0.95f * opacity), tb.GetAddressOf());
-                const float iconW = 32.0f * s;
-                if (tb) rt->DrawText(
-                    msg.c_str(), static_cast<UINT32>(msg.size()),
-                    tf.Get(), D2D1::RectF(px+iconW+4.0f*s, py, px+pw-8.0f*s, py+ph),
-                    tb.Get());
-            }
-        }
-    }
-}
-
-} // namespace enjoystick::overlay
+  

@@ -6,6 +6,7 @@
 #include <enjoystick/overlay/VirtualKeyboard.hpp>
 #include <enjoystick/overlay/ControlsOverlay.hpp>
 #include <enjoystick/overlay/VoiceInputHUD.hpp>
+#include <enjoystick/voice/VoiceInput.hpp>
 #include <memory>
 #include <string>
 #include <functional>
@@ -39,8 +40,8 @@ namespace enjoystick::overlay {
 ///   overlay->GetVirtualKeyboard().Open(L"");
 ///   // open controls reference:
 ///   overlay->GetControlsOverlay().Open();
-///   // update voice HUD state:
-///   overlay->GetVoiceInputHUD().Open();
+///   // update voice HUD state (thread-safe, call from any thread):
+///   overlay->SetVoiceState(voiceState);
 ///
 class OverlayWindow {
 public:
@@ -74,6 +75,10 @@ public:
     /// Post a new controller state (thread-safe, lock-free).
     virtual void PostState(const ControllerState& state) = 0;
 
+    /// Push a live voice-engine state snapshot to the HUD (thread-safe).
+    /// Call from the voice engine OnStateChanged callback.
+    virtual void SetVoiceState(const voice::VoiceInputState& vs) = 0;
+
     /// Access the radial quick-action menu.
     virtual RadialMenu& GetRadialMenu() = 0;
 
@@ -88,7 +93,6 @@ public:
 
     /// Access the voice-input HUD component.
     /// Use Open() / Close() to show/hide the animated microphone panel.
-    /// Feed voice state snapshots via UpdateVoiceState() for live VU/partial text.
     virtual VoiceInputHUD& GetVoiceInputHUD() = 0;
 
     /// Trigger a toast notification (thread-safe).
