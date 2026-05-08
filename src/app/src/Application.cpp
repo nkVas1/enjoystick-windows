@@ -138,11 +138,9 @@ static void SendDoubleClick(DWORD flags_down, DWORD flags_up) noexcept {
 }
 
 // ---------------------------------------------------------------------------
-// Zoom (Ctrl+Wheel) helper
-// Sends one Ctrl+WheelUp or Ctrl+WheelDown tick.
+// Zoom (Ctrl+Wheel) helper — ticks > 0 = zoom in, ticks < 0 = zoom out.
 // ---------------------------------------------------------------------------
 static void SendZoomScroll(int ticks) noexcept {
-    // ticks > 0 = zoom in, ticks < 0 = zoom out
     SendKey(VK_CONTROL, true);
     INPUT inp{};
     inp.type         = INPUT_MOUSE;
@@ -153,12 +151,11 @@ static void SendZoomScroll(int ticks) noexcept {
 }
 
 // ---------------------------------------------------------------------------
-// System volume helper — adjusts master volume by a delta in [-1, +1].
-// Uses IAudioEndpointVolume (Vista+).
-// CoInitialize must have been called on this thread (or COM already init'd).
+// System volume helper — adjusts master volume by delta in [-1, +1].
+// Uses IAudioEndpointVolume (Vista+). COM is init'd per-call on the input
+// thread (safe: COINIT_APARTMENTTHREADED is re-entrant for the same thread).
 // ---------------------------------------------------------------------------
 static void AdjustSystemVolume(float delta) noexcept {
-    // COM may not be initialised on the input thread; use try-init pattern.
     const HRESULT hrInit = CoInitializeEx(nullptr,
         COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     const bool didInit = (hrInit == S_OK || hrInit == S_FALSE);
@@ -166,7 +163,7 @@ static void AdjustSystemVolume(float delta) noexcept {
     Microsoft::WRL::ComPtr<IMMDeviceEnumerator> enumerator;
     if (SUCCEEDED(CoCreateInstance(
             __uuidof(MMDeviceEnumerator), nullptr,
-            CLSCTX_ALL, IID_PPV_ARGS(enumerator.GetAddressOf()))))  {
+            CLSCTX_ALL, IID_PPV_ARGS(enumerator.GetAddressOf())))) {
         Microsoft::WRL::ComPtr<IMMDevice> device;
         if (SUCCEEDED(enumerator->GetDefaultAudioEndpoint(
                 eRender, eMultimedia, device.GetAddressOf()))) {
@@ -183,6 +180,29 @@ static void AdjustSystemVolume(float delta) noexcept {
     }
 
     if (didInit) CoUninitialize();
+}
+
+// ---------------------------------------------------------------------------
+// Volume acceleration curve.
+// holdMs : how long the stick has been continuously pushed past the deadzone.
+// Returns speed in volume-fraction per millisecond (e.g. 0.00001 = 1 %/s).
+//
+// Curve:
+//   0 – kVolAccelStartMs  : kVolSpeedMin  (flat, very fine control)
+//   kVolAccelStartMs – kVolAccelEndMs : ease-in quad ramp to kVolSpeedMax
+//   kVolAccelEndMs+  : kVolSpeedMax    (capped)
+// ---------------------------------------------------------------------------
+static constexpr float kVolSpeedMin      = 0.01f  / 1000.0f;  // 1 %/s  in frac/ms
+static constexpr float kVolSpeedMax      = 20.0f  / 1000.0f;  // 20 %/s in frac/ms
+static constexpr float kVolAccelStartMs  = 500.0f;  // ms before ramp begins
+static constexpr float kVolAccelEndMs    = 2000.0f; // ms at which max speed is reached
+static constexpr float kVolStepMin       = 0.005f;  // 0.5 % minimum discrete step
+
+inline float VolumeSpeedFracPerMs(float holdMs) noexcept {
+    if (holdMs <= kVolAccelStartMs) return kVolSpeedMin;
+    const float t = std::min(1.0f,
+        (holdMs - kVolAccelStartMs) / (kVolAccelEndMs - kVolAccelStartMs));
+    return kVolSpeedMin + (kVolSpeedMax - kVolSpeedMin) * (t * t); // ease-in quad
 }
 
 } // anonymous namespace
@@ -269,7 +289,6 @@ public:
         m_virtualMouse->SetEnabled(true);
         m_keyMapper->SetEnabled(false);
 
-        // Voice engine
         m_voiceEngine = voice::VoiceInputEngine::Create({});
         SetupVoiceEngine();
 
@@ -516,7 +535,7 @@ private:
         const bool ctrlOpen  = m_overlay->GetControlsOverlay().IsOpen();
 
         m_virtualMouse->SetEnabled(!voiceMode && !menuOpen && !kbOpen && !ctrlOpen);
-        m_keyMapper->SetEnabled(false);  // KeyboardMapper unused; Navigate mode removed
+        m_keyMapper->SetEnabled(false);
 
         if (voiceMode) {
             EnterVoiceMode();
@@ -575,7 +594,7 @@ private:
         const bool voiceOpen     = m_overlay->GetVoiceInputHUD().IsOpen();
 
         // ------------------------------------------------------------------
-        // Voice mode — only LB+RB chord exits
+        // Voice mode
         // ------------------------------------------------------------------
         if (voiceOpen) {
             if (held(Button::LB) && held(Button::RB)) {
@@ -676,8 +695,6 @@ private:
         // Cursor mode input routing
         // ------------------------------------------------------------------
         if (m_mode == InputMode::Cursor) {
-            // Track how long LB / RB have been held so we can distinguish
-            // a short tap (tab switch) from a long hold (zoom / volume).
             const bool lbHeld = held(Button::LB);
             const bool rbHeld = held(Button::RB);
 
@@ -687,13 +704,12 @@ private:
             if (rbHeld)  m_rbHoldMs += dt;
             else         m_rbHoldMs = 0.0f;
 
-            // LB + RB chord → cycle mode (Cursor → Voice)
+            // LB + RB chord — mode toggle (Cursor <-> Voice)
             if (lbHeld && rbHeld) {
                 if (!m_lbRbChordActive) {
                     m_lbRbChordActive = true;
                     ToggleInputMode();
                 }
-                // Mark both as "used for chord" so release won't fire tab.
                 m_lbUsedForHold = true;
                 m_rbUsedForHold = true;
                 m_overlay->PostState(state);
@@ -703,12 +719,17 @@ private:
             m_lbRbChordActive = false;
 
             // ----------------------------------------------------------------
-            // RB hold + left stick Y → Zoom (Ctrl+Wheel)
+            // RB hold + left stick Y — Zoom (Ctrl+Wheel)
+            //
+            // While RB is held we pass a modified ControllerState to
+            // VirtualMouse::Update() with the scroll axis (rightStick.y when
+            // useRightStick==false, leftStick.y when useRightStick==true)
+            // zeroed out so the VirtualMouse scroll accumulator never fires.
             // ----------------------------------------------------------------
             if (rbHeld && !lbHeld) {
-                m_rbUsedForHold = true;  // suppress tab-switch on release
+                m_rbUsedForHold = true;
 
-                const float stickY = state.leftStick.y; // +1 = up, -1 = down
+                const float stickY = state.leftStick.y; // +1 up = zoom in
                 if (std::fabs(stickY) > kShoulderStickDeadzone) {
                     m_zoomAccum += stickY * dt * kZoomTicksPerSecond;
                     const int ticks = static_cast<int>(m_zoomAccum);
@@ -717,45 +738,63 @@ private:
                         SendZoomScroll(ticks);
                     }
                 } else {
-                    // Bleed off small residue when stick returns to centre
                     m_zoomAccum *= 0.85f;
                 }
 
+                // Build a scroll-suppressed copy of the state for VirtualMouse.
+                // Zero the axis VirtualMouse uses for scroll so it only moves
+                // the cursor without scrolling.
+                ControllerState noScroll = state;
+                if (m_virtualMouse->GetConfig().useRightStick) {
+                    noScroll.leftStick.y = 0.0f;   // scroll axis when useRightStick=true
+                } else {
+                    noScroll.rightStick.y = 0.0f;  // scroll axis when useRightStick=false
+                }
+
                 m_overlay->PostState(state);
-                m_virtualMouse->Update(state, dt);
+                m_virtualMouse->Update(noScroll, dt);
                 return;
             }
 
-            // If RB was just released and was used as a hold modifier,
-            // suppress the tab action.
             if (released(Button::RB)) {
                 if (m_rbUsedForHold) {
                     m_rbUsedForHold = false;
                     m_zoomAccum = 0.0f;
                 } else if (m_rbHoldMs <= kShoulderTapMaxMs) {
-                    // Short tap → next tab
                     SendBrowserTab(true);
                 }
                 m_rbHoldMs = 0.0f;
             }
 
             // ----------------------------------------------------------------
-            // LB hold + left stick X → System volume
+            // LB hold + left stick X — System volume with acceleration curve
+            //
+            // m_volStickHoldMs tracks how long the stick has been pushed
+            // continuously past the deadzone in the same direction.
+            // Speed starts at 1 %/s and ramps to 20 %/s after ~2 s of hold.
+            // Letting the stick return to centre resets the timer.
             // ----------------------------------------------------------------
             if (lbHeld && !rbHeld) {
-                m_lbUsedForHold = true;  // suppress tab-switch on release
+                m_lbUsedForHold = true;
 
-                const float stickX = state.leftStick.x; // +1 = right (louder)
+                const float stickX = state.leftStick.x; // +1 = right = louder
                 if (std::fabs(stickX) > kShoulderStickDeadzone) {
-                    m_volAccum += stickX * dt * kVolumeChangePerSecond;
-                    // Apply volume in discrete 1% steps for smooth perceptual control
-                    const int steps = static_cast<int>(m_volAccum * 100.0f);
-                    if (steps != 0) {
-                        const float applied = static_cast<float>(steps) * 0.01f;
-                        m_volAccum -= applied;
-                        AdjustSystemVolume(applied);
-                    }
+                    m_volStickHoldMs += dt;
+
+                    const float speed = VolumeSpeedFracPerMs(m_volStickHoldMs);
+                    // scale by stick deflection magnitude for analogue feel
+                    const float deflection = std::min(1.0f,
+                        (std::fabs(stickX) - kShoulderStickDeadzone)
+                        / (1.0f - kShoulderStickDeadzone));
+                    m_volAccum += (stickX > 0 ? 1.0f : -1.0f)
+                                  * deflection * speed * dt;
+
+                    // Apply in discrete kVolStepMin steps
+                    while (m_volAccum >=  kVolStepMin) { AdjustSystemVolume( kVolStepMin); m_volAccum -= kVolStepMin; }
+                    while (m_volAccum <= -kVolStepMin) { AdjustSystemVolume(-kVolStepMin); m_volAccum += kVolStepMin; }
                 } else {
+                    // Stick returned to centre — reset acceleration state
+                    m_volStickHoldMs = 0.0f;
                     m_volAccum *= 0.85f;
                 }
 
@@ -764,14 +803,12 @@ private:
                 return;
             }
 
-            // If LB was just released and was used as a hold modifier,
-            // suppress the tab action.
             if (released(Button::LB)) {
                 if (m_lbUsedForHold) {
-                    m_lbUsedForHold = false;
-                    m_volAccum = 0.0f;
+                    m_lbUsedForHold  = false;
+                    m_volAccum       = 0.0f;
+                    m_volStickHoldMs = 0.0f;
                 } else if (m_lbHoldMs <= kShoulderTapMaxMs) {
-                    // Short tap → previous tab
                     SendBrowserTab(false);
                 }
                 m_lbHoldMs = 0.0f;
@@ -926,21 +963,23 @@ private:
     float m_southHoldMs     = 0.0f;
     bool  m_southDragActive = false;
 
-    // Shoulder-button hold state
-    // A shoulder press shorter than kShoulderTapMaxMs and not used as a
-    // modifier is treated as a tab-switch tap.
-    static constexpr float kShoulderTapMaxMs       = 300.0f;  // ms
-    static constexpr float kShoulderStickDeadzone  = 0.20f;   // normalised
-    static constexpr float kZoomTicksPerSecond      = 3.0f;   // scroll ticks/s at full deflection
-    static constexpr float kVolumeChangePerSecond   = 0.40f;  // 40 % volume / s at full deflection
+    // Shoulder-button hold / tap discrimination
+    static constexpr float kShoulderTapMaxMs      = 300.0f;  // ms
+    static constexpr float kShoulderStickDeadzone = 0.20f;   // normalised
 
-    float m_lbHoldMs       = 0.0f;
-    float m_rbHoldMs       = 0.0f;
-    bool  m_lbUsedForHold  = false;  // was LB used as a modifier this press?
-    bool  m_rbUsedForHold  = false;  // was RB used as a modifier this press?
+    // RB-zoom parameters
+    static constexpr float kZoomTicksPerSecond = 3.0f;  // ctrl+wheel ticks/s at full deflection
+
+    float m_lbHoldMs      = 0.0f;
+    float m_rbHoldMs      = 0.0f;
+    bool  m_lbUsedForHold = false;
+    bool  m_rbUsedForHold = false;
 
     float m_zoomAccum = 0.0f;  // fractional zoom scroll accumulator
-    float m_volAccum  = 0.0f;  // fractional volume change accumulator
+
+    // LB-volume parameters
+    float m_volAccum       = 0.0f;  // fractional volume accumulator
+    float m_volStickHoldMs = 0.0f;  // continuous stick-push duration for accel curve
 };
 
 std::unique_ptr<Application> Application::Create() {
