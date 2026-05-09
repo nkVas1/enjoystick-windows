@@ -373,8 +373,11 @@ private:
             }
         });
 
+        // Route voice state through the mutex-protected path on OverlayWindow
+        // so RenderFrame picks it up via m_voiceState (not VoiceInputHUD::m_vs
+        // which is a separate, never-read field in the render-thread path).
         m_voiceEngine->OnStateChanged([this](const voice::VoiceInputState& state) {
-            m_overlay->GetVoiceInputHUD().SetVoiceState(state);
+            m_overlay->SetVoiceState(state);
         });
 
         m_voiceEngine->OnError([this](const std::wstring& errorMsg) {
@@ -673,7 +676,7 @@ private:
         // ------------------------------------------------------------------
         // Radial menu — feed state to render thread; it owns Update().
         // The render thread calls m_radialMenu.Update(m_lastState, dt) every
-        // frame, which handles East→Close and South→Confirm with correct
+        // frame, which handles East->Close and South->Confirm with correct
         // edge-detection (no data race on m_prevEast).
         // ------------------------------------------------------------------
         if (radialOpen) {
@@ -719,10 +722,11 @@ private:
             // ----------------------------------------------------------------
             // RB hold + left stick Y — Zoom (Ctrl+Wheel)
             //
-            // kZoomTicksPerSecond = 0.40: at 250 Hz, full deflection
-            // accumulates 0.0016 ticks/frame → fires once every ~2.5 s.
-            // Each tick sends WHEEL_DELTA/3 (40 units) = sub-notch increment
-            // so zoom feels smooth and controlled in browsers/image viewers.
+            // While RB is held, VirtualMouse receives ControllerState{} (all
+            // zeroes) so it cannot produce cursor movement, scroll events, or
+            // any other input — regardless of stick position or config flags.
+            // Zoom accumulation reads state.leftStick.y directly before the
+            // VirtualMouse call; the two paths are fully independent.
             // ----------------------------------------------------------------
             if (rbHeld && !lbHeld) {
                 m_rbUsedForHold = true;
@@ -739,15 +743,11 @@ private:
                     m_zoomAccum *= 0.70f;
                 }
 
-                ControllerState noScroll = state;
-                if (m_virtualMouse->GetConfig().useRightStick) {
-                    noScroll.leftStick.y = 0.0f;
-                } else {
-                    noScroll.rightStick.y = 0.0f;
-                }
-
+                // Pass empty state — zero sticks, zero buttons.
+                // VirtualMouse must receive no input during zoom mode.
+                static const ControllerState kEmpty{};
                 m_overlay->PostState(state);
-                m_virtualMouse->Update(noScroll, dt);
+                m_virtualMouse->Update(kEmpty, dt);
                 return;
             }
 
@@ -953,7 +953,7 @@ private:
     static constexpr float kShoulderStickDeadzone = 0.20f;
 
     // RB-zoom: very slow for smooth, comfortable zoom
-    // 0.40 ticks/s × WHEEL_DELTA/3 per tick = gentle sub-notch increments
+    // 0.40 ticks/s x WHEEL_DELTA/3 per tick = gentle sub-notch increments
     static constexpr float kZoomTicksPerSecond = 0.40f;
 
     float m_lbHoldMs      = 0.0f;
