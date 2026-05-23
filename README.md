@@ -4,7 +4,6 @@
 
 [![Build](https://img.shields.io/badge/build-passing-brightgreen)](#building)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)](#requirements)
-[![License]](LICENSE)
 
 ---
 
